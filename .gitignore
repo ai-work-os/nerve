@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.db
+*.db-journal
+.nvimlog
+.keep
+.claude/
+
+# agent 对话产出（临时过程文档）
+notes/
