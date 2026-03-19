@@ -1,0 +1,17 @@
+#!/bin/sh
+# nerve-post: Post a message to a nerve channel
+# Usage: nerve-post "message content"
+# Uses NERVE_PORT and NERVE_NODE_NAME from environment
+set -e
+
+if [ -z "$1" ]; then
+  echo "Usage: nerve-post \"@recipient message\"" >&2
+  exit 1
+fi
+
+PORT="${NERVE_PORT:-7700}"
+FROM="${NERVE_NODE_NAME:-unknown}"
+
+curl -s -X POST "http://localhost:${PORT}/post" \
+  -H 'Content-Type: application/json' \
+  -d "{\"from\":\"${FROM}\",\"content\":$(printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}"

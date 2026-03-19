@@ -1,0 +1,29 @@
+{
+  "name": "nerve",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Nerve - synaptic layer connecting AI agents and humans",
+  "main": "dist/index.js",
+  "bin": {
+    "nerve": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts serve",
+    "start": "node dist/cli.js serve",
+    "test": "tsx test/self-test.ts",
+    "cli": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "nanoid": "^5.1.5",
+    "ws": "^8.18.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.13.14",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
