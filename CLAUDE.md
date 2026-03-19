@@ -9,6 +9,7 @@
 3. **ACP.md** — 内部协议（nerve ↔ agent 进程的 stdio JSON-RPC）
 4. **INTERNALS.md** — 代码级调用链 + 文件结构
 5. **ROADMAP.md** — 路线图、已完成功能、待做事项
+6. **notes/NEXT.md** — 当前任务进展和下一步
 
 ## 当前状态
 
