@@ -4,11 +4,13 @@
 
 ## 快速理解
 
-1. **ARCHITECTURE.md** — 设计理念（管什么、不管什么、核心概念）
-2. **API.md** — 外部接口契约（WS JSON-RPC 2.0 + HTTP）
-3. **ACP.md** — 内部协议（nerve ↔ agent 进程的 stdio JSON-RPC）
-4. **INTERNALS.md** — 代码级调用链 + 文件结构
-5. **ROADMAP.md** — 路线图、已完成功能、待做事项
+所有文档在 `notes/` 目录下：
+
+1. **notes/ARCHITECTURE.md** — 设计理念（管什么、不管什么、核心概念）
+2. **notes/API.md** — 外部接口契约（WS JSON-RPC 2.0 + HTTP）
+3. **notes/ACP.md** — 内部协议（nerve ↔ agent 进程的 stdio JSON-RPC）
+4. **notes/INTERNALS.md** — 代码级调用链 + 文件结构
+5. **notes/ROADMAP.md** — 路线图、已完成功能、待做事项
 6. **notes/NEXT.md** — 当前任务进展和下一步
 
 ## 当前状态
@@ -35,6 +37,12 @@ npx tsx src/cli.ts serve    # 端口 4800
 ```bash
 npx tsx test/self-test.ts
 ```
+
+## 工程要求
+
+- **日志**：关键路径必须有日志，方便排查问题
+- **单元测试**：新增/修改的模块必须有对应测试，方便后续迭代维护
+- **测试框架**：`npx tsx test/self-test.ts`（现有 118 个测试）
 
 ## 关键设计决策
 
