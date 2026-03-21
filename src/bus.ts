@@ -1,6 +1,5 @@
 import { Channel } from "./channel.js";
 import { NodePool } from "./node-pool.js";
-import { Scheduler } from "./scheduler.js";
 import { route } from "./router.js";
 import { Store } from "./store.js";
 import { BusNode } from "./node.js";
@@ -16,7 +15,6 @@ export interface BusOptions {
 export class Bus {
   readonly store: Store;
   readonly nodePool: NodePool;
-  readonly scheduler: Scheduler;
   private channels = new Map<string, Channel>();
   private port: number;
 
@@ -32,16 +30,6 @@ export class Bus {
 
     this.nodePool = new NodePool(this.store, (event, node, detail) => {
       this.handleNodeEvent(event, node, detail);
-    });
-
-    this.scheduler = new Scheduler((nodeId, text, onDone) => {
-      const node = this.nodePool.get(nodeId);
-      let prompt = text;
-      if (node && !node.prompted && node.systemPrompt) {
-        prompt = node.systemPrompt + "\n\n" + text;
-        node.prompted = true;
-      }
-      this.nodePool.promptNode(nodeId, prompt).then(() => onDone());
     });
   }
 
@@ -105,7 +93,6 @@ export class Bus {
           });
         }
       }
-      this.scheduler.clearQueue(nodeId);
     }
     this.nodePool.stopNode(nodeId);
   }
@@ -175,8 +162,7 @@ export class Bus {
       if (!node) continue;
 
       if (node.isProcess) {
-        // Queue for serial processing
-        this.scheduler.enqueue(target.nodeId, channelId, msg);
+        this.dispatchDirect(target.nodeId, node, msg.content);
       } else {
         // Direct mention notification for WS nodes
         node.transport.send({
@@ -190,16 +176,20 @@ export class Bus {
     return msg;
   }
 
-  /** Post from a Process Node (via terminal/curl HTTP endpoint) */
-  postFromProcess(nodeName: string, content: string): void {
-    // Find which channel this node is in (use first channel for MVP)
+  /** Post from a Process Node (via MCP tool / HTTP endpoint) */
+  postFromProcess(nodeName: string, content: string): MessageInfo {
     const node = this.nodePool.getByName(nodeName);
-    if (!node) return;
+    if (!node) throw new Error(`node "${nodeName}" not found`);
 
-    for (const chId of node.channels) {
-      this.postMessage(chId, nodeName, content);
-      break; // MVP: post to first channel only
+    if (node.channels.size === 0) {
+      throw new Error(`node "${nodeName}" has not joined any channel`);
     }
+
+    // MVP: post to first channel only
+    const chId = [...node.channels][0];
+    const msg = this.postMessage(chId, nodeName, content);
+    if (!msg) throw new Error(`failed to post to channel ${chId}`);
+    return msg;
   }
 
   getHistory(channelId: string, limit?: number, before?: number): MessageInfo[] {
@@ -213,16 +203,47 @@ export class Bus {
 
   // --- Internal ---
 
+  /** Direct dispatch: if node is busy, cancel first then prompt */
+  private dispatchDirect(nodeId: string, node: BusNode, content: string): void {
+    let prompt = content;
+    if (!node.prompted && node.systemPrompt) {
+      prompt = node.systemPrompt + "\n\n" + prompt;
+      node.prompted = true;
+    }
+
+    const doPrompt = () => {
+      this.nodePool.promptNode(nodeId, prompt).catch(err => {
+        log.warn(`prompt ${node.name} failed: ${err}`);
+      });
+    };
+
+    if (node.status === "busy") {
+      log.info(`dispatch: ${node.name} is busy, cancelling before new prompt`);
+      this.nodePool.cancelNode(nodeId).then(() => doPrompt()).catch(err => {
+        log.warn(`cancel ${node.name} failed: ${err}, prompting anyway`);
+        doPrompt();
+      });
+    } else {
+      doPrompt();
+    }
+  }
+
   private buildSystemPrompt(agentName: string, channelId: string, members: string[]): string {
     const memberList = members.length > 0 ? members.join(", ") : "(none yet)";
     return [
       `你是 ${agentName}，在一个多 agent 协作频道里。`,
       ``,
-      `发消息到频道：`,
-      `nerve-post "@收件人 消息内容"`,
+      `可用工具：`,
+      `- nerve_post({ to: "agent名", content: "消息内容" }) 发送频道消息`,
+      `- nerve_spawn({ adapter, name?, cwd? }) 创建子 agent`,
+      `- nerve_create_channel({ name? }) 创建频道`,
+      `- nerve_join({ agent_name, channel_id }) 把 agent 加入频道`,
+      `- nerve_remove({ agent_name, channel_id }) 把 agent 移出频道`,
+      ``,
+      `发消息给其他 agent：使用 nerve_post 工具`,
+      `  nerve_post({ to: "agent名", content: "消息内容" })`,
       ``,
       `频道规则：`,
-      `- @收件人 开头，默认 @main`,
       `- 频道消息 50 字以内，只写结论`,
       `- 长内容写文件，频道附路径`,
       `- 每个任务回复一次，然后等指令`,
@@ -269,7 +290,6 @@ export class Bus {
             this.postMessage(chId, "系统", `${node.name} 已断开 (exit: ${detail?.exitCode})`);
           }
         }
-        this.scheduler.clearQueue(node.id);
         break;
       }
 

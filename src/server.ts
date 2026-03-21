@@ -332,7 +332,7 @@ export class Server {
   }
 
   /**
-   * HTTP API for Process Nodes (CLI agents) to manage Bus via terminal/curl.
+   * HTTP API for process nodes (CLI agents) to manage channels via terminal/curl.
    * All POST endpoints accept JSON body with `from` field to identify the caller node.
    */
   private handleHttp(req: IncomingMessage, res: ServerResponse): void {
@@ -444,11 +444,12 @@ export class Server {
         if (channelId) {
           // Post to specific channel
           const msg = this.bus.postMessage(channelId, from, content);
+          if (!msg) throw new Error(`channel ${channelId} not found`);
           return { ok: true, message: msg };
         } else {
-          // Post to first channel this node is in
-          this.bus.postFromProcess(from, content);
-          return { ok: true };
+          // Post to first channel this node is in (throws if not joined)
+          const msg = this.bus.postFromProcess(from, content);
+          return { ok: true, message: msg };
         }
       }
 

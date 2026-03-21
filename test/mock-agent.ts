@@ -16,6 +16,7 @@ const BUS_PORT = process.env.NERVE_PORT || "4800";
 const NODE_NAME = process.env.NERVE_NODE_NAME || "mock";
 
 let sessionId = "mock-session-" + Date.now();
+let receivedMcpServers: unknown = null;
 let pendingPromptId: number | string | null = null;
 let pendingPromptTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -61,7 +62,15 @@ rl.on("line", (line) => {
 
     case "session/new":
       sessionId = "mock-session-" + Date.now();
+      receivedMcpServers = params?.mcpServers ?? null;
       sendResponse(id, { sessionId });
+      // Emit session/update with mcpServers info so tests can verify injection
+      if (receivedMcpServers) {
+        sendNotification("session/update", {
+          sessionId,
+          update: { sessionUpdate: "mcpServers_received", mcpServers: receivedMcpServers },
+        });
+      }
       break;
 
     case "session/prompt": {
@@ -76,6 +85,12 @@ rl.on("line", (line) => {
           content: { type: "text", text: `[mock processing: "${text.slice(0, 50)}"]` },
         },
       });
+
+      // "mcpServers?" query — return what was received on session/new
+      if (text.includes("mcpServers?")) {
+        sendResponse(id, { stopReason: "end_turn", mcpServers: receivedMcpServers });
+        break;
+      }
 
       // "slow" prompts delay 10s (for cancel testing)
       if (text.includes("slow")) {

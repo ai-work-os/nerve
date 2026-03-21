@@ -11,9 +11,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rmSync, existsSync } from "node:fs";
+import { rmSync, existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import WebSocket from "ws";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -79,6 +81,16 @@ function httpGet(path: string): Promise<Record<string, unknown>> {
       res.on("end", () => {
         try { resolve(JSON.parse(d)); } catch { reject(new Error(`invalid json: ${d}`)); }
       });
+    }).on("error", reject);
+  });
+}
+
+function httpGetText(path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    http.get(`http://localhost:${TEST_PORT}${path}`, (res) => {
+      let d = "";
+      res.on("data", c => d += c);
+      res.on("end", () => resolve(d));
     }).on("error", reject);
   });
 }
@@ -156,6 +168,43 @@ class WsClient {
 
   close(): void {
     this.ws.close();
+  }
+}
+
+class McpToolClient {
+  private client: Client;
+  private transport: StdioClientTransport;
+
+  constructor(nodeName: string) {
+    this.client = new Client({ name: "self-test", version: "0.1.0" });
+    this.transport = new StdioClientTransport({
+      command: "npx",
+      args: ["tsx", "src/nerve-mcp.ts"],
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        NERVE_PORT: String(TEST_PORT),
+        NERVE_NODE_NAME: nodeName,
+      } as Record<string, string>,
+      stderr: "pipe",
+    });
+  }
+
+  async connect(): Promise<void> {
+    await this.client.connect(this.transport);
+  }
+
+  async listTools(): Promise<any[]> {
+    const r = await this.client.listTools();
+    return r.tools || [];
+  }
+
+  async callTool(name: string, args: Record<string, unknown>): Promise<any> {
+    return this.client.callTool({ name, arguments: args });
+  }
+
+  async close(): Promise<void> {
+    await this.transport.close();
   }
 }
 
@@ -1231,6 +1280,276 @@ async function testCancelWithSubscribe() {
 }
 
 // ============================================================
+// M1 Channel Tests
+// ============================================================
+
+async function testMcpServersInjected() {
+  console.log("\n▸ mcpServers injected on session/new");
+
+  const c = new WsClient("mcp-inject-test");
+  await c.connect();
+  await c.request("node.register", { name: "mcp-inject-test", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "mcp-inject-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "mcp-inject: agent spawned");
+
+  // Wait for handshake (mock-agent emits session/update with mcpServers info)
+  await sleep(3000);
+
+  // Check agent is idle (handshake completed)
+  const nodes = await c.request("node.list", {});
+  const agentNode = nodes.nodes.find((n: any) => n.name === "mcp-inject-agent");
+  assert(!!agentNode && agentNode.status === "idle", "mcp-inject: agent ready");
+
+  // Check update buffer for mcpServers_received notification
+  const updates = await c.request("node.updates", { nodeName: "mcp-inject-agent" });
+  const mcpUpdate = updates.updates?.find((u: any) => u.update?.sessionUpdate === "mcpServers_received");
+  assert(!!mcpUpdate, "mcp-inject: mock-agent received mcpServers");
+
+  if (mcpUpdate) {
+    const servers = mcpUpdate.update?.mcpServers as any[];
+    assert(Array.isArray(servers) && servers.length > 0, "mcp-inject: mcpServers is non-empty array");
+    assert(servers[0]?.name === "nerve", "mcp-inject: mcpServers[0].name is 'nerve'");
+    assert(!!servers[0]?.command, "mcp-inject: mcpServers[0].command is set");
+    assert(Array.isArray(servers[0]?.args), "mcp-inject: mcpServers[0].args is array");
+    assert(Array.isArray(servers[0]?.env), "mcp-inject: env is array");
+    const env = servers[0].env;
+    assert(env.some((e: any) => e.name === "NERVE_PORT" && !!e.value), "mcp-inject: NERVE_PORT present");
+    assert(env.some((e: any) => e.name === "NERVE_NODE_NAME" && e.value === "mcp-inject-agent"), "mcp-inject: NERVE_NODE_NAME correct");
+  }
+
+  // Cleanup
+  if (agentNode) await httpPost("/node/stop", { nodeId: agentNode.id });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testNervePostToChannel() {
+  console.log("\n▸ nerve_post posts into joined channel");
+
+  const c = new WsClient("post-test");
+  await c.connect();
+  await c.request("node.register", { name: "post-test", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "post-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "post-test: agent spawned");
+  await sleep(3000);
+
+  // Create channel and add agent
+  const ch = await c.request("channel.create", { cwd: "/tmp" });
+  await c.request("channel.join", { channelId: ch.channelId });
+
+  const nodes = await httpPost("/node/list", {});
+  const agentNode = (nodes as any).nodes.find((n: any) => n.name === "post-agent");
+  assert(!!agentNode, "post-test: agent found");
+  if (!agentNode) { await c.disconnect(); return; }
+
+  await httpPost("/channel/addNode", {
+    channelId: ch.channelId,
+    nodeId: agentNode.id,
+    nodeName: "post-agent",
+  });
+
+  // Simulate agent posting via HTTP /post (like nerve-mcp would)
+  const postResult = await httpPost("/post", {
+    from: "post-agent",
+    content: "@post-test hello from agent",
+  });
+  assert(!!postResult.ok, "post-test: /post returns ok");
+
+  // Verify message in channel history
+  const hist = await c.request("channel.history", { channelId: ch.channelId });
+  const agentMsg = hist.messages.find((m: any) => m.from === "post-agent" && m.content.includes("hello from agent"));
+  assert(!!agentMsg, "post-test: message appears in channel history");
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: agentNode.id });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testNervePostErrorNoChannel() {
+  console.log("\n▸ nerve_post errors when node not joined");
+
+  // Spawn mock agent (no channel join)
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "no-ch-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "no-channel: agent spawned");
+  await sleep(3000);
+
+  // Try to post without joining a channel — should return error
+  const postResult = await httpPost("/post", {
+    from: "no-ch-agent",
+    content: "this should fail",
+  });
+  assert(!!postResult.error, "no-channel: /post returns error when not joined", `got: ${JSON.stringify(postResult)}`);
+
+  // Cleanup
+  const nodes = await httpPost("/node/list", {});
+  const agentNode = (nodes as any).nodes.find((n: any) => n.name === "no-ch-agent");
+  if (agentNode) await httpPost("/node/stop", { nodeId: agentNode.id });
+  await sleep(500);
+}
+
+async function testMcpOrchestrationTools() {
+  console.log("\n▸ nerve-mcp orchestration tools");
+
+  const c = new WsClient("orchestrator");
+  await c.connect();
+  await c.request("node.register", { name: "orchestrator", capabilities: ["ui"] });
+
+  const mcp = new McpToolClient("orchestrator");
+  await mcp.connect();
+
+  const tools = await mcp.listTools();
+  const toolNames = tools.map((t: any) => t.name);
+  assert(toolNames.includes("nerve_post"), "mcp-tools: nerve_post listed");
+  assert(toolNames.includes("nerve_spawn"), "mcp-tools: nerve_spawn listed");
+  assert(toolNames.includes("nerve_create_channel"), "mcp-tools: nerve_create_channel listed");
+  assert(toolNames.includes("nerve_join"), "mcp-tools: nerve_join listed");
+  assert(toolNames.includes("nerve_remove"), "mcp-tools: nerve_remove listed");
+
+  const createResult = await mcp.callTool("nerve_create_channel", { name: "orch-test" });
+  assert(!createResult.isError, "mcp-tools: create channel succeeds");
+
+  const channels = await c.request("channel.list", {});
+  const channel = channels.channels.find((ch: any) => ch.name === "orch-test");
+  assert(!!channel, "mcp-tools: created channel visible");
+  if (!channel) {
+    await mcp.close();
+    await c.disconnect();
+    return;
+  }
+  assert(!!channel.nodes?.orchestrator, "mcp-tools: creator auto-joined channel");
+
+  const spawnResult = await mcp.callTool("nerve_spawn", { adapter: "mock", name: "orch-worker", cwd: ROOT });
+  assert(!spawnResult.isError, "mcp-tools: spawn succeeds");
+  await sleep(3000);
+
+  const nodesAfterSpawn = await c.request("node.list", {});
+  const worker = nodesAfterSpawn.nodes.find((n: any) => n.name === "orch-worker");
+  assert(!!worker, "mcp-tools: spawned worker visible");
+  if (!worker) {
+    await mcp.close();
+    await c.disconnect();
+    return;
+  }
+
+  const joinResult = await mcp.callTool("nerve_join", { agent_name: "orch-worker", channel_id: channel.id });
+  assert(!joinResult.isError, "mcp-tools: join succeeds");
+
+  const channelsAfterJoin = await c.request("channel.list", {});
+  const joined = channelsAfterJoin.channels.find((ch: any) => ch.id === channel.id);
+  assert(joined?.nodes?.["orch-worker"] === worker.id, "mcp-tools: worker joined channel");
+
+  const removeResult = await mcp.callTool("nerve_remove", { agent_name: "orch-worker", channel_id: channel.id });
+  assert(!removeResult.isError, "mcp-tools: remove succeeds");
+
+  const channelsAfterRemove = await c.request("channel.list", {});
+  const removed = channelsAfterRemove.channels.find((ch: any) => ch.id === channel.id);
+  assert(!removed?.nodes?.["orch-worker"], "mcp-tools: worker removed from channel");
+
+  await httpPost("/node/stop", { nodeId: worker.id });
+  await sleep(500);
+  await mcp.close();
+  await c.disconnect();
+}
+
+async function testLogUsesLocalTime() {
+  console.log("\n▸ logger uses local time");
+  const logFile = resolve(TEST_DATA, "logger-local-time.log");
+  if (existsSync(logFile)) rmSync(logFile);
+
+  const logger = await import("../src/logger.js");
+  logger.initLog(logFile);
+  logger.info("local-time-test");
+  logger.closeLog();
+  await sleep(50);
+
+  const line = readFileSync(logFile, "utf8").trim().split("\n").filter(Boolean).pop();
+  assert(!!line, "log-time: log line written");
+
+  if (line) {
+    const match = line.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+    assert(!!match, "log-time: timestamp format valid");
+    if (match) {
+      const now = new Date();
+      const expectedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const expectedHour = String(now.getHours()).padStart(2, "0");
+      assert(match[1] === expectedDate, "log-time: uses local date", `got ${match[1]}, expected ${expectedDate}`);
+      assert(match[2] === expectedHour, "log-time: uses local hour", `got ${match[2]}, expected ${expectedHour}`);
+    }
+  }
+}
+
+async function testMentionBusyCancels() {
+  console.log("\n▸ mention on busy node cancels previous prompt");
+
+  const c = new WsClient("busy-cancel-test");
+  await c.connect();
+  await c.request("node.register", { name: "busy-cancel-test", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "busy-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "busy-cancel: agent spawned");
+  await sleep(3000);
+
+  const nodes = await c.request("node.list", {});
+  const agentNode = nodes.nodes.find((n: any) => n.name === "busy-agent");
+  assert(!!agentNode && agentNode.status === "idle", "busy-cancel: agent ready");
+  if (!agentNode) { await c.disconnect(); return; }
+
+  // Create channel and add both nodes
+  const ch = await c.request("channel.create", { cwd: "/tmp" });
+  await c.request("channel.join", { channelId: ch.channelId });
+  await c.request("channel.addNode", {
+    channelId: ch.channelId,
+    nodeId: agentNode.id,
+    name: "busy-agent",
+  });
+
+  // Subscribe to watch status changes
+  await c.request("node.subscribe", { nodeId: agentNode.id });
+  c.clearNotifications();
+
+  // Send a slow prompt to make agent busy
+  await c.request("channel.post", {
+    channelId: ch.channelId,
+    content: "@busy-agent slow task please",
+  });
+
+  // Wait for agent to become busy
+  await sleep(1500);
+  const nodesBusy = await c.request("node.list", {});
+  const busyNode = nodesBusy.nodes.find((n: any) => n.name === "busy-agent");
+  assert(busyNode?.status === "busy", "busy-cancel: agent is busy", `status: ${busyNode?.status}`);
+
+  // Send another @mention while busy — should cancel previous + send new prompt
+  await c.request("channel.post", {
+    channelId: ch.channelId,
+    content: "@busy-agent new task",
+  });
+
+  // Wait for cancel + new prompt to complete
+  await sleep(5000);
+
+  // Agent should end up idle (new prompt completed)
+  const nodesAfter = await c.request("node.list", {});
+  const afterNode = nodesAfter.nodes.find((n: any) => n.name === "busy-agent");
+  assert(afterNode?.status === "idle", "busy-cancel: agent idle after cancel+reprompt", `status: ${afterNode?.status}`);
+
+  // Should have status transitions (busy → idle → busy → idle)
+  const statusChanges = c.getNotifications("node.statusChanged");
+  assert(statusChanges.length >= 3, "busy-cancel: received multiple statusChanged events", `got ${statusChanges.length}`);
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: agentNode.id });
+  await sleep(500);
+  await c.disconnect();
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 
@@ -1268,6 +1587,14 @@ async function main() {
     // Cancel + blocking mode tests
     await testNodeCancel();
     await testCancelWithSubscribe();
+
+    // M1 channel tests
+    await testMcpServersInjected();
+    await testNervePostToChannel();
+    await testNervePostErrorNoChannel();
+    await testMcpOrchestrationTools();
+    await testLogUsesLocalTime();
+    await testMentionBusyCancels();
 
   } catch (err) {
     console.error("\n💥 Fatal error:", err);

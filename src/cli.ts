@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ACP Bus CLI — unified entry point for server and management commands.
+ * Nerve Channel CLI — unified entry point for server and management commands.
  *
  * Usage:
  *   nerve serve [--port 4800] [--data DIR]
@@ -32,7 +32,7 @@ function post(path: string, data: Record<string, unknown> = {}): Promise<any> {
         try { resolve(JSON.parse(d)); } catch { reject(new Error(d)); }
       });
     });
-    req.on("error", (e) => reject(new Error(`Cannot connect to Bus: ${e.message}`)));
+    req.on("error", (e) => reject(new Error(`Cannot connect to Nerve server: ${e.message}`)));
     req.write(body);
     req.end();
   });
@@ -47,7 +47,7 @@ function get(path: string): Promise<any> {
       res.on("end", () => {
         try { resolve(JSON.parse(d)); } catch { reject(new Error(d)); }
       });
-    }).on("error", (e) => reject(new Error(`Cannot connect to Bus: ${e.message}`)));
+    }).on("error", (e) => reject(new Error(`Cannot connect to Nerve server: ${e.message}`)));
   });
 }
 
@@ -98,7 +98,7 @@ async function cmdStatus() {
     const health = await get("/health");
     const nodes = await post("/node/list");
     const channels = await post("/channel/list");
-    console.log(`Bus: ${health.status}`);
+    console.log(`Nerve: ${health.status}`);
     if (health.logFile) console.log(`Log: ${health.logFile}`);
     console.log(`Nodes: ${nodes.nodes?.length || 0}`);
     for (const n of nodes.nodes || []) {
@@ -276,7 +276,7 @@ function showHelp() {
   console.log(`nerve — Nerve CLI
 
 Commands:
-  serve [--port 4800] [--data DIR]      Start the Bus server
+  serve [--port 4800] [--data DIR]      Start the Nerve server
   status                                 Show server status
 
   channel list                           List channels
@@ -291,7 +291,7 @@ Commands:
   node leave <name> <channelId>          Remove agent from channel
   node stop <ID|name>                    Stop a node
 
-  bridge [--sock ADDR] [--channel ID]    Connect nvim to Bus
+  bridge [--sock ADDR] [--channel ID]    Connect nvim to a channel
 
   log [--tail 50]                        Show recent logs
   log -f                                 Print log file path (for tail -f)

@@ -19,10 +19,18 @@ import type { StdioTransport } from "./transport.js";
 
 type PendingCallback = (result: unknown, error?: { code: number; message: string }) => void;
 
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+}
+
 export interface AcpClientOptions {
   transport: StdioTransport;
   authMethod?: string;
   cwd: string;
+  mcpServers?: McpServerConfig[];
   onUpdate?: (params: Record<string, unknown>) => void;
   onReady?: (sessionId: string) => void;
   onError?: (err: string) => void;
@@ -37,6 +45,7 @@ export class AcpClient {
   private pending = new Map<number | string, PendingCallback>();
   private authMethod?: string;
   private cwd: string;
+  private mcpServers: McpServerConfig[];
   private onUpdate?: (params: Record<string, unknown>) => void;
   private onReady?: (sessionId: string) => void;
   private onError?: (err: string) => void;
@@ -56,6 +65,7 @@ export class AcpClient {
     this.transport = opts.transport;
     this.authMethod = opts.authMethod;
     this.cwd = opts.cwd;
+    this.mcpServers = opts.mcpServers ?? [];
     this.onUpdate = opts.onUpdate;
     this.onReady = opts.onReady;
     this.onError = opts.onError;
@@ -77,7 +87,7 @@ export class AcpClient {
       }, 15000) as Record<string, unknown>;
 
       this.agentName = (initResult.agentInfo as any)?.name;
-      this.agentCapabilities = initResult.capabilities as Record<string, unknown>;
+      this.agentCapabilities = (initResult.agentCapabilities ?? initResult.capabilities) as Record<string, unknown>;
 
       // Step 2: authenticate (optional)
       if (this.authMethod) {
@@ -89,7 +99,7 @@ export class AcpClient {
       // Step 3: session/new
       const sessionResult = await this.requestWithRetry("session/new", {
         cwd: this.cwd,
-        mcpServers: [],
+        mcpServers: this.mcpServers,
       }, 30000, 2) as Record<string, unknown>;
 
       this.sessionId = sessionResult.sessionId as string;
@@ -243,10 +253,14 @@ export class AcpClient {
     const p = (params || {}) as Record<string, unknown>;
 
     switch (method) {
-      case "session/request_permission":
-        // Auto-approve (YOLO mode)
-        this.sendResponse(id, { allowed: true });
+      case "session/request_permission": {
+        // Auto-approve: pick allow_once/allow_always from options, match ACP spec format
+        const options = (p.options as Array<{ kind: string; optionId: string }>) || [];
+        const allowOption = options.find(o => o.kind === "allow_once" || o.kind === "allow_always");
+        const optionId = allowOption?.optionId || "allow";
+        this.sendResponse(id, { outcome: { outcome: "selected", optionId } });
         break;
+      }
 
       case "fs/read_text_file": {
         try {

@@ -4,8 +4,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BusNode } from "./node.js";
 import { StdioTransport, WebSocketTransport } from "./transport.js";
-import { AcpClient } from "./acp-client.js";
+import { AcpClient, type McpServerConfig } from "./acp-client.js";
 import { getAdapter } from "./adapter.js";
+import * as log from "./logger.js";
 import type { Store } from "./store.js";
 import type { PermissionLevel } from "./protocol.js";
 import type { WebSocket } from "ws";
@@ -129,11 +130,29 @@ export class NodePool {
       }
     });
 
+    // Build MCP server config for nerve tools injection
+    // Detect if running in dev mode (.ts) or compiled (.js)
+    const selfDir = dirname(fileURLToPath(import.meta.url));
+    const mcpScript = existsSync(join(selfDir, "nerve-mcp.ts"))
+      ? join(selfDir, "nerve-mcp.ts")
+      : join(selfDir, "nerve-mcp.js");
+    const mcpServers: McpServerConfig[] = [{
+      name: "nerve",
+      command: existsSync(join(selfDir, "nerve-mcp.ts")) ? "npx" : process.execPath,
+      args: existsSync(join(selfDir, "nerve-mcp.ts")) ? ["tsx", mcpScript] : [mcpScript],
+      env: [
+        { name: "NERVE_PORT", value: String(busPort) },
+        { name: "NERVE_NODE_NAME", value: name },
+      ],
+    }];
+    log.info(`MCP inject: ${name} ← nerve (${mcpScript})`);
+
     // ACP handshake
     const client = new AcpClient({
       transport,
       authMethod: adapter.authMethod,
       cwd,
+      mcpServers,
       onUpdate: (params) => {
         node.pushUpdate(params);
         this.onEvent("node.update", node, params);
