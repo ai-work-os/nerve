@@ -21,6 +21,9 @@ export class Bus {
   // External hook for server to receive node events (for direct subscriptions)
   onNodeEvent?: (event: string, node: BusNode, detail?: Record<string, unknown>) => void;
 
+  // External hook for channel lifecycle events (create/close)
+  onChannelEvent?: (event: string, channel: Channel) => void;
+
   constructor(opts: BusOptions) {
     this.port = opts.port;
     this.store = new Store(`${opts.dataDir}/bus.db`);
@@ -38,6 +41,7 @@ export class Bus {
   createChannel(cwd: string, name?: string): Channel {
     const ch = new Channel({ cwd, name, store: this.store });
     this.channels.set(ch.id, ch);
+    this.onChannelEvent?.("channel.created", ch);
     return ch;
   }
 
@@ -58,6 +62,7 @@ export class Bus {
       ch.removeNode(nodeName, this.store);
     }
 
+    this.onChannelEvent?.("channel.closed", ch);
     this.store.closeChannel(id);
     this.channels.delete(id);
   }
@@ -162,7 +167,7 @@ export class Bus {
       if (!node) continue;
 
       if (node.isProcess) {
-        this.dispatchDirect(target.nodeId, node, msg.content);
+        this.dispatchDirect(target.nodeId, node, msg.content, channelId, msg.from);
       } else {
         // Direct mention notification for WS nodes
         node.transport.send({
@@ -203,17 +208,57 @@ export class Bus {
 
   // --- Internal ---
 
-  /** Direct dispatch: if node is busy, cancel first then prompt */
-  private dispatchDirect(nodeId: string, node: BusNode, content: string): void {
+  /** Direct dispatch: if node is busy, cancel first then prompt.
+   *  After prompt completes, auto-post agent's reply back to channel. */
+  private dispatchDirect(nodeId: string, node: BusNode, content: string, channelId?: string, fromName?: string): void {
+    // Prepend source info so agent knows context
     let prompt = content;
+    if (channelId && fromName) {
+      prompt = `[channel: ${channelId}] from: ${fromName}\n\n${content}`;
+    }
     if (!node.prompted && node.systemPrompt) {
       prompt = node.systemPrompt + "\n\n" + prompt;
       node.prompted = true;
     }
 
     const doPrompt = () => {
-      this.nodePool.promptNode(nodeId, prompt).catch(err => {
-        log.warn(`prompt ${node.name} failed: ${err}`);
+      // Record buffer position before prompting
+      const bufferStart = node.updateBuffer.length;
+      log.info(`dispatch: prompting ${node.name} (buffer@${bufferStart}, channel=${channelId || "none"})`);
+
+      this.nodePool.promptNode(nodeId, prompt).then((result) => {
+        if (!channelId) return;
+
+        // promptNode resolves with {error} instead of rejecting
+        if (result.error) {
+          log.warn(`prompt ${node.name} returned error: ${result.error}`);
+          this.postMessage(channelId, node.name, `[error: ${String(result.error).slice(0, 100)}]`);
+          return;
+        }
+
+        // Extract agent's reply from updates accumulated during this prompt
+        {
+          const newEntries = node.updateBuffer.length - bufferStart;
+          const types = new Map<string, number>();
+          for (let i = bufferStart; i < node.updateBuffer.length; i++) {
+            const t = (node.updateBuffer[i] as any)?.update?.sessionUpdate || "unknown";
+            types.set(t, (types.get(t) || 0) + 1);
+          }
+          log.info(`dispatch: ${node.name} done, ${newEntries} updates: ${[...types.entries()].map(([k,v]) => `${k}=${v}`).join(", ")}`);
+
+          const reply = this.extractReplyFromUpdates(node, bufferStart);
+          if (reply) {
+            log.info(`auto-reply: ${node.name} → channel ${channelId} (${reply.length} chars)`);
+            this.postMessage(channelId, node.name, reply);
+          } else {
+            log.warn(`auto-reply: ${node.name} — no agent_message_chunk text found in ${newEntries} updates`);
+          }
+        }
+      }).catch(err => {
+        log.warn(`prompt ${node.name} exception: ${err}`);
+        if (channelId) {
+          this.postMessage(channelId, node.name, `[error: prompt failed — ${String(err).slice(0, 100)}]`);
+        }
       });
     };
 
@@ -226,6 +271,25 @@ export class Bus {
     } else {
       doPrompt();
     }
+  }
+
+  /** Extract agent's final reply text from updateBuffer entries added since bufferStart */
+  private extractReplyFromUpdates(node: BusNode, bufferStart: number): string | null {
+    const chunks: string[] = [];
+    for (let i = bufferStart; i < node.updateBuffer.length; i++) {
+      const entry = node.updateBuffer[i] as any;
+      const update = entry?.update;
+      if (!update) continue;
+      if (update.sessionUpdate === "agent_message_chunk") {
+        // Handle various content formats: {text}, {content:{text}}, string
+        const text = update.content?.text
+          ?? (typeof update.content === "string" ? update.content : null)
+          ?? update.text;
+        if (text) chunks.push(text);
+      }
+    }
+    const text = chunks.join("").trim();
+    return text || null;
   }
 
   private buildSystemPrompt(agentName: string, channelId: string, members: string[]): string {

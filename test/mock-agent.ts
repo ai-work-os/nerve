@@ -92,6 +92,12 @@ rl.on("line", (line) => {
         break;
       }
 
+      // "fail" prompts return error (for error-handling testing)
+      if (text.includes("fail")) {
+        sendResponse(id, { error: "simulated prompt failure" });
+        break;
+      }
+
       // "slow" prompts delay 10s (for cancel testing)
       if (text.includes("slow")) {
         pendingPromptId = id;

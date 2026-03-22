@@ -18,6 +18,9 @@ const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NERVE_NODE_NAME = process.env.NERVE_NODE_NAME || "unknown";
 const BASE_URL = `http://127.0.0.1:${NERVE_PORT}`;
 
+// Track the current channel this agent is in (set on create/join)
+let currentChannelId: string | undefined;
+
 function log(msg: string): void {
   process.stderr.write(`[nerve-mcp] ${msg}\n`);
 }
@@ -65,6 +68,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           to: { type: "string", description: "Target agent name" },
           content: { type: "string", description: "Message content" },
+          channel_id: { type: "string", description: "Target channel id (auto-detected if omitted)" },
         },
         required: ["to", "content"],
       },
@@ -115,6 +119,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["agent_name", "channel_id"],
       },
     },
+    {
+      name: "nerve_stop",
+      description: "Stop/shutdown an agent process by name. Removes it from all channels and terminates the process.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          agent_name: { type: "string", description: "Agent name to stop" },
+        },
+        required: ["agent_name"],
+      },
+    },
   ],
 }));
 
@@ -122,19 +137,26 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
 
   if (name === "nerve_post") {
-    const { to, content } = args as { to: string; content: string };
+    const { to, content, channel_id } = args as { to: string; content: string; channel_id?: string };
     if (!to || !content) {
       return fail("to and content are required");
     }
 
+    const targetChannel = channel_id || currentChannelId;
     try {
-      log(`nerve_post from=${NERVE_NODE_NAME} to=${to}`);
+      log(`nerve_post from=${NERVE_NODE_NAME} to=${to} channel=${targetChannel || "auto"}`);
       await post("/post", {
         from: NERVE_NODE_NAME,
         content: `@${to} ${content}`,
+        ...(targetChannel ? { channelId: targetChannel } : {}),
       });
       return ok(`sent to @${to}`);
     } catch (err) {
+      // If the tracked channel is stale (not found), clear it
+      if (!channel_id && currentChannelId && String(err).includes("not found")) {
+        log(`nerve_post: clearing stale currentChannelId=${currentChannelId}`);
+        currentChannelId = undefined;
+      }
       log(`nerve_post failed: ${err}`);
       return fail(String(err));
     }
@@ -150,7 +172,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         name: agentName,
         cwd: cwd || process.cwd(),
       });
-      return ok(`spawned ${String(result.name || agentName || "agent")} (${String(result.nodeId || "?")})`);
+      const spawnedName = String(result.name || agentName || "agent");
+      const spawnedId = String(result.nodeId || "?");
+
+      // Auto-join spawned agent to caller's current channel
+      let joinNote = "";
+      if (currentChannelId && spawnedId !== "?") {
+        try {
+          await post("/channel/addNode", {
+            channelId: currentChannelId,
+            nodeId: spawnedId,
+            nodeName: spawnedName,
+          });
+          log(`nerve_spawn: auto-joined ${spawnedName} to channel ${currentChannelId}`);
+          joinNote = `, joined channel ${currentChannelId}`;
+        } catch (joinErr) {
+          const errStr = String(joinErr);
+          log(`nerve_spawn: auto-join failed: ${errStr}`);
+          if (errStr.includes("not found")) {
+            currentChannelId = undefined;
+            log(`nerve_spawn: cleared stale currentChannelId`);
+          }
+          joinNote = ` (auto-join channel failed: ${errStr})`;
+        }
+      }
+
+      return ok(`spawned ${spawnedName} (${spawnedId})${joinNote}`);
     } catch (err) {
       log(`nerve_spawn failed: ${err}`);
       return fail(String(err));
@@ -166,7 +213,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         name: channelName,
         cwd: process.cwd(),
       });
-      return ok(`created channel ${String(result.channelId)}${result.name ? ` (${String(result.name)})` : ""}`);
+      // Remember the channel so subsequent nerve_post auto-targets it
+      currentChannelId = String(result.channelId);
+      log(`nerve_create_channel ok, currentChannelId=${currentChannelId}`);
+      return ok(`created channel ${currentChannelId}${result.name ? ` (${String(result.name)})` : ""}`);
     } catch (err) {
       log(`nerve_create_channel failed: ${err}`);
       return fail(String(err));
@@ -187,6 +237,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         nodeId: node.id,
         nodeName: agent_name,
       });
+      // If joining self, track the channel
+      if (agent_name === NERVE_NODE_NAME) {
+        currentChannelId = channel_id;
+      }
       return ok(`joined ${agent_name} to ${channel_id}`);
     } catch (err) {
       log(`nerve_join failed: ${err}`);
@@ -207,9 +261,30 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         channelId: channel_id,
         nodeName: agent_name,
       });
+      // If removing self from tracked channel, clear it
+      if (agent_name === NERVE_NODE_NAME && channel_id === currentChannelId) {
+        currentChannelId = undefined;
+        log(`nerve_remove: cleared currentChannelId (removed self)`);
+      }
       return ok(`removed ${agent_name} from ${channel_id}`);
     } catch (err) {
       log(`nerve_remove failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_stop") {
+    const { agent_name } = args as { agent_name: string };
+    if (!agent_name) {
+      return fail("agent_name is required");
+    }
+
+    try {
+      log(`nerve_stop agent=${agent_name}`);
+      await post("/node/stop", { nodeName: agent_name });
+      return ok(`stopped ${agent_name}`);
+    } catch (err) {
+      log(`nerve_stop failed: ${err}`);
       return fail(String(err));
     }
   }

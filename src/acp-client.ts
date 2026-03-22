@@ -168,7 +168,7 @@ export class AcpClient {
         } as JsonRpcMessage);
       }) as Record<string, unknown>;
 
-      return { stopReason: result.stopReason as string };
+      return { stopReason: result.stopReason as string, ...(result.error ? { error: result.error as string } : {}) };
     } catch (err) {
       return { error: String(err) };
     }

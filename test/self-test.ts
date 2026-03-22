@@ -277,18 +277,22 @@ async function testWsRegister() {
   assertEq(r.name, "ws-test", "register returns correct name");
   c.nodeId = r.nodeId;
 
-  // Duplicate name should fail
+  // Duplicate name should auto-suffix
   const c2 = new WsClient("ws-test-dup");
   await c2.connect();
-  try {
-    await c2.request("node.register", { name: "ws-test" });
-    assert(false, "duplicate name should fail");
-  } catch (e: any) {
-    assert(e.message.includes("already taken"), "duplicate name rejected");
-  }
+  const r2 = await c2.request("node.register", { name: "ws-test", capabilities: ["ui"] });
+  assertEq(r2.name, "ws-test-2", "duplicate name auto-suffixed to ws-test-2");
+  assert(!!r2.nodeId, "auto-suffixed register returns nodeId");
+
+  // Third duplicate
+  const c3 = new WsClient("ws-test-dup2");
+  await c3.connect();
+  const r3 = await c3.request("node.register", { name: "ws-test", capabilities: ["ui"] });
+  assertEq(r3.name, "ws-test-3", "third duplicate auto-suffixed to ws-test-3");
 
   await c.disconnect();
   await c2.disconnect();
+  await c3.disconnect();
 }
 
 async function testChannelLifecycle() {
@@ -1549,6 +1553,359 @@ async function testMentionBusyCancels() {
   await c.disconnect();
 }
 
+async function testNervePostExplicitChannelId() {
+  console.log("\n▸ nerve_post: explicit channel_id overrides currentChannelId");
+
+  const c = new WsClient("post-ch-test");
+  await c.connect();
+  await c.request("node.register", { name: "post-ch-test", capabilities: ["ui"] });
+
+  const mcp = new McpToolClient("post-ch-test");
+  await mcp.connect();
+
+  // Create two channels
+  const ch1 = await c.request("channel.create", { cwd: "/tmp", name: "ch-alpha" });
+  const ch2 = await c.request("channel.create", { cwd: "/tmp", name: "ch-beta" });
+  await c.request("channel.join", { channelId: ch1.channelId });
+  await c.request("channel.join", { channelId: ch2.channelId });
+
+  // Spawn an agent and add to both channels
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "post-ch-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "post-ch: agent spawned");
+  await sleep(3000);
+  await httpPost("/channel/addNode", { channelId: ch1.channelId, nodeId: spawn.nodeId, nodeName: "post-ch-agent" });
+  await httpPost("/channel/addNode", { channelId: ch2.channelId, nodeId: spawn.nodeId, nodeName: "post-ch-agent" });
+
+  // nerve_create_channel sets currentChannelId; we'll use mcp to create a third channel
+  // so currentChannelId points to ch3
+  const createRes = await mcp.callTool("nerve_create_channel", { name: "ch-gamma" });
+  assert(!createRes.isError, "post-ch: create channel for currentChannelId");
+
+  // Now post with explicit channel_id = ch1 (should override the gamma currentChannelId)
+  const postRes = await mcp.callTool("nerve_post", {
+    to: "post-ch-agent",
+    content: "hello explicit",
+    channel_id: ch1.channelId,
+  });
+  assert(!postRes.isError, "post-ch: nerve_post with explicit channel_id succeeds");
+
+  // Check ch1 history has the message
+  const hist1 = await c.request("channel.history", { channelId: ch1.channelId });
+  const found1 = hist1.messages.find((m: any) => m.content.includes("hello explicit"));
+  assert(!!found1, "post-ch: message landed in explicit channel");
+
+  // Now post without channel_id — should go to currentChannelId (ch-gamma)
+  const channels = await c.request("channel.list", {});
+  const chGamma = channels.channels.find((ch: any) => ch.name === "ch-gamma");
+  if (chGamma) {
+    await c.request("channel.join", { channelId: chGamma.id });
+    // Add agent to gamma too
+    await httpPost("/channel/addNode", { channelId: chGamma.id, nodeId: spawn.nodeId, nodeName: "post-ch-agent" });
+
+    const postRes2 = await mcp.callTool("nerve_post", { to: "post-ch-agent", content: "hello default" });
+    assert(!postRes2.isError, "post-ch: nerve_post without channel_id succeeds");
+
+    const hist2 = await c.request("channel.history", { channelId: chGamma.id });
+    const found2 = hist2.messages.find((m: any) => m.content.includes("hello default"));
+    assert(!!found2, "post-ch: message landed in currentChannelId channel");
+  }
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId as string });
+  await sleep(500);
+  await mcp.close();
+  await c.disconnect();
+}
+
+async function testNerveRemoveClearsChannelId() {
+  console.log("\n▸ nerve_remove(self) clears currentChannelId");
+
+  // Spawn a mock agent so it exists in the node pool under "rm-self-agent"
+  const spawn1 = await httpPost("/node/spawn", { adapter: "mock", name: "rm-self-agent", cwd: ROOT });
+  assert(!!spawn1.nodeId, "rm-self: agent spawned");
+  await sleep(3000);
+
+  // Create MCP client with same NERVE_NODE_NAME as the spawned agent
+  const mcp = new McpToolClient("rm-self-agent");
+  await mcp.connect();
+
+  // Create channel → sets currentChannelId, auto-joins rm-self-agent
+  const createRes = await mcp.callTool("nerve_create_channel", { name: "rm-ch" });
+  assert(!createRes.isError, "rm-self: create channel");
+
+  const chIdMatch = createRes.content?.[0]?.text?.match(/created channel (\S+)/);
+  const chId = chIdMatch?.[1];
+  assert(!!chId, "rm-self: got channel id from create");
+  if (!chId) { await mcp.close(); return; }
+
+  // Spawn a target to post to
+  const spawn2 = await httpPost("/node/spawn", { adapter: "mock", name: "rm-target", cwd: ROOT });
+  await sleep(3000);
+  await httpPost("/channel/addNode", { channelId: chId, nodeId: spawn2.nodeId, nodeName: "rm-target" });
+
+  // Remove self from channel
+  const rmRes = await mcp.callTool("nerve_remove", { agent_name: "rm-self-agent", channel_id: chId });
+  assert(!rmRes.isError, "rm-self: remove self succeeds");
+
+  // Now nerve_post without channel_id should fail (currentChannelId cleared)
+  const postRes = await mcp.callTool("nerve_post", { to: "rm-target", content: "should fail" });
+  assert(!!postRes.isError, "rm-self: nerve_post fails after self-remove (no channel)");
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn1.nodeId as string });
+  await httpPost("/node/stop", { nodeId: spawn2.nodeId as string });
+  await sleep(500);
+  await mcp.close();
+}
+
+async function testNerveSpawnAutoJoin() {
+  console.log("\n▸ nerve_spawn auto-joins to current channel");
+
+  const c = new WsClient("spawn-join-test");
+  await c.connect();
+  await c.request("node.register", { name: "spawn-join-test", capabilities: ["ui"] });
+
+  const mcp = new McpToolClient("spawn-join-test");
+  await mcp.connect();
+
+  // Create channel → sets currentChannelId
+  const createRes = await mcp.callTool("nerve_create_channel", { name: "spawn-join-ch" });
+  assert(!createRes.isError, "spawn-join: create channel");
+
+  const channels = await c.request("channel.list", {});
+  const ch = channels.channels.find((ch: any) => ch.name === "spawn-join-ch");
+  assert(!!ch, "spawn-join: channel found");
+  if (!ch) { await mcp.close(); await c.disconnect(); return; }
+
+  // Spawn agent via MCP — should auto-join
+  const spawnRes = await mcp.callTool("nerve_spawn", { adapter: "mock", name: "auto-join-agent", cwd: ROOT });
+  assert(!spawnRes.isError, "spawn-join: spawn succeeds");
+  assert(spawnRes.content?.[0]?.text?.includes("joined channel"), "spawn-join: return text mentions join");
+  await sleep(3000);
+
+  // Verify agent is in the channel
+  const channelsAfter = await c.request("channel.list", {});
+  const chAfter = channelsAfter.channels.find((c: any) => c.id === ch.id);
+  assert(!!chAfter?.nodes?.["auto-join-agent"], "spawn-join: agent auto-joined channel");
+
+  // Cleanup
+  const nodes = await httpPost("/node/list", {});
+  const agent = (nodes as any).nodes.find((n: any) => n.name === "auto-join-agent");
+  if (agent) await httpPost("/node/stop", { nodeId: agent.id });
+  await sleep(500);
+  await mcp.close();
+  await c.disconnect();
+}
+
+async function testChannelCreatedClosedNotifications() {
+  console.log("\n▸ channel.created/closed WS notifications");
+
+  const c = new WsClient("notify-test");
+  await c.connect();
+  await c.request("node.register", { name: "notify-test", capabilities: ["ui"] });
+  c.clearNotifications();
+
+  // Create channel via WS — should get channel.created notification
+  const ch = await c.request("channel.create", { cwd: "/tmp", name: "notify-ch" });
+  await sleep(200);
+
+  const created = c.getNotifications("channel.created");
+  assert(created.length >= 1, "notify: received channel.created on WS create");
+  assert(created[0]?.params?.channelId === ch.channelId, "notify: channel.created has correct channelId");
+  assert(created[0]?.params?.name === "notify-ch", "notify: channel.created has correct name");
+
+  c.clearNotifications();
+
+  // Create channel via HTTP — should also get channel.created
+  const ch2 = await httpPost("/channel/create", { cwd: "/tmp", name: "notify-ch-http" });
+  await sleep(200);
+
+  const created2 = c.getNotifications("channel.created");
+  assert(created2.length >= 1, "notify: received channel.created on HTTP create");
+  assert(created2[0]?.params?.channelId === ch2.channelId, "notify: HTTP channel.created has correct channelId");
+
+  c.clearNotifications();
+
+  // Close channel via WS — should get channel.closed
+  await c.request("channel.close", { channelId: ch.channelId });
+  await sleep(200);
+
+  const closed = c.getNotifications("channel.closed");
+  assert(closed.length >= 1, "notify: received channel.closed on WS close");
+  assert(closed[0]?.params?.channelId === ch.channelId, "notify: channel.closed has correct channelId");
+
+  c.clearNotifications();
+
+  // Close channel via HTTP — should get channel.closed
+  await httpPost("/channel/close", { channelId: ch2.channelId as string });
+  await sleep(200);
+
+  const closed2 = c.getNotifications("channel.closed");
+  assert(closed2.length >= 1, "notify: received channel.closed on HTTP close");
+
+  await c.disconnect();
+}
+
+async function testChannelListCwdFilter() {
+  console.log("\n▸ channel.list cwd filter");
+
+  const c = new WsClient("ch-cwd-test");
+  await c.connect();
+  await c.request("node.register", { name: "ch-cwd-test", capabilities: ["ui"] });
+
+  await c.request("channel.create", { cwd: "/tmp/project-a", name: "ch-a" });
+  await c.request("channel.create", { cwd: "/tmp/project-b", name: "ch-b" });
+
+  // No filter — all channels
+  const all = await c.request("channel.list", {});
+  const aAll = all.channels.filter((c: any) => c.name === "ch-a" || c.name === "ch-b");
+  assert(aAll.length === 2, "ch-cwd: unfiltered returns both");
+
+  // Filter by project-a
+  const filtered = await c.request("channel.list", { cwd: "/tmp/project-a" });
+  assert(filtered.channels.length >= 1, "ch-cwd: filtered returns at least 1");
+  assert(filtered.channels.every((c: any) => c.cwd === "/tmp/project-a"), "ch-cwd: all results match cwd");
+
+  // HTTP filter
+  const httpFiltered = await httpPost("/channel/list", { cwd: "/tmp/project-b" });
+  const httpChs = (httpFiltered as any).channels;
+  assert(httpChs.length >= 1, "ch-cwd: HTTP filtered returns at least 1");
+  assert(httpChs.every((c: any) => c.cwd === "/tmp/project-b"), "ch-cwd: HTTP all results match cwd");
+
+  await c.disconnect();
+}
+
+async function testAutoReplyToChannel() {
+  console.log("\n▸ dispatchDirect auto-reply posts back to channel");
+
+  const c = new WsClient("auto-reply-test");
+  await c.connect();
+  await c.request("node.register", { name: "auto-reply-test", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "reply-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "auto-reply: agent spawned");
+  await sleep(3000);
+
+  // Create channel, add both nodes
+  const ch = await c.request("channel.create", { cwd: "/tmp/auto-reply" });
+  await c.request("channel.join", { channelId: ch.channelId });
+  await httpPost("/channel/addNode", {
+    channelId: ch.channelId,
+    nodeId: spawn.nodeId,
+    nodeName: "reply-agent",
+  });
+
+  // Post @mention to trigger dispatchDirect
+  await c.request("channel.post", { channelId: ch.channelId, content: "@reply-agent do something" });
+
+  // Wait for agent to process + auto-reply
+  await sleep(5000);
+
+  // Check channel history for auto-reply
+  const hist = await c.request("channel.history", { channelId: ch.channelId });
+  const messages = hist.messages as Array<{ from: string; content: string }>;
+
+  // Should have: (1) user message, (2) mock agent's HTTP reply, (3) auto-reply from extractReplyFromUpdates
+  const userMsg = messages.find(m => m.content.includes("@reply-agent do something"));
+  assert(!!userMsg, "auto-reply: user message in history");
+
+  const agentMsgs = messages.filter(m => m.from === "reply-agent");
+  assert(agentMsgs.length >= 2, `auto-reply: agent posted 2 replies — HTTP + auto (got ${agentMsgs.length})`,
+    `messages: ${JSON.stringify(messages.map(m => ({ from: m.from, content: m.content?.slice(0, 80) })))}`);
+
+  // Distinguish: mock's HTTP reply contains "@main mock回复:", auto-reply contains "[mock processing:"
+  const httpReply = agentMsgs.find(m => m.content.includes("mock回复"));
+  const autoReply = agentMsgs.find(m => m.content.includes("[mock processing:"));
+  assert(!!httpReply, "auto-reply: mock HTTP reply found (contains 'mock回复')");
+  assert(!!autoReply, "auto-reply: extractReplyFromUpdates auto-reply found (contains '[mock processing:')");
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId as string });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testPromptErrorPostsToChannel() {
+  console.log("\n▸ promptNode {error} posts [error:...] to channel");
+
+  const c = new WsClient("prompt-err-test");
+  await c.connect();
+  await c.request("node.register", { name: "prompt-err-test", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "err-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "prompt-err: agent spawned");
+  await sleep(3000);
+
+  // Create channel, add both nodes
+  const ch = await c.request("channel.create", { cwd: "/tmp/prompt-err" });
+  await c.request("channel.join", { channelId: ch.channelId });
+  await httpPost("/channel/addNode", {
+    channelId: ch.channelId,
+    nodeId: spawn.nodeId,
+    nodeName: "err-agent",
+  });
+
+  // Post @mention with "fail" keyword to trigger error response
+  await c.request("channel.post", { channelId: ch.channelId, content: "@err-agent fail please" });
+
+  // Wait for error to be posted back
+  await sleep(3000);
+
+  // Check channel history for [error:...] message
+  const hist = await c.request("channel.history", { channelId: ch.channelId });
+  const messages = hist.messages as Array<{ from: string; content: string }>;
+  const errorMsg = messages.find(m => m.from === "err-agent" && m.content.includes("[error:"));
+  assert(!!errorMsg, "prompt-err: [error:...] message in channel history",
+    `messages: ${JSON.stringify(messages.map(m => ({ from: m.from, content: m.content?.slice(0, 100) })))}`);
+  if (errorMsg) {
+    assert(errorMsg.content.includes("simulated prompt failure"),
+      "prompt-err: error message contains original error text");
+  }
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId as string });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testCwdNormalization() {
+  console.log("\n▸ cwd path normalization");
+
+  const c = new WsClient("cwd-norm-test");
+  await c.connect();
+  await c.request("node.register", { name: "cwd-norm-test", capabilities: ["ui"] });
+
+  // Create channel with trailing slash — should be normalized
+  const ch1 = await c.request("channel.create", { cwd: "/tmp/norm-project/", name: "norm-trailing" });
+  assertEq(ch1.cwd, "/tmp/norm-project", "cwd-norm: trailing slash stripped on create");
+
+  // Create channel with /. — should be normalized
+  const ch2 = await c.request("channel.create", { cwd: "/tmp/norm-project/.", name: "norm-dot" });
+  assertEq(ch2.cwd, "/tmp/norm-project", "cwd-norm: /. resolved on create");
+
+  // Create channel with /.. — should be normalized
+  const ch3 = await c.request("channel.create", { cwd: "/tmp/norm-project/sub/..", name: "norm-dotdot" });
+  assertEq(ch3.cwd, "/tmp/norm-project", "cwd-norm: /sub/.. resolved on create");
+
+  // Filter with trailing slash should still match
+  const filtered = await c.request("channel.list", { cwd: "/tmp/norm-project/" });
+  const matched = filtered.channels.filter((c: any) => c.cwd === "/tmp/norm-project");
+  assert(matched.length >= 3, "cwd-norm: filter with trailing slash matches normalized channels");
+
+  // HTTP: create with trailing slash
+  const httpCh = await httpPost("/channel/create", { cwd: "/tmp/http-norm/", name: "http-norm" }) as any;
+  assertEq(httpCh.cwd, "/tmp/http-norm", "cwd-norm: HTTP create normalizes trailing slash");
+
+  // HTTP: filter with /. matches
+  const httpFiltered = await httpPost("/channel/list", { cwd: "/tmp/http-norm/." }) as any;
+  const httpMatched = httpFiltered.channels.filter((c: any) => c.cwd === "/tmp/http-norm");
+  assert(httpMatched.length >= 1, "cwd-norm: HTTP filter /. matches normalized channel");
+
+  await c.disconnect();
+}
+
 // ============================================================
 // MAIN
 // ============================================================
@@ -1593,6 +1950,14 @@ async function main() {
     await testNervePostToChannel();
     await testNervePostErrorNoChannel();
     await testMcpOrchestrationTools();
+    await testNervePostExplicitChannelId();
+    await testNerveRemoveClearsChannelId();
+    await testNerveSpawnAutoJoin();
+    await testChannelCreatedClosedNotifications();
+    await testChannelListCwdFilter();
+    await testAutoReplyToChannel();
+    await testPromptErrorPostsToChannel();
+    await testCwdNormalization();
     await testLogUsesLocalTime();
     await testMentionBusyCancels();
 

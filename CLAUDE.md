@@ -4,14 +4,14 @@
 
 ## 快速理解
 
-所有文档在 `notes/` 目录下：
+所有文档在项目根目录 `notes/` 下（`../notes/`）：
 
-1. **notes/ARCHITECTURE.md** — 设计理念（管什么、不管什么、核心概念）
-2. **notes/API.md** — 外部接口契约（WS JSON-RPC 2.0 + HTTP）
-3. **notes/ACP.md** — 内部协议（nerve ↔ agent 进程的 stdio JSON-RPC）
-4. **notes/INTERNALS.md** — 代码级调用链 + 文件结构
-5. **notes/ROADMAP.md** — 路线图、已完成功能、待做事项
-6. **notes/NEXT.md** — 当前任务进展和下一步
+1. **../notes/ARCHITECTURE.md** — 设计理念（管什么、不管什么、核心概念）
+2. **../notes/API.md** — 外部接口契约（WS JSON-RPC 2.0 + HTTP）
+3. **../notes/ACP.md** — 内部协议（nerve ↔ agent 进程的 stdio JSON-RPC）
+4. **../notes/INTERNALS.md** — 代码级调用链 + 文件结构
+5. **../notes/ROADMAP.md** — 路线图、已完成功能、待做事项
+6. **../notes/NEXT.md** — 当前任务进展和下一步
 
 ## 当前状态
 
@@ -57,5 +57,6 @@ npx tsx test/self-test.ts
 | 位置 | 说明 |
 |------|------|
 | `~/work/ai-work-os/nerve/` | nerve 服务端（本仓库） |
-| `~/.config/nvim/lua/nerve/` | nvim 客户端插件 |
-| `~/.ai/ai-work-os/` | 设计文档、核心决策 |
+| `~/work/ai-work-os/nerve-tui/` | nerve TUI 客户端（Rust，主力） |
+| `~/work/ai-work-os/notes/` | 项目文档（统一文档中心） |
+| `~/.config/nvim/lua/nerve/` | nvim 客户端插件（降级备选） |

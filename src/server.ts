@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { Bus } from "./bus.js";
 import type { JsonRpcRequest, JsonRpcMessage } from "./protocol.js";
@@ -26,6 +26,15 @@ export class Server {
   start(): void {
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
+
+    // Hook into bus channel events for global broadcast
+    this.bus.onChannelEvent = (event, channel) => {
+      this.broadcastToAllWsClients({
+        jsonrpc: "2.0",
+        method: event,
+        params: { channelId: channel.id, name: channel.name, cwd: channel.cwd },
+      });
+    };
 
     // Hook into bus node events for direct subscriber push
     this.bus.onNodeEvent = (event, node, detail) => {
@@ -81,9 +90,15 @@ export class Server {
     try {
       switch (method) {
         case "node.register": {
-          const name = p.name as string;
+          let name = p.name as string;
           if (!name) { this.sendError(ws, id, -32602, "name required"); return; }
-          if (this.bus.nodePool.isNameTaken(name)) { this.sendError(ws, id, -32602, `name "${name}" already taken`); return; }
+          // Auto-suffix if name taken (tui → tui-2 → tui-3 ...)
+          if (this.bus.nodePool.isNameTaken(name)) {
+            let suffix = 2;
+            while (this.bus.nodePool.isNameTaken(`${name}-${suffix}`)) suffix++;
+            name = `${name}-${suffix}`;
+            log.info(`node.register: name taken, assigned ${name}`);
+          }
 
           const node = this.bus.registerNode(
             ws,
@@ -97,7 +112,7 @@ export class Server {
         }
 
         case "channel.create": {
-          const cwd = (p.cwd as string) || process.cwd();
+          const cwd = resolve((p.cwd as string) || process.cwd());
           const ch = this.bus.createChannel(cwd, p.name as string);
           this.sendResult(ws, id, { channelId: ch.id, name: ch.name, cwd: ch.cwd });
           break;
@@ -110,7 +125,12 @@ export class Server {
         }
 
         case "channel.list": {
-          const channels = this.bus.listChannels().map(ch => ({
+          let channelList = this.bus.listChannels();
+          const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
+          if (cwdFilter) {
+            channelList = channelList.filter(ch => ch.cwd === cwdFilter);
+          }
+          const channels = channelList.map(ch => ({
             id: ch.id,
             name: ch.name,
             cwd: ch.cwd,
@@ -221,7 +241,7 @@ export class Server {
 
         case "node.spawn": {
           const adapter = p.adapter as string;
-          const cwd = (p.cwd as string) || process.cwd();
+          const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.generateNodeName(adapter, cwd);
 
           if (this.bus.nodePool.isNameTaken(name)) {
@@ -245,7 +265,7 @@ export class Server {
 
         case "node.list": {
           let nodes = this.bus.nodePool.listAll();
-          const cwdFilter = p.cwd as string;
+          const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
           if (cwdFilter) {
             nodes = nodes.filter(n => n.cwd === cwdFilter);
           }
@@ -390,7 +410,7 @@ export class Server {
     switch (url) {
       // --- Channel management ---
       case "/channel/create": {
-        const cwd = (data.cwd as string) || process.cwd();
+        const cwd = resolve((data.cwd as string) || process.cwd());
         const ch = this.bus.createChannel(cwd, data.name as string);
         // Auto-join the calling node if identified
         if (from) {
@@ -408,7 +428,12 @@ export class Server {
       }
 
       case "/channel/list": {
-        const channels = this.bus.listChannels().map(ch => ({
+        let channelList = this.bus.listChannels();
+        const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
+        if (cwdFilter) {
+          channelList = channelList.filter(ch => ch.cwd === cwdFilter);
+        }
+        const channels = channelList.map(ch => ({
           id: ch.id,
           name: ch.name,
           cwd: ch.cwd,
@@ -464,7 +489,7 @@ export class Server {
       case "/node/spawn": {
         const adapter = data.adapter as string;
         if (!adapter) throw new Error("adapter required");
-        const cwd = (data.cwd as string) || process.cwd();
+        const cwd = resolve((data.cwd as string) || process.cwd());
         const name = (data.name as string) || this.generateNodeName(adapter, cwd);
 
         if (this.bus.nodePool.isNameTaken(name)) {
@@ -526,7 +551,7 @@ export class Server {
 
       case "/node/list": {
         let nodes = this.bus.nodePool.listAll();
-        const cwdFilter = data.cwd as string;
+        const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
         if (cwdFilter) {
           nodes = nodes.filter(n => n.cwd === cwdFilter);
         }
@@ -554,6 +579,16 @@ export class Server {
 
       default:
         throw new Error(`unknown endpoint: ${url}`);
+    }
+  }
+
+  /** Broadcast a notification to ALL connected WS clients (for global events like channel create/close) */
+  private broadcastToAllWsClients(notification: Record<string, unknown>): void {
+    const msg = JSON.stringify(notification);
+    for (const ws of this.wss.clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(msg);
+      }
     }
   }
 
