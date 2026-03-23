@@ -2,31 +2,31 @@ import { Channel } from "./channel.js";
 import { NodePool } from "./node-pool.js";
 import { route } from "./router.js";
 import { Store } from "./store.js";
-import { BusNode } from "./node.js";
+import { NerveNode } from "./node.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification } from "./protocol.js";
 import type { WebSocket } from "ws";
 import * as log from "./logger.js";
 
-export interface BusOptions {
+export interface ChannelManagerOptions {
   dataDir: string;
   port: number;
 }
 
-export class Bus {
+export class ChannelManager {
   readonly store: Store;
   readonly nodePool: NodePool;
   private channels = new Map<string, Channel>();
   private port: number;
 
   // External hook for server to receive node events (for direct subscriptions)
-  onNodeEvent?: (event: string, node: BusNode, detail?: Record<string, unknown>) => void;
+  onNodeEvent?: (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
 
   // External hook for channel lifecycle events (create/close)
   onChannelEvent?: (event: string, channel: Channel) => void;
 
-  constructor(opts: BusOptions) {
+  constructor(opts: ChannelManagerOptions) {
     this.port = opts.port;
-    this.store = new Store(`${opts.dataDir}/bus.db`);
+    this.store = new Store(`${opts.dataDir}/nerve.db`);
 
     // Mark all old nodes as stopped on startup
     this.store.markAllNodesStopped();
@@ -53,6 +53,24 @@ export class Bus {
     return [...this.channels.values()];
   }
 
+  restoreChannel(channelId: string): { channel: Channel; messages: MessageInfo[] } | null {
+    if (this.channels.has(channelId)) {
+      const ch = this.channels.get(channelId)!;
+      const messages = this.store.getMessages(channelId, 50);
+      return { channel: ch, messages };
+    }
+    const row = this.store.getChannelForRestore(channelId);
+    if (!row) return null;
+
+    const ch = Channel.restore(row);
+    this.channels.set(ch.id, ch);
+    this.onChannelEvent?.("channel.created", ch);
+    log.info(`channel restored: ${ch.name || ch.id} (${ch.cwd})`);
+
+    const messages = this.store.getMessages(channelId, 50);
+    return { channel: ch, messages };
+  }
+
   closeChannel(id: string): void {
     const ch = this.channels.get(id);
     if (!ch) return;
@@ -69,11 +87,11 @@ export class Bus {
 
   // --- Node operations ---
 
-  registerNode(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): BusNode {
+  registerNode(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {
     return this.nodePool.registerWebSocket(ws, name, capabilities, permissions);
   }
 
-  async spawnNode(adapter: string, name: string, cwd: string): Promise<BusNode> {
+  async spawnNode(adapter: string, name: string, cwd: string): Promise<NerveNode> {
     return this.nodePool.spawnProcess(adapter, name, cwd, this.port);
   }
 
@@ -210,7 +228,7 @@ export class Bus {
 
   /** Direct dispatch: if node is busy, cancel first then prompt.
    *  After prompt completes, auto-post agent's reply back to channel. */
-  private dispatchDirect(nodeId: string, node: BusNode, content: string, channelId?: string, fromName?: string): void {
+  private dispatchDirect(nodeId: string, node: NerveNode, content: string, channelId?: string, fromName?: string): void {
     // Prepend source info so agent knows context
     let prompt = content;
     if (channelId && fromName) {
@@ -274,7 +292,7 @@ export class Bus {
   }
 
   /** Extract agent's final reply text from updateBuffer entries added since bufferStart */
-  private extractReplyFromUpdates(node: BusNode, bufferStart: number): string | null {
+  private extractReplyFromUpdates(node: NerveNode, bufferStart: number): string | null {
     const chunks: string[] = [];
     for (let i = bufferStart; i < node.updateBuffer.length; i++) {
       const entry = node.updateBuffer[i] as any;
@@ -323,14 +341,14 @@ export class Bus {
 
     for (const [, nodeId] of ch.nodes) {
       const node = this.nodePool.get(nodeId);
-      if (node && node.isProcess) continue; // process nodes only speak ACP, skip bus broadcasts
+      if (node && node.isProcess) continue; // process nodes only speak ACP, skip channel broadcasts
       if (node && node.transport.alive) {
         node.transport.send(notification as any);
       }
     }
   }
 
-  private handleNodeEvent(event: string, node: BusNode, detail?: Record<string, unknown>): void {
+  private handleNodeEvent(event: string, node: NerveNode, detail?: Record<string, unknown>): void {
     // Notify external hook (server's direct subscribers)
     this.onNodeEvent?.(event, node, detail);
 

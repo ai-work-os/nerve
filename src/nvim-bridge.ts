@@ -2,10 +2,10 @@
 /**
  * nvim ↔ Nerve bridge.
  *
- * Connects to Bus server via WebSocket, registers as "nvim" node,
+ * Connects to Nerve server via WebSocket, registers as "nvim" node,
  * and forwards messages bidirectionally:
- *   Bus → nvim: channel.message notification → nvim --remote-expr
- *   nvim → Bus: nvim calls `nerve channel post` (HTTP, no bridge needed)
+ *   Nerve → nvim: channel.message notification → nvim --remote-expr
+ *   nvim → Nerve: nvim calls `nerve channel post` (HTTP, no bridge needed)
  *
  * Usage:
  *   nerve bridge [--port 4800] [--sock $NVIM_LISTEN_ADDRESS] [--channel ID]
@@ -18,11 +18,11 @@ import { WebSocket } from "ws";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
-const BUS_PORT = parseInt(process.env.NERVE_PORT || "4800");
+const NERVE_PORT = parseInt(process.env.NERVE_PORT || "4800");
 const NVIM_SOCK = process.env.NVIM_LISTEN_ADDRESS || "";
 
 interface BridgeOptions {
-  busUrl: string;
+  serverUrl: string;
   nvimSock: string;
   channelId?: string;
   nodeName: string;
@@ -66,7 +66,7 @@ class NvimBridge {
 
   private connectWs(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(this.opts.busUrl);
+      this.ws = new WebSocket(this.opts.serverUrl);
       this.ws.on("open", () => {
         this.connected = true;
         resolve();
@@ -77,7 +77,7 @@ class NvimBridge {
       });
       this.ws.on("close", () => {
         this.connected = false;
-        console.log("[bridge] disconnected from Bus");
+        console.log("[bridge] disconnected from server");
         // Auto-reconnect after 3s
         setTimeout(() => {
           if (!this.connected) {
@@ -144,7 +144,7 @@ class NvimBridge {
       return;
     }
 
-    // Notification from Bus
+    // Notification from server
     if (msg.method === "channel.message") {
       const { message } = msg.params || {};
       if (!message) return;
@@ -197,7 +197,7 @@ class NvimBridge {
 
 export async function main(argv?: string[]) {
   const args = argv || process.argv.slice(2);
-  let port = BUS_PORT;
+  let port = NERVE_PORT;
   let sock = NVIM_SOCK;
   let channelId: string | undefined;
   let nodeName = "nvim";
@@ -215,7 +215,7 @@ export async function main(argv?: string[]) {
   }
 
   const bridge = new NvimBridge({
-    busUrl: `ws://localhost:${port}`,
+    serverUrl: `ws://localhost:${port}`,
     nvimSock: sock,
     channelId,
     nodeName,

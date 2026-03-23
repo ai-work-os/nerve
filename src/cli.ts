@@ -73,14 +73,14 @@ async function cmdServe(args: string[]) {
 
   // Dynamic import to avoid loading heavy deps for simple commands
   const { initLog, info, closeLog } = await import("./logger.js");
-  const logFile = resolve(dataDir, "bus.log");
+  const logFile = resolve(dataDir, "nerve.log");
   initLog(logFile);
 
-  const { Bus } = await import("./bus.js");
+  const { ChannelManager } = await import("./channel-manager.js");
   const { Server } = await import("./server.js");
 
-  const bus = new Bus({ dataDir, port });
-  const server = new Server(bus, port);
+  const nerve = new ChannelManager({ dataDir, port });
+  const server = new Server(nerve, port);
   server.start();
 
   const shutdown = async () => {

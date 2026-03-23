@@ -1,7 +1,7 @@
 import type { Transport } from "./transport.js";
 import type { NodeStatus, PermissionLevel, NodeInfo } from "./protocol.js";
 
-export class BusNode {
+export class NerveNode {
   readonly id: string;
   name: string;
   status: NodeStatus;
@@ -60,7 +60,7 @@ export class BusNode {
 
   pushUpdate(params: Record<string, unknown>): void {
     this.updateBuffer.push(params);
-    if (this.updateBuffer.length > BusNode.MAX_BUFFER_SIZE) {
+    if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
       this.updateBuffer.shift();
     }
   }

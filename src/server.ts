@@ -2,12 +2,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
-import { Bus } from "./bus.js";
+import { ChannelManager } from "./channel-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage } from "./protocol.js";
 import * as log from "./logger.js";
 
 export class Server {
-  private bus: Bus;
+  private cm: ChannelManager;
   private wss!: WebSocketServer;
   private httpServer!: ReturnType<typeof createServer>;
   private port: number;
@@ -18,8 +18,8 @@ export class Server {
   // Direct node subscriptions (node.subscribe): nodeId → Set<WebSocket>
   private nodeSubscribers = new Map<string, Set<WebSocket>>();
 
-  constructor(bus: Bus, port: number) {
-    this.bus = bus;
+  constructor(cm: ChannelManager, port: number) {
+    this.cm = cm;
     this.port = port;
   }
 
@@ -27,8 +27,8 @@ export class Server {
     this.httpServer = createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
 
-    // Hook into bus channel events for global broadcast
-    this.bus.onChannelEvent = (event, channel) => {
+    // Hook into channel events for global broadcast
+    this.cm.onChannelEvent = (event, channel) => {
       this.broadcastToAllWsClients({
         jsonrpc: "2.0",
         method: event,
@@ -36,13 +36,27 @@ export class Server {
       });
     };
 
-    // Hook into bus node events for direct subscriber push
-    this.bus.onNodeEvent = (event, node, detail) => {
+    // Hook into node events for direct subscriber push
+    this.cm.onNodeEvent = (event, node, detail) => {
       if (event === "node.update" || event === "node.statusChanged") {
         this.notifyNodeSubscribers(node.id, event, node, detail);
       }
       if (event === "node.stopped" || event === "node.removed") {
         this.nodeSubscribers.delete(node.id);
+      }
+      if (event === "node.registered" && node.isProcess) {
+        this.broadcastToAllWsClients({
+          jsonrpc: "2.0",
+          method: "node.registered",
+          params: { nodeId: node.id, name: node.name, adapter: node.adapter ?? null },
+        });
+      }
+      if (event === "node.stopped") {
+        this.broadcastToAllWsClients({
+          jsonrpc: "2.0",
+          method: "node.stopped",
+          params: { nodeId: node.id, name: node.name, exitCode: detail?.exitCode ?? null },
+        });
       }
     };
 
@@ -62,13 +76,13 @@ export class Server {
         const nodeId = this.wsNodeMap.get(ws);
         if (nodeId) {
           // Remove node from all channels
-          const node = this.bus.nodePool.get(nodeId);
+          const node = this.cm.nodePool.get(nodeId);
           if (node) {
             for (const chId of node.channels) {
-              this.bus.removeNodeFromChannel(chId, node.name);
+              this.cm.removeNodeFromChannel(chId, node.name);
             }
           }
-          this.bus.nodePool.remove(nodeId);
+          this.cm.nodePool.remove(nodeId);
           this.wsNodeMap.delete(ws);
         }
         // Clean up any node subscriptions this WS had
@@ -93,14 +107,14 @@ export class Server {
           let name = p.name as string;
           if (!name) { this.sendError(ws, id, -32602, "name required"); return; }
           // Auto-suffix if name taken (tui → tui-2 → tui-3 ...)
-          if (this.bus.nodePool.isNameTaken(name)) {
+          if (this.cm.nodePool.isNameTaken(name)) {
             let suffix = 2;
-            while (this.bus.nodePool.isNameTaken(`${name}-${suffix}`)) suffix++;
+            while (this.cm.nodePool.isNameTaken(`${name}-${suffix}`)) suffix++;
             name = `${name}-${suffix}`;
             log.info(`node.register: name taken, assigned ${name}`);
           }
 
-          const node = this.bus.registerNode(
+          const node = this.cm.registerNode(
             ws,
             name,
             (p.capabilities as string[]) || ["ui"],
@@ -113,22 +127,22 @@ export class Server {
 
         case "channel.create": {
           const cwd = resolve((p.cwd as string) || process.cwd());
-          const ch = this.bus.createChannel(cwd, p.name as string);
+          const ch = this.cm.createChannel(cwd, p.name as string);
           this.sendResult(ws, id, { channelId: ch.id, name: ch.name, cwd: ch.cwd });
           break;
         }
 
         case "channel.close": {
-          this.bus.closeChannel(p.channelId as string);
+          this.cm.closeChannel(p.channelId as string);
           this.sendResult(ws, id, { ok: true });
           break;
         }
 
         case "channel.list": {
-          let channelList = this.bus.listChannels();
+          let channelList = this.cm.listChannels();
           const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
           if (cwdFilter) {
-            channelList = channelList.filter(ch => ch.cwd === cwdFilter);
+            channelList = channelList.filter(ch => ch.cwd === cwdFilter || ch.cwd.startsWith(cwdFilter + "/"));
           }
           const channels = channelList.map(ch => ({
             id: ch.id,
@@ -141,7 +155,7 @@ export class Server {
         }
 
         case "channel.history": {
-          const msgs = this.bus.getHistory(
+          const msgs = this.cm.getHistory(
             p.channelId as string,
             p.limit as number,
             p.before as number,
@@ -150,11 +164,46 @@ export class Server {
           break;
         }
 
+        case "channel.listArchived": {
+          const activeIds = this.cm.listChannels().map(ch => ch.id);
+          const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
+          const query = p.query as string | undefined;
+          const rows = this.cm.store.listArchivedChannels(activeIds, cwdFilter, query);
+          const channels = rows.map(r => ({
+            id: r.id,
+            name: r.name,
+            cwd: r.cwd,
+            createdAt: r.createdAt,
+            memberCount: r.memberCount,
+            memberNames: r.memberNames ? r.memberNames.split(",") : [],
+            lastMessage: r.lastFrom ? { from: r.lastFrom, content: r.lastContent, timestamp: r.lastTs } : null,
+            agents: r.agents,
+          }));
+          this.sendResult(ws, id, { channels });
+          break;
+        }
+
+        case "channel.restore": {
+          const channelId = p.channelId as string;
+          if (!channelId) { this.sendError(ws, id, -32602, "channelId required"); return; }
+          const result = this.cm.restoreChannel(channelId);
+          if (!result) { this.sendError(ws, id, -32602, "channel not found"); return; }
+          const { channel: ch, messages } = result;
+          this.sendResult(ws, id, {
+            channelId: ch.id,
+            name: ch.name,
+            cwd: ch.cwd,
+            messages,
+            agents: this.cm.store.getChannelAgents(channelId),
+          });
+          break;
+        }
+
         case "channel.join": {
           const nodeId = this.wsNodeMap.get(ws);
           if (!nodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
           const channelId = p.channelId as string;
-          this.bus.addNodeToChannel(channelId, nodeId, p.name as string);
+          this.cm.addNodeToChannel(channelId, nodeId, p.name as string);
           this.sendResult(ws, id, { ok: true });
 
           // Replay buffered updates from process nodes already in this channel
@@ -165,8 +214,8 @@ export class Server {
         case "channel.leave": {
           const nodeId = this.wsNodeMap.get(ws);
           if (!nodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
-          const node = this.bus.nodePool.get(nodeId);
-          if (node) this.bus.removeNodeFromChannel(p.channelId as string, node.name);
+          const node = this.cm.nodePool.get(nodeId);
+          if (node) this.cm.removeNodeFromChannel(p.channelId as string, node.name);
           this.sendResult(ws, id, { ok: true });
           break;
         }
@@ -174,7 +223,7 @@ export class Server {
         case "channel.addNode": {
           const channelId = p.channelId as string;
           const addNodeId = p.nodeId as string;
-          this.bus.addNodeToChannel(channelId, addNodeId, p.name as string);
+          this.cm.addNodeToChannel(channelId, addNodeId, p.name as string);
           this.sendResult(ws, id, { ok: true });
 
           // If the added node is a process node with buffered updates,
@@ -184,7 +233,7 @@ export class Server {
         }
 
         case "channel.removeNode": {
-          this.bus.removeNodeFromChannel(p.channelId as string, p.nodeName as string);
+          this.cm.removeNodeFromChannel(p.channelId as string, p.nodeName as string);
           this.sendResult(ws, id, { ok: true });
           break;
         }
@@ -192,10 +241,10 @@ export class Server {
         case "channel.post": {
           const nodeId = this.wsNodeMap.get(ws);
           if (!nodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
-          const node = this.bus.nodePool.get(nodeId);
+          const node = this.cm.nodePool.get(nodeId);
           if (!node) { this.sendError(ws, id, -32600, "node not found"); return; }
 
-          const msg = this.bus.postMessage(
+          const msg = this.cm.postMessage(
             p.channelId as string,
             node.name,
             p.content as string,
@@ -207,7 +256,7 @@ export class Server {
         case "node.subscribe": {
           const targetId = p.nodeId as string;
           if (!targetId) { this.sendError(ws, id, -32602, "nodeId required"); return; }
-          const targetNode = this.bus.nodePool.get(targetId);
+          const targetNode = this.cm.nodePool.get(targetId);
           if (!targetNode) { this.sendError(ws, id, -32602, "node not found"); return; }
 
           if (!this.nodeSubscribers.has(targetId)) {
@@ -244,12 +293,12 @@ export class Server {
           const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.generateNodeName(adapter, cwd);
 
-          if (this.bus.nodePool.isNameTaken(name)) {
+          if (this.cm.nodePool.isNameTaken(name)) {
             this.sendError(ws, id, -32602, `name "${name}" already taken`);
             return;
           }
 
-          this.bus.spawnNode(adapter, name, cwd).then(node => {
+          this.cm.spawnNode(adapter, name, cwd).then(node => {
             this.sendResult(ws, id, { nodeId: node.id, name: node.name });
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
@@ -258,16 +307,16 @@ export class Server {
         }
 
         case "node.stop": {
-          this.bus.stopNode(p.nodeId as string);
+          this.cm.stopNode(p.nodeId as string);
           this.sendResult(ws, id, { ok: true });
           break;
         }
 
         case "node.list": {
-          let nodes = this.bus.nodePool.listAll();
+          let nodes = this.cm.nodePool.listAll();
           const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
           if (cwdFilter) {
-            nodes = nodes.filter(n => n.cwd === cwdFilter);
+            nodes = nodes.filter(n => n.cwd === cwdFilter || (n.cwd && n.cwd.startsWith(cwdFilter + "/")));
           }
           this.sendResult(ws, id, { nodes: nodes.map(n => n.toInfo()) });
           break;
@@ -277,11 +326,11 @@ export class Server {
           const nodeId = p.nodeId as string;
           const content = p.content as string;
           if (!nodeId || !content) { this.sendError(ws, id, -32602, "nodeId and content required"); return; }
-          const node = this.bus.nodePool.get(nodeId);
+          const node = this.cm.nodePool.get(nodeId);
           if (!node) { this.sendError(ws, id, -32602, `node not found`); return; }
           if (!node.isProcess) { this.sendError(ws, id, -32602, "can only prompt process nodes"); return; }
 
-          this.bus.nodePool.promptNode(nodeId, content).then(result => {
+          this.cm.nodePool.promptNode(nodeId, content).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
@@ -292,11 +341,11 @@ export class Server {
         case "node.cancel": {
           const nodeId = p.nodeId as string;
           if (!nodeId) { this.sendError(ws, id, -32602, "nodeId required"); return; }
-          const node = this.bus.nodePool.get(nodeId);
+          const node = this.cm.nodePool.get(nodeId);
           if (!node) { this.sendError(ws, id, -32602, "node not found"); return; }
           if (!node.isProcess) { this.sendError(ws, id, -32602, "can only cancel process nodes"); return; }
 
-          this.bus.nodePool.cancelNode(nodeId).then(result => {
+          this.cm.nodePool.cancelNode(nodeId).then(result => {
             if (result.error) {
               this.sendError(ws, id, -32000, result.error);
             } else {
@@ -311,7 +360,7 @@ export class Server {
         case "node.updates": {
           const nodeName = p.nodeName as string;
           if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
-          const updates = this.bus.getNodeUpdates(nodeName);
+          const updates = this.cm.getNodeUpdates(nodeName);
           this.sendResult(ws, id, { updates });
           break;
         }
@@ -319,9 +368,9 @@ export class Server {
         case "session.list": {
           const nodeName = p.nodeName as string;
           if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
-          const node = this.bus.nodePool.getByName(nodeName);
+          const node = this.cm.nodePool.getByName(nodeName);
           if (!node) { this.sendError(ws, id, -32602, `node "${nodeName}" not found`); return; }
-          this.bus.nodePool.sessionList(node.id).then(result => {
+          this.cm.nodePool.sessionList(node.id).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
@@ -333,9 +382,35 @@ export class Server {
           const nodeName = p.nodeName as string;
           const sessionId = p.sessionId as string;
           if (!nodeName || !sessionId) { this.sendError(ws, id, -32602, "nodeName and sessionId required"); return; }
-          const node = this.bus.nodePool.getByName(nodeName);
+          const node = this.cm.nodePool.getByName(nodeName);
           if (!node) { this.sendError(ws, id, -32602, `node "${nodeName}" not found`); return; }
-          this.bus.nodePool.sessionLoad(node.id, sessionId).then(result => {
+          this.cm.nodePool.sessionLoad(node.id, sessionId).then(result => {
+            this.sendResult(ws, id, result);
+          }).catch(err => {
+            this.sendError(ws, id, -32000, String(err));
+          });
+          break;
+        }
+
+        case "session.clear": {
+          const nodeName = p.nodeName as string;
+          if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
+          const node = this.cm.nodePool.getByName(nodeName);
+          if (!node) { this.sendError(ws, id, -32602, `node "${nodeName}" not found`); return; }
+          this.cm.nodePool.sessionClear(node.id).then(result => {
+            this.sendResult(ws, id, result);
+          }).catch(err => {
+            this.sendError(ws, id, -32000, String(err));
+          });
+          break;
+        }
+
+        case "session.compact": {
+          const nodeName = p.nodeName as string;
+          if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
+          const node = this.cm.nodePool.getByName(nodeName);
+          if (!node) { this.sendError(ws, id, -32602, `node "${nodeName}" not found`); return; }
+          this.cm.nodePool.sessionCompact(node.id).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
@@ -411,11 +486,11 @@ export class Server {
       // --- Channel management ---
       case "/channel/create": {
         const cwd = resolve((data.cwd as string) || process.cwd());
-        const ch = this.bus.createChannel(cwd, data.name as string);
+        const ch = this.cm.createChannel(cwd, data.name as string);
         // Auto-join the calling node if identified
         if (from) {
-          const node = this.bus.nodePool.getByName(from);
-          if (node) this.bus.addNodeToChannel(ch.id, node.id, from);
+          const node = this.cm.nodePool.getByName(from);
+          if (node) this.cm.addNodeToChannel(ch.id, node.id, from);
         }
         return { channelId: ch.id, name: ch.name, cwd: ch.cwd };
       }
@@ -423,15 +498,15 @@ export class Server {
       case "/channel/close": {
         const channelId = data.channelId as string;
         if (!channelId) throw new Error("channelId required");
-        this.bus.closeChannel(channelId);
+        this.cm.closeChannel(channelId);
         return { ok: true };
       }
 
       case "/channel/list": {
-        let channelList = this.bus.listChannels();
+        let channelList = this.cm.listChannels();
         const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
         if (cwdFilter) {
-          channelList = channelList.filter(ch => ch.cwd === cwdFilter);
+          channelList = channelList.filter(ch => ch.cwd === cwdFilter || ch.cwd.startsWith(cwdFilter + "/"));
         }
         const channels = channelList.map(ch => ({
           id: ch.id,
@@ -442,12 +517,45 @@ export class Server {
         return { channels };
       }
 
+      case "/channel/listArchived": {
+        const activeIds = this.cm.listChannels().map(ch => ch.id);
+        const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
+        const query = data.query as string | undefined;
+        const rows = this.cm.store.listArchivedChannels(activeIds, cwdFilter, query);
+        const channels = rows.map(r => ({
+          id: r.id,
+          name: r.name,
+          cwd: r.cwd,
+          createdAt: r.createdAt,
+          memberCount: r.memberCount,
+          memberNames: r.memberNames ? r.memberNames.split(",") : [],
+          lastMessage: r.lastFrom ? { from: r.lastFrom, content: r.lastContent, timestamp: r.lastTs } : null,
+          agents: r.agents,
+        }));
+        return { channels };
+      }
+
+      case "/channel/restore": {
+        const channelId = data.channelId as string;
+        if (!channelId) throw new Error("channelId required");
+        const result = this.cm.restoreChannel(channelId);
+        if (!result) throw new Error("channel not found");
+        const { channel: ch, messages } = result;
+        return {
+          channelId: ch.id,
+          name: ch.name,
+          cwd: ch.cwd,
+          messages,
+          agents: this.cm.store.getChannelAgents(channelId),
+        };
+      }
+
       case "/channel/addNode": {
         const channelId = data.channelId as string;
         const nodeId = data.nodeId as string;
         const nodeName = data.nodeName as string;
         if (!channelId || !nodeId) throw new Error("channelId and nodeId required");
-        this.bus.addNodeToChannel(channelId, nodeId, nodeName);
+        this.cm.addNodeToChannel(channelId, nodeId, nodeName);
         return { ok: true };
       }
 
@@ -455,7 +563,7 @@ export class Server {
         const channelId = data.channelId as string;
         const nodeName = data.nodeName as string;
         if (!channelId || !nodeName) throw new Error("channelId and nodeName required");
-        this.bus.removeNodeFromChannel(channelId, nodeName);
+        this.cm.removeNodeFromChannel(channelId, nodeName);
         return { ok: true };
       }
 
@@ -468,12 +576,12 @@ export class Server {
         const channelId = data.channelId as string;
         if (channelId) {
           // Post to specific channel
-          const msg = this.bus.postMessage(channelId, from, content);
+          const msg = this.cm.postMessage(channelId, from, content);
           if (!msg) throw new Error(`channel ${channelId} not found`);
           return { ok: true, message: msg };
         } else {
           // Post to first channel this node is in (throws if not joined)
-          const msg = this.bus.postFromProcess(from, content);
+          const msg = this.cm.postFromProcess(from, content);
           return { ok: true, message: msg };
         }
       }
@@ -481,7 +589,7 @@ export class Server {
       case "/channel/history": {
         const channelId = data.channelId as string;
         if (!channelId) throw new Error("channelId required");
-        const msgs = this.bus.getHistory(channelId, data.limit as number, data.before as number);
+        const msgs = this.cm.getHistory(channelId, data.limit as number, data.before as number);
         return { messages: msgs };
       }
 
@@ -492,11 +600,11 @@ export class Server {
         const cwd = resolve((data.cwd as string) || process.cwd());
         const name = (data.name as string) || this.generateNodeName(adapter, cwd);
 
-        if (this.bus.nodePool.isNameTaken(name)) {
+        if (this.cm.nodePool.isNameTaken(name)) {
           throw new Error(`name "${name}" already taken`);
         }
 
-        const nodeId = this.bus.spawnNodeSync(adapter, name, cwd);
+        const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
         return { nodeId, name, status: "connecting" };
       }
 
@@ -504,9 +612,9 @@ export class Server {
         const nodeName = data.nodeName as string;
         const channelId = data.channelId as string;
         if (!nodeName || !channelId) throw new Error("nodeName and channelId required");
-        const node = this.bus.nodePool.getByName(nodeName);
+        const node = this.cm.nodePool.getByName(nodeName);
         if (!node) throw new Error(`node "${nodeName}" not found`);
-        this.bus.addNodeToChannel(channelId, node.id, nodeName);
+        this.cm.addNodeToChannel(channelId, node.id, nodeName);
         return { ok: true };
       }
 
@@ -514,7 +622,7 @@ export class Server {
         const nodeName = data.nodeName as string;
         const channelId = data.channelId as string;
         if (!nodeName || !channelId) throw new Error("nodeName and channelId required");
-        this.bus.removeNodeFromChannel(channelId, nodeName);
+        this.cm.removeNodeFromChannel(channelId, nodeName);
         return { ok: true };
       }
 
@@ -522,10 +630,10 @@ export class Server {
         const nodeId = data.nodeId as string;
         const nodeName = data.nodeName as string;
         if (nodeId) {
-          this.bus.stopNode(nodeId);
+          this.cm.stopNode(nodeId);
         } else if (nodeName) {
-          const node = this.bus.nodePool.getByName(nodeName);
-          if (node) this.bus.stopNode(node.id);
+          const node = this.cm.nodePool.getByName(nodeName);
+          if (node) this.cm.stopNode(node.id);
           else throw new Error(`node "${nodeName}" not found`);
         } else {
           throw new Error("nodeId or nodeName required");
@@ -540,20 +648,20 @@ export class Server {
         if (nodeId) {
           targetId = nodeId;
         } else if (nodeName) {
-          const node = this.bus.nodePool.getByName(nodeName);
+          const node = this.cm.nodePool.getByName(nodeName);
           if (!node) throw new Error(`node "${nodeName}" not found`);
           targetId = node.id;
         } else {
           throw new Error("nodeId or nodeName required");
         }
-        return await this.bus.nodePool.cancelNode(targetId);
+        return await this.cm.nodePool.cancelNode(targetId);
       }
 
       case "/node/list": {
-        let nodes = this.bus.nodePool.listAll();
+        let nodes = this.cm.nodePool.listAll();
         const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
         if (cwdFilter) {
-          nodes = nodes.filter(n => n.cwd === cwdFilter);
+          nodes = nodes.filter(n => n.cwd === cwdFilter || (n.cwd && n.cwd.startsWith(cwdFilter + "/")));
         }
         return { nodes: nodes.map(n => n.toInfo()) };
       }
@@ -563,18 +671,34 @@ export class Server {
       case "/session/list": {
         const nodeName = data.nodeName as string;
         if (!nodeName) throw new Error("nodeName required");
-        const node = this.bus.nodePool.getByName(nodeName);
+        const node = this.cm.nodePool.getByName(nodeName);
         if (!node) throw new Error(`node "${nodeName}" not found`);
-        return await this.bus.nodePool.sessionList(node.id);
+        return await this.cm.nodePool.sessionList(node.id);
       }
 
       case "/session/load": {
         const nodeName = data.nodeName as string;
         const sessionId = data.sessionId as string;
         if (!nodeName || !sessionId) throw new Error("nodeName and sessionId required");
-        const node = this.bus.nodePool.getByName(nodeName);
+        const node = this.cm.nodePool.getByName(nodeName);
         if (!node) throw new Error(`node "${nodeName}" not found`);
-        return await this.bus.nodePool.sessionLoad(node.id, sessionId);
+        return await this.cm.nodePool.sessionLoad(node.id, sessionId);
+      }
+
+      case "/session/clear": {
+        const nodeName = data.nodeName as string;
+        if (!nodeName) throw new Error("nodeName required");
+        const node = this.cm.nodePool.getByName(nodeName);
+        if (!node) throw new Error(`node "${nodeName}" not found`);
+        return await this.cm.nodePool.sessionClear(node.id);
+      }
+
+      case "/session/compact": {
+        const nodeName = data.nodeName as string;
+        if (!nodeName) throw new Error("nodeName required");
+        const node = this.cm.nodePool.getByName(nodeName);
+        if (!node) throw new Error(`node "${nodeName}" not found`);
+        return await this.cm.nodePool.sessionCompact(node.id);
       }
 
       default:
@@ -594,11 +718,11 @@ export class Server {
 
   /** Replay buffered updates from process nodes already in a channel to a single WS client (on join) */
   private replayToClient(ws: WebSocket, channelId: string): void {
-    const ch = this.bus.getChannel(channelId);
+    const ch = this.cm.getChannel(channelId);
     if (!ch) return;
 
     for (const [, nodeId] of ch.nodes) {
-      const node = this.bus.nodePool.get(nodeId);
+      const node = this.cm.nodePool.get(nodeId);
       if (!node || !node.isProcess || node.updateBuffer.length === 0) continue;
 
       log.info(`replay: ${node.name} → new client in ${channelId} (${node.updateBuffer.length} updates)`);
@@ -614,16 +738,16 @@ export class Server {
 
   /** Replay a specific node's buffer to all WS clients in a channel (after addNode) */
   private replayNodeUpdatesToChannel(channelId: string, nodeId: string): void {
-    const node = this.bus.nodePool.get(nodeId);
+    const node = this.cm.nodePool.get(nodeId);
     if (!node || !node.isProcess || node.updateBuffer.length === 0) return;
 
-    const ch = this.bus.getChannel(channelId);
+    const ch = this.cm.getChannel(channelId);
     if (!ch) return;
 
     log.info(`replay: ${node.name} addNode → channel ${channelId} (${node.updateBuffer.length} updates to WS clients)`);
 
     for (const [, memberId] of ch.nodes) {
-      const member = this.bus.nodePool.get(memberId);
+      const member = this.cm.nodePool.get(memberId);
       if (!member || member.isProcess || !member.transport.alive) continue;
       for (const update of node.updateBuffer) {
         member.transport.send({
@@ -643,10 +767,10 @@ export class Server {
   private generateNodeName(adapter: string, cwd: string): string {
     const dir = basename(cwd) || "agent";
     const base = `${adapter}-${dir}`;
-    if (!this.bus.nodePool.isNameTaken(base)) return base;
+    if (!this.cm.nodePool.isNameTaken(base)) return base;
     for (let i = 2; ; i++) {
       const name = `${base}-${i}`;
-      if (!this.bus.nodePool.isNameTaken(name)) return name;
+      if (!this.cm.nodePool.isNameTaken(name)) return name;
     }
   }
 
@@ -698,6 +822,6 @@ export class Server {
     }
     this.wss.close();
     this.httpServer.close();
-    await this.bus.shutdown();
+    await this.cm.shutdown();
   }
 }

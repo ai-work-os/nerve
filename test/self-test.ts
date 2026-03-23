@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * ACP Bus Self-Test
+ * Nerve Self-Test
  *
  * Single command to verify everything works. Run after any code change.
  * Starts the server, runs all tests, reports pass/fail, exits.
@@ -1912,7 +1912,7 @@ async function testCwdNormalization() {
 
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║       ACP Bus Self-Test Suite        ║");
+  console.log("║       Nerve Self-Test Suite           ║");
   console.log("╚══════════════════════════════════════╝");
 
   try {

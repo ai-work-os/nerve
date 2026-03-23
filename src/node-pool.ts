@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BusNode } from "./node.js";
+import { NerveNode } from "./node.js";
 import { StdioTransport, WebSocketTransport } from "./transport.js";
 import { AcpClient, type McpServerConfig } from "./acp-client.js";
 import { getAdapter } from "./adapter.js";
@@ -11,10 +11,10 @@ import type { Store } from "./store.js";
 import type { PermissionLevel } from "./protocol.js";
 import type { WebSocket } from "ws";
 
-export type NodeEventHandler = (event: string, node: BusNode, detail?: Record<string, unknown>) => void;
+export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
 
 export class NodePool {
-  private nodes = new Map<string, BusNode>();
+  private nodes = new Map<string, NerveNode>();
   private acpClients = new Map<string, AcpClient>();
   private nameIndex = new Map<string, string>(); // name → id
   private onEvent: NodeEventHandler;
@@ -25,11 +25,11 @@ export class NodePool {
     this.onEvent = onEvent;
   }
 
-  get(id: string): BusNode | undefined {
+  get(id: string): NerveNode | undefined {
     return this.nodes.get(id);
   }
 
-  getByName(name: string): BusNode | undefined {
+  getByName(name: string): NerveNode | undefined {
     const id = this.nameIndex.get(name);
     return id ? this.nodes.get(id) : undefined;
   }
@@ -38,15 +38,15 @@ export class NodePool {
     return this.nameIndex.has(name);
   }
 
-  listAll(): BusNode[] {
+  listAll(): NerveNode[] {
     return [...this.nodes.values()];
   }
 
   /** Register a WebSocket node (nvim, browser, CLI tool) */
-  registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): BusNode {
+  registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {
     const id = nanoid(12);
     const transport = new WebSocketTransport(ws);
-    const node = new BusNode({ id, name, transport, capabilities, permissions });
+    const node = new NerveNode({ id, name, transport, capabilities, permissions });
     node.status = "idle";
 
     this.nodes.set(id, node);
@@ -63,22 +63,22 @@ export class NodePool {
   }
 
   /** Spawn a Process Node synchronously (handshake runs in background) */
-  spawnProcessSync(adapterName: string, name: string, cwd: string, busPort: number): BusNode {
-    return this._spawnProcess(adapterName, name, cwd, busPort);
+  spawnProcessSync(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
+    return this._spawnProcess(adapterName, name, cwd, serverPort);
   }
 
   /** Spawn a Process Node (CLI agent) */
-  async spawnProcess(adapterName: string, name: string, cwd: string, busPort: number): Promise<BusNode> {
-    return this._spawnProcess(adapterName, name, cwd, busPort);
+  async spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number): Promise<NerveNode> {
+    return this._spawnProcess(adapterName, name, cwd, serverPort);
   }
 
-  private _spawnProcess(adapterName: string, name: string, cwd: string, busPort: number): BusNode {
+  private _spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
     const adapter = getAdapter(adapterName);
     if (!adapter) throw new Error(`unknown adapter: ${adapterName}`);
 
     const id = nanoid(12);
     const transport = new StdioTransport();
-    const node = new BusNode({
+    const node = new NerveNode({
       id,
       name,
       transport,
@@ -109,7 +109,7 @@ export class NodePool {
       args: adapter.args,
       env: {
         ...adapter.env,
-        NERVE_PORT: String(busPort),
+        NERVE_PORT: String(serverPort),
         NERVE_NODE_NAME: name,
         PATH: join(dirname(dirname(fileURLToPath(import.meta.url))), "bin") + ":" + (process.env.PATH || ""),
       },
@@ -141,7 +141,7 @@ export class NodePool {
       command: existsSync(join(selfDir, "nerve-mcp.ts")) ? "npx" : process.execPath,
       args: existsSync(join(selfDir, "nerve-mcp.ts")) ? ["tsx", mcpScript] : [mcpScript],
       env: [
-        { name: "NERVE_PORT", value: String(busPort) },
+        { name: "NERVE_PORT", value: String(serverPort) },
         { name: "NERVE_NODE_NAME", value: name },
       ],
     }];
@@ -229,6 +229,27 @@ export class NodePool {
       node.sessionId = sessionId;
     }
     return result;
+  }
+
+  /** Clear session — creates a new session, discarding history */
+  async sessionClear(nodeId: string): Promise<{ sessionId?: string; error?: string }> {
+    const client = this.acpClients.get(nodeId);
+    const node = this.nodes.get(nodeId);
+    if (!client || !node) return { error: "node not found" };
+    const result = await client.sessionClear();
+    if (!result.error && result.sessionId) {
+      node.sessionId = result.sessionId;
+      node.clearUpdateBuffer();
+      this.store.updateNodeStatus(nodeId, "idle", result.sessionId);
+    }
+    return result;
+  }
+
+  /** Compact session — asks agent to compress its context window */
+  async sessionCompact(nodeId: string): Promise<{ error?: string }> {
+    const client = this.acpClients.get(nodeId);
+    if (!client) return { error: "node not found" };
+    return client.sessionCompact();
   }
 
   /** Stop a Process Node */

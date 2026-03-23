@@ -2,7 +2,7 @@
 
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { Bus } from "./bus.js";
+import { ChannelManager } from "./channel-manager.js";
 import { Server } from "./server.js";
 
 // Parse CLI args
@@ -20,8 +20,8 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const bus = new Bus({ dataDir, port });
-const server = new Server(bus, port);
+const nerve = new ChannelManager({ dataDir, port });
+const server = new Server(nerve, port);
 
 server.start();
 

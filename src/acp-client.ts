@@ -84,7 +84,7 @@ export class AcpClient {
           fs: { readTextFile: true, writeTextFile: true },
           terminal: true,
         },
-      }, 15000) as Record<string, unknown>;
+      }, 30000) as Record<string, unknown>;
 
       this.agentName = (initResult.agentInfo as any)?.name;
       this.agentCapabilities = (initResult.agentCapabilities ?? initResult.capabilities) as Record<string, unknown>;
@@ -92,7 +92,7 @@ export class AcpClient {
       // Step 2: authenticate (optional)
       if (this.authMethod) {
         await this.request("authenticate", {
-          authMethod: this.authMethod,
+          methodId: this.authMethod,
         }, 15000);
       }
 
@@ -124,6 +124,33 @@ export class AcpClient {
     try {
       await this.request("session/load", { sessionId }, 30000);
       this.sessionId = sessionId;
+      return {};
+    } catch (err) {
+      return { error: String(err) };
+    }
+  }
+
+  /** Clear session — creates a new session on the same agent, discarding history */
+  async sessionClear(): Promise<{ sessionId?: string; error?: string }> {
+    try {
+      const result = await this.request("session/new", {
+        cwd: this.cwd,
+        mcpServers: this.mcpServers,
+      }, 30000) as Record<string, unknown>;
+      this.sessionId = result.sessionId as string;
+      return { sessionId: this.sessionId };
+    } catch (err) {
+      return { error: String(err) };
+    }
+  }
+
+  /** Compact session — asks the agent to compress its context window */
+  async sessionCompact(): Promise<{ error?: string }> {
+    if (!this.sessionId) return { error: "no session" };
+    try {
+      await this.request("session/compact", {
+        sessionId: this.sessionId,
+      }, 60000);
       return {};
     } catch (err) {
       return { error: String(err) };

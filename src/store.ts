@@ -83,6 +83,67 @@ export class Store {
     ).all() as any;
   }
 
+  listArchivedChannels(activeIds: string[], cwd?: string, query?: string): Array<{
+    id: string; name: string | null; cwd: string; createdAt: number;
+    memberCount: number; memberNames: string | null;
+    lastFrom: string | null; lastContent: string | null; lastTs: number | null;
+    agents: Array<{ name: string; adapter: string | null; cwd: string | null; sessionId: string | null }>;
+  }> {
+    const excludePlaceholders = activeIds.length > 0
+      ? activeIds.map(() => "?").join(",")
+      : "'__none__'";
+
+    let sql = `
+      SELECT c.id, c.name, c.cwd, c.created_at as createdAt,
+        (SELECT COUNT(DISTINCT node_name) FROM channel_nodes WHERE channel_id = c.id) as memberCount,
+        (SELECT GROUP_CONCAT(DISTINCT node_name) FROM channel_nodes WHERE channel_id = c.id) as memberNames,
+        m.from_name as lastFrom, m.content as lastContent, m.timestamp as lastTs
+      FROM channels c
+      LEFT JOIN messages m ON m.id = (
+        SELECT id FROM messages WHERE channel_id = c.id ORDER BY timestamp DESC LIMIT 1
+      )
+      WHERE c.id NOT IN (${excludePlaceholders})
+    `;
+    const params: unknown[] = [...activeIds];
+
+    if (cwd) {
+      sql += ` AND (c.cwd = ? OR c.cwd LIKE ? || '/%')`;
+      params.push(cwd, cwd);
+    }
+    if (query) {
+      sql += ` AND c.name LIKE ?`;
+      params.push(`%${query}%`);
+    }
+    sql += ` ORDER BY COALESCE(m.timestamp, c.created_at) DESC LIMIT 50`;
+
+    const rows = this.db.prepare(sql).all(...params) as any[];
+
+    return rows.map(row => {
+      const agents = this.db.prepare(`
+        SELECT DISTINCT cn.node_name as name, n.adapter, n.cwd, n.session_id as sessionId
+        FROM channel_nodes cn
+        JOIN nodes n ON n.id = cn.node_id
+        WHERE cn.channel_id = ? AND n.transport = 'stdio'
+      `).all(row.id) as any[];
+      return { ...row, agents };
+    });
+  }
+
+  getChannelForRestore(channelId: string): { id: string; name: string | null; cwd: string; createdAt: number } | undefined {
+    return this.db.prepare(
+      "SELECT id, name, cwd, created_at as createdAt FROM channels WHERE id = ?"
+    ).get(channelId) as any;
+  }
+
+  getChannelAgents(channelId: string): Array<{ name: string; adapter: string | null; cwd: string | null; sessionId: string | null }> {
+    return this.db.prepare(`
+      SELECT DISTINCT cn.node_name as name, n.adapter, n.cwd, n.session_id as sessionId
+      FROM channel_nodes cn
+      JOIN nodes n ON n.id = cn.node_id
+      WHERE cn.channel_id = ? AND n.transport = 'stdio'
+    `).all(channelId) as any[];
+  }
+
   // --- Node ---
 
   insertNode(id: string, name: string, transport: string, adapter?: string, capabilities?: string[], cwd?: string): void {
@@ -100,6 +161,12 @@ export class Store {
   markAllNodesStopped(): void {
     this.db.prepare(
       "UPDATE nodes SET status = 'stopped', stopped_at = ? WHERE status != 'stopped'"
+    ).run(Date.now());
+  }
+
+  markAllChannelNodesLeft(): void {
+    this.db.prepare(
+      "UPDATE channel_nodes SET left_at = ? WHERE left_at IS NULL"
     ).run(Date.now());
   }
 

@@ -17,6 +17,17 @@ export class Channel {
     opts.store.insertChannel(this.id, this.cwd, this.name);
   }
 
+  /** Restore a channel from DB without re-inserting */
+  static restore(row: { id: string; name: string | null; cwd: string; createdAt: number }): Channel {
+    const ch = Object.create(Channel.prototype) as Channel;
+    Object.defineProperty(ch, "id", { value: row.id, writable: false, enumerable: true });
+    ch.cwd = row.cwd;
+    ch.name = row.name ?? undefined;
+    ch.createdAt = row.createdAt;
+    ch.nodes = new Map();
+    return ch;
+  }
+
   addNode(nodeId: string, nodeName: string, store: Store): void {
     this.nodes.set(nodeName, nodeId);
     store.addNodeToChannel(this.id, nodeId, nodeName);

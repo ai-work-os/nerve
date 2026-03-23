@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 /**
- * Integration test: nvim bridge receives messages from Bus.
+ * Integration test: nvim bridge receives messages from Nerve server.
  */
 
 import { spawn, ChildProcess } from "node:child_process";
@@ -82,7 +82,7 @@ async function main() {
 
   await sleep(2000); // wait for bridge to connect and join
 
-  assert(bridgeOutput.includes("[bridge] connected"), "bridge connected to Bus");
+  assert(bridgeOutput.includes("[bridge] connected"), "bridge connected to server");
 
   // Check node list — bridge should be registered
   const nodes = await httpPost("/node/list", {});

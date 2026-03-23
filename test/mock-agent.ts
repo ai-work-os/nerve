@@ -6,13 +6,13 @@
  * Behavior:
  * - Responds to initialize, authenticate, session/new
  * - On session/prompt: echoes back with "@main" prefix (simulates channel reply)
- * - If prompt contains "curl", executes terminal/create to post to Bus HTTP API
+ * - If prompt contains "curl", executes terminal/create to post to Nerve HTTP API
  */
 
 import { createInterface } from "node:readline";
 import http from "node:http";
 
-const BUS_PORT = process.env.NERVE_PORT || "4800";
+const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NODE_NAME = process.env.NERVE_NODE_NAME || "mock";
 
 let sessionId = "mock-session-" + Date.now();
@@ -112,12 +112,12 @@ rl.on("line", (line) => {
       // Generate reply
       const reply = `@main mock回复: 收到 "${text.slice(0, 80)}"`;
 
-      // Post reply to Bus via HTTP (simulating what a real agent would do via terminal)
+      // Post reply to Nerve via HTTP (simulating what a real agent would do via terminal)
       const postData = JSON.stringify({ from: NODE_NAME, content: reply });
       const req = http.request(
         {
           hostname: "localhost",
-          port: parseInt(BUS_PORT),
+          port: parseInt(NERVE_PORT),
           path: "/post",
           method: "POST",
           headers: { "Content-Type": "application/json" },
