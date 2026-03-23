@@ -240,7 +240,9 @@ export class NodePool {
     if (!result.error && result.sessionId) {
       node.sessionId = result.sessionId;
       node.clearUpdateBuffer();
+      node.status = "idle";
       this.store.updateNodeStatus(nodeId, "idle", result.sessionId);
+      this.onEvent("node.statusChanged", node);
     }
     return result;
   }

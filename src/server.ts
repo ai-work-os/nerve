@@ -44,11 +44,11 @@ export class Server {
       if (event === "node.stopped" || event === "node.removed") {
         this.nodeSubscribers.delete(node.id);
       }
-      if (event === "node.registered" && node.isProcess) {
+      if (event === "node.registered") {
         this.broadcastToAllWsClients({
           jsonrpc: "2.0",
           method: "node.registered",
-          params: { nodeId: node.id, name: node.name, adapter: node.adapter ?? null },
+          params: { nodeId: node.id, name: node.name, adapter: node.adapter ?? null, transport: node.transport.type },
         });
       }
       if (event === "node.stopped") {
