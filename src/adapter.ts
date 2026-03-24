@@ -45,7 +45,7 @@ const adapters: Record<string, AdapterConfig> = {
   },
   gemini: {
     cmd: "gemini",
-    args: ["--yolo", "--acp"],
+    args: ["--acp"],
     authMethod: "oauth-personal",
     capabilities: ["code", "analysis"],
     terminal: false,

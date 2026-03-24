@@ -3,6 +3,7 @@ import { NodePool } from "./node-pool.js";
 import { route } from "./router.js";
 import { Store } from "./store.js";
 import { NerveNode } from "./node.js";
+import { BlobStore } from "./blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification } from "./protocol.js";
 import type { WebSocket } from "ws";
 import * as log from "./logger.js";
@@ -15,6 +16,7 @@ export interface ChannelManagerOptions {
 export class ChannelManager {
   readonly store: Store;
   readonly nodePool: NodePool;
+  readonly blobStore: BlobStore;
   private channels = new Map<string, Channel>();
   private port: number;
 
@@ -27,6 +29,7 @@ export class ChannelManager {
   constructor(opts: ChannelManagerOptions) {
     this.port = opts.port;
     this.store = new Store(`${opts.dataDir}/nerve.db`);
+    this.blobStore = new BlobStore(opts.dataDir);
 
     // Mark all old nodes as stopped on startup
     this.store.markAllNodesStopped();
@@ -169,7 +172,13 @@ export class ChannelManager {
     const ch = this.channels.get(channelId);
     if (!ch) return null;
 
-    const msg = ch.postMessage(from, content, this.store);
+    // Auto-convert long content to blob
+    const blobRef = this.blobStore.maybeStore(content);
+    const storedContent = blobRef
+      ? JSON.stringify(blobRef)
+      : content;
+
+    const msg = ch.postMessage(from, storedContent, this.store);
 
     // Broadcast to all nodes in channel
     this.broadcastToChannel(channelId, {

@@ -365,6 +365,18 @@ export class Server {
           break;
         }
 
+        case "blob.get": {
+          const blobId = p.blobId as string;
+          if (!blobId) { this.sendError(ws, id, -32602, "blobId required"); return; }
+          const content = this.cm.blobStore.get(blobId);
+          if (content) {
+            this.sendResult(ws, id, { content });
+          } else {
+            this.sendError(ws, id, -32602, "blob not found");
+          }
+          break;
+        }
+
         case "session.list": {
           const nodeName = p.nodeName as string;
           if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
@@ -437,6 +449,18 @@ export class Server {
       res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ status: "ok", logFile: logPath })
       );
+      return;
+    }
+
+    // Blob content retrieval
+    if (req.method === "GET" && req.url?.startsWith("/blob/")) {
+      const blobId = req.url.slice(6); // strip "/blob/"
+      const content = this.cm.blobStore.get(blobId);
+      if (content) {
+        res.writeHead(200, { "Content-Type": "text/plain" }).end(content);
+      } else {
+        res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "blob not found" }));
+      }
       return;
     }
 
