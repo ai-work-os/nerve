@@ -227,6 +227,7 @@ export class NodePool {
     const result = await client.sessionLoad(sessionId);
     if (!result.error) {
       node.sessionId = sessionId;
+      node.usage = undefined;
     }
     return result;
   }
@@ -240,6 +241,7 @@ export class NodePool {
     if (!result.error && result.sessionId) {
       node.sessionId = result.sessionId;
       node.clearUpdateBuffer();
+      node.usage = undefined;
       node.status = "idle";
       this.store.updateNodeStatus(nodeId, "idle", result.sessionId);
       this.onEvent("node.statusChanged", node);
