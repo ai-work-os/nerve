@@ -75,6 +75,13 @@ export class LineBuffer {
 export type NodeStatus = "connecting" | "idle" | "busy" | "error" | "stopped";
 export type PermissionLevel = "operator" | "member" | "observer";
 
+export interface NodeUsage {
+  tokenUsed: number;
+  tokenSize: number;
+  cost: number;
+  lastUpdated: number;
+}
+
 export interface NodeInfo {
   id: string;
   name: string;
@@ -87,6 +94,7 @@ export interface NodeInfo {
   channels: string[];
   createdAt: number;
   lastActiveAt: number;
+  usage?: NodeUsage;
 }
 
 export interface ChannelInfo {

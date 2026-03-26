@@ -1,5 +1,5 @@
 import type { Transport } from "./transport.js";
-import type { NodeStatus, PermissionLevel, NodeInfo } from "./protocol.js";
+import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage } from "./protocol.js";
 
 export class NerveNode {
   readonly id: string;
@@ -17,6 +17,7 @@ export class NerveNode {
   lastActiveAt: number;
   systemPrompt?: string;
   prompted = false;
+  usage?: NodeUsage;
 
   // For stdio nodes: prompt generation counter (prevent stale callbacks)
   promptGen = 0;
@@ -63,6 +64,17 @@ export class NerveNode {
     if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
       this.updateBuffer.shift();
     }
+
+    // Extract usage_update
+    const update = params.update as Record<string, unknown> | undefined;
+    if (update?.sessionUpdate === "usage_update") {
+      this.usage = {
+        tokenUsed: (update.used as number) || 0,
+        tokenSize: (update.size as number) || 0,
+        cost: (update.cost as number) || 0,
+        lastUpdated: Date.now(),
+      };
+    }
   }
 
   clearUpdateBuffer(): void {
@@ -82,6 +94,7 @@ export class NerveNode {
       cwd: this.cwd,
       createdAt: this.createdAt,
       lastActiveAt: this.lastActiveAt,
+      usage: this.usage,
     };
   }
 }
