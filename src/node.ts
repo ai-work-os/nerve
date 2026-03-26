@@ -71,7 +71,9 @@ export class NerveNode {
       this.usage = {
         tokenUsed: (update.used as number) || 0,
         tokenSize: (update.size as number) || 0,
-        cost: (update.cost as number) || 0,
+        cost: typeof update.cost === "object" && update.cost !== null
+          ? ((update.cost as Record<string, unknown>).amount as number) || 0
+          : (update.cost as number) || 0,
         lastUpdated: Date.now(),
       };
     }
