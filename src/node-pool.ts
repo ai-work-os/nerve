@@ -256,6 +256,54 @@ export class NodePool {
     return client.sessionCompact();
   }
 
+  /** Reset session — clear + recovery prompt with summary file reference */
+  async sessionReset(nodeId: string, expectedSessionId: string, summaryPath: string, selfReset = false): Promise<{ sessionId?: string; previousSessionId?: string; error?: string }> {
+    const client = this.acpClients.get(nodeId);
+    const node = this.nodes.get(nodeId);
+    if (!client || !node) return { error: "node not found" };
+    if (node.status === "busy" && !selfReset) return { error: "node is busy" };
+    if (node.sessionId !== expectedSessionId) return { error: "session mismatch" };
+    if (node.resetInProgress) return { error: "reset in progress" };
+
+    node.resetInProgress = true;
+    try {
+      const previousSessionId = node.sessionId;
+
+      // ACP session/new (reuse sessionClear logic)
+      const result = await client.sessionClear();
+      if (result.error || !result.sessionId) {
+        return { error: result.error || "session clear failed" };
+      }
+
+      // Update node state
+      node.sessionId = result.sessionId;
+      node.clearUpdateBuffer();
+      node.usage = undefined;
+      node.prompted = false;
+      node.status = "idle";
+      this.store.updateNodeStatus(nodeId, "idle", result.sessionId);
+      this.onEvent("node.statusChanged", node);
+
+      // Build recovery prompt
+      const channelId = [...node.channels][0] || "unknown";
+      const resetPrompt = [
+        `你是 ${node.name}，在频道 ${channelId} 中协作。`,
+        `上一轮对话因上下文窗口接近上限已自动交接。`,
+        `对话总结文件：${summaryPath}`,
+        `请先读取总结文件，恢复工作上下文，然后继续未完成的任务。`,
+        `当前工作目录：${node.cwd || process.cwd()}`,
+      ].join("\n");
+
+      // Send recovery prompt (don't await — let agent process async)
+      log.info(`session reset: ${node.name} ${previousSessionId} → ${result.sessionId}, summary=${summaryPath}`);
+      this.promptNode(nodeId, resetPrompt);
+
+      return { sessionId: result.sessionId, previousSessionId };
+    } finally {
+      node.resetInProgress = false;
+    }
+  }
+
   /** Stop a Process Node */
   stopNode(nodeId: string): void {
     const node = this.nodes.get(nodeId);

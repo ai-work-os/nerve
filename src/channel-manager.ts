@@ -256,31 +256,14 @@ export class ChannelManager {
       this.nodePool.promptNode(nodeId, prompt).then((result) => {
         if (!channelId) return;
 
-        // promptNode resolves with {error} instead of rejecting
         if (result.error) {
           log.warn(`prompt ${node.name} returned error: ${result.error}`);
           this.postMessage(channelId, node.name, `[error: ${String(result.error).slice(0, 100)}]`);
           return;
         }
 
-        // Extract agent's reply from updates accumulated during this prompt
-        {
-          const newEntries = node.updateBuffer.length - bufferStart;
-          const types = new Map<string, number>();
-          for (let i = bufferStart; i < node.updateBuffer.length; i++) {
-            const t = (node.updateBuffer[i] as any)?.update?.sessionUpdate || "unknown";
-            types.set(t, (types.get(t) || 0) + 1);
-          }
-          log.info(`dispatch: ${node.name} done, ${newEntries} updates: ${[...types.entries()].map(([k,v]) => `${k}=${v}`).join(", ")}`);
-
-          const reply = this.extractReplyFromUpdates(node, bufferStart);
-          if (reply) {
-            log.info(`auto-reply: ${node.name} → channel ${channelId} (${reply.length} chars)`);
-            this.postMessage(channelId, node.name, reply);
-          } else {
-            log.warn(`auto-reply: ${node.name} — no agent_message_chunk text found in ${newEntries} updates`);
-          }
-        }
+        const newEntries = node.updateBuffer.length - bufferStart;
+        log.info(`dispatch: ${node.name} done, ${newEntries} updates (agent replies via nerve_post)`);
       }).catch(err => {
         log.warn(`prompt ${node.name} exception: ${err}`);
         if (channelId) {
@@ -300,24 +283,8 @@ export class ChannelManager {
     }
   }
 
-  /** Extract agent's final reply text from updateBuffer entries added since bufferStart */
-  private extractReplyFromUpdates(node: NerveNode, bufferStart: number): string | null {
-    const chunks: string[] = [];
-    for (let i = bufferStart; i < node.updateBuffer.length; i++) {
-      const entry = node.updateBuffer[i] as any;
-      const update = entry?.update;
-      if (!update) continue;
-      if (update.sessionUpdate === "agent_message_chunk") {
-        // Handle various content formats: {text}, {content:{text}}, string
-        const text = update.content?.text
-          ?? (typeof update.content === "string" ? update.content : null)
-          ?? update.text;
-        if (text) chunks.push(text);
-      }
-    }
-    const text = chunks.join("").trim();
-    return text || null;
-  }
+  /** @deprecated auto-reply removed — agents reply via nerve_post */
+  // extractReplyFromUpdates removed: agents are responsible for replying via nerve_post
 
   private buildSystemPrompt(agentName: string, channelId: string, members: string[]): string {
     const memberList = members.length > 0 ? members.join(", ") : "(none yet)";
@@ -336,7 +303,7 @@ export class ChannelManager {
       ``,
       `频道规则：`,
       `- 频道消息 50 字以内，只写结论`,
-      `- 长内容写文件，频道附路径`,
+      `- 长内容写文件，文件放 ~/.nerve/docs/ 目录下，频道里附文件路径`,
       `- 每个任务回复一次，然后等指令`,
       ``,
       `频道成员：${memberList}`,

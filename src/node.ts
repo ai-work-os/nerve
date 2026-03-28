@@ -22,6 +22,9 @@ export class NerveNode {
   // For stdio nodes: prompt generation counter (prevent stale callbacks)
   promptGen = 0;
 
+  // Mutex for session reset — prevents concurrent resets
+  resetInProgress = false;
+
   // In-memory buffer of ACP updates (for client reconnect replay)
   static readonly MAX_BUFFER_SIZE = 1000;
   updateBuffer: Record<string, unknown>[] = [];
@@ -94,6 +97,7 @@ export class NerveNode {
       adapter: this.adapter,
       channels: [...this.channels],
       cwd: this.cwd,
+      sessionId: this.sessionId,
       createdAt: this.createdAt,
       lastActiveAt: this.lastActiveAt,
       usage: this.usage,

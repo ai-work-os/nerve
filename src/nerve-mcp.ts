@@ -130,6 +130,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["agent_name"],
       },
     },
+    {
+      name: "nerve_session_reset",
+      description: "Reset current session after writing context summary. Creates a new session with initial prompt pointing to the summary file. Call this after you have written the summary file.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          summary_path: { type: "string", description: "Absolute path to the context summary file you just wrote" },
+        },
+        required: ["summary_path"],
+      },
+    },
   ],
 }));
 
@@ -285,6 +296,31 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok(`stopped ${agent_name}`);
     } catch (err) {
       log(`nerve_stop failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_session_reset") {
+    const { summary_path } = args as { summary_path: string };
+    if (!summary_path) return fail("summary_path is required");
+    try {
+      // Get current sessionId from node info to fill expectedSessionId
+      const listResult = await post("/node/list", {});
+      const self = (listResult.nodes as Record<string, unknown>[] | undefined)?.find((n) => n.name === NERVE_NODE_NAME);
+      if (!self) return fail(`cannot find self node: ${NERVE_NODE_NAME}`);
+      const expectedSessionId = self.sessionId as string;
+      if (!expectedSessionId) return fail("no current session to reset");
+
+      log(`nerve_session_reset from=${NERVE_NODE_NAME} session=${expectedSessionId} summary=${summary_path}`);
+      const result = await post("/session/reset", {
+        nodeName: NERVE_NODE_NAME,
+        expectedSessionId,
+        summaryPath: summary_path,
+        selfReset: true,
+      });
+      return ok(`session reset: ${result.sessionId} (previous: ${result.previousSessionId})`);
+    } catch (err) {
+      log(`nerve_session_reset failed: ${err}`);
       return fail(String(err));
     }
   }

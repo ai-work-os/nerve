@@ -91,6 +91,7 @@ export interface NodeInfo {
   transport: "stdio" | "websocket";
   adapter?: string;
   cwd?: string;
+  sessionId?: string;
   channels: string[];
   createdAt: number;
   lastActiveAt: number;

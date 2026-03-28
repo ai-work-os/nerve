@@ -430,6 +430,24 @@ export class Server {
           break;
         }
 
+        case "session.reset": {
+          const nodeName = p.nodeName as string;
+          const expectedSessionId = p.expectedSessionId as string;
+          const summaryPath = p.summaryPath as string;
+          if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
+          if (!expectedSessionId) { this.sendError(ws, id, -32602, "expectedSessionId required"); return; }
+          if (!summaryPath) { this.sendError(ws, id, -32602, "summaryPath required"); return; }
+          const node = this.cm.nodePool.getByName(nodeName);
+          if (!node) { this.sendError(ws, id, -32602, `node "${nodeName}" not found`); return; }
+          this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath).then(result => {
+            if (result.error) { this.sendError(ws, id, -32000, result.error); return; }
+            this.sendResult(ws, id, result);
+          }).catch(err => {
+            this.sendError(ws, id, -32000, String(err));
+          });
+          break;
+        }
+
         default:
           this.sendError(ws, id, -32601, `method not found: ${method}`);
       }
@@ -723,6 +741,21 @@ export class Server {
         const node = this.cm.nodePool.getByName(nodeName);
         if (!node) throw new Error(`node "${nodeName}" not found`);
         return await this.cm.nodePool.sessionCompact(node.id);
+      }
+
+      case "/session/reset": {
+        const nodeName = data.nodeName as string;
+        const expectedSessionId = data.expectedSessionId as string;
+        const summaryPath = data.summaryPath as string;
+        if (!nodeName) throw new Error("nodeName required");
+        if (!expectedSessionId) throw new Error("expectedSessionId required");
+        if (!summaryPath) throw new Error("summaryPath required");
+        const node = this.cm.nodePool.getByName(nodeName);
+        if (!node) throw new Error(`node "${nodeName}" not found`);
+        const selfReset = !!data.selfReset;
+        const result = await this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath, selfReset);
+        if (result.error) throw new Error(result.error);
+        return result;
       }
 
       default:

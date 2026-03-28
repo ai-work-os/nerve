@@ -1776,7 +1776,7 @@ async function testChannelListCwdFilter() {
 }
 
 async function testAutoReplyToChannel() {
-  console.log("\n▸ dispatchDirect auto-reply posts back to channel");
+  console.log("\n▸ channel @mention dispatches to agent (no auto-reply, agent replies via nerve_post)");
 
   const c = new WsClient("auto-reply-test");
   await c.connect();
@@ -1784,7 +1784,7 @@ async function testAutoReplyToChannel() {
 
   // Spawn mock agent
   const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "reply-agent", cwd: ROOT });
-  assert(!!spawn.nodeId, "auto-reply: agent spawned");
+  assert(!!spawn.nodeId, "dispatch: agent spawned");
   await sleep(3000);
 
   // Create channel, add both nodes
@@ -1799,26 +1799,23 @@ async function testAutoReplyToChannel() {
   // Post @mention to trigger dispatchDirect
   await c.request("channel.post", { channelId: ch.channelId, content: "@reply-agent do something" });
 
-  // Wait for agent to process + auto-reply
+  // Wait for agent to process
   await sleep(5000);
 
-  // Check channel history for auto-reply
+  // Check channel history — agent replies via nerve_post (mock HTTP), no auto-reply
   const hist = await c.request("channel.history", { channelId: ch.channelId });
   const messages = hist.messages as Array<{ from: string; content: string }>;
 
-  // Should have: (1) user message, (2) mock agent's HTTP reply, (3) auto-reply from extractReplyFromUpdates
   const userMsg = messages.find(m => m.content.includes("@reply-agent do something"));
-  assert(!!userMsg, "auto-reply: user message in history");
+  assert(!!userMsg, "dispatch: user message in history");
 
+  // Mock agent replies via HTTP (nerve_post equivalent) — should be in history
   const agentMsgs = messages.filter(m => m.from === "reply-agent");
-  assert(agentMsgs.length >= 2, `auto-reply: agent posted 2 replies — HTTP + auto (got ${agentMsgs.length})`,
+  assert(agentMsgs.length >= 1, `dispatch: agent replied via nerve_post (got ${agentMsgs.length})`,
     `messages: ${JSON.stringify(messages.map(m => ({ from: m.from, content: m.content?.slice(0, 80) })))}`);
 
-  // Distinguish: mock's HTTP reply contains "@main mock回复:", auto-reply contains "[mock processing:"
   const httpReply = agentMsgs.find(m => m.content.includes("mock回复"));
-  const autoReply = agentMsgs.find(m => m.content.includes("[mock processing:"));
-  assert(!!httpReply, "auto-reply: mock HTTP reply found (contains 'mock回复')");
-  assert(!!autoReply, "auto-reply: extractReplyFromUpdates auto-reply found (contains '[mock processing:')");
+  assert(!!httpReply, "dispatch: mock nerve_post reply found");
 
   // Cleanup
   await httpPost("/node/stop", { nodeId: spawn.nodeId as string });
