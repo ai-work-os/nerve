@@ -173,6 +173,21 @@ export class NodePool {
       mcpServers,
       onUpdate: (params) => {
         node.pushUpdate(params);
+
+        // 从 session/update 自动提取 activity，推送 statusChanged
+        const update = params.update as Record<string, unknown> | undefined;
+        if (update) {
+          const newActivity = this.extractActivity(update);
+          if (newActivity !== undefined) {
+            const normalized = newActivity ?? undefined;
+            if (normalized !== node.activity) {
+              node.activity = normalized;
+              node.touch();
+              this.onEvent("node.statusChanged", node);
+            }
+          }
+        }
+
         this.onEvent("node.update", node, params);
       },
       onReady: (sessionId) => {
@@ -192,6 +207,16 @@ export class NodePool {
     client.handshake(); // Don't await - let it run async
 
     return node;
+  }
+
+  private extractActivity(update: Record<string, unknown>): string | null | undefined {
+    const sessionUpdate = update.sessionUpdate as string;
+    switch (sessionUpdate) {
+      case "thinking":       return "thinking";
+      case "tool_call":      return `tool: ${(update.name as string) || "..."}`;
+      case "end_turn":       return null;
+      default:               return undefined;
+    }
   }
 
   /** Prompt a Process Node */

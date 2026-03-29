@@ -96,6 +96,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "nerve_delete_channel",
+      description: "Delete a channel permanently. Removes all members, messages, and the channel record.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          channel_id: { type: "string", description: "Channel id to delete" },
+        },
+        required: ["channel_id"],
+      },
+    },
+    {
       name: "nerve_join",
       description: "Add an existing agent into a channel by agent name.",
       inputSchema: {
@@ -230,6 +241,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok(`created channel ${currentChannelId}${result.name ? ` (${String(result.name)})` : ""}`);
     } catch (err) {
       log(`nerve_create_channel failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_delete_channel") {
+    const { channel_id } = args as { channel_id: string };
+    if (!channel_id) return fail("channel_id is required");
+    try {
+      log(`nerve_delete_channel channel=${channel_id}`);
+      await post("/channel/delete", { channelId: channel_id });
+      if (currentChannelId === channel_id) {
+        currentChannelId = undefined;
+        log(`nerve_delete_channel: cleared currentChannelId (deleted)`);
+      }
+      return ok(`deleted channel ${channel_id}`);
+    } catch (err) {
+      log(`nerve_delete_channel failed: ${err}`);
       return fail(String(err));
     }
   }

@@ -88,6 +88,28 @@ export class ChannelManager {
     this.channels.delete(id);
   }
 
+  deleteChannel(id: string): void {
+    const ch = this.channels.get(id);
+
+    // If channel is active, remove all nodes first
+    if (ch) {
+      for (const [nodeName] of ch.nodes) {
+        const nodeId = ch.getNodeId(nodeName);
+        ch.removeNode(nodeName, this.store);
+        if (nodeId) {
+          const node = this.nodePool.get(nodeId);
+          if (node) node.channels.delete(id);
+        }
+      }
+      this.onChannelEvent?.("channel.deleted", ch);
+      this.channels.delete(id);
+    }
+
+    // Hard delete from DB (works for both active and archived channels)
+    this.store.deleteChannel(id);
+    log.info(`channel deleted: ${id}`);
+  }
+
   // --- Node operations ---
 
   registerNode(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {

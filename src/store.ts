@@ -77,6 +77,12 @@ export class Store {
     ).run(Date.now(), id);
   }
 
+  deleteChannel(id: string): void {
+    this.db.prepare("DELETE FROM messages WHERE channel_id = ?").run(id);
+    this.db.prepare("DELETE FROM channel_nodes WHERE channel_id = ?").run(id);
+    this.db.prepare("DELETE FROM channels WHERE id = ?").run(id);
+  }
+
   listChannels(): Array<{ id: string; name: string | null; cwd: string; createdAt: number }> {
     return this.db.prepare(
       "SELECT id, name, cwd, created_at as createdAt FROM channels WHERE closed_at IS NULL"

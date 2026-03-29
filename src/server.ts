@@ -1,8 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { createServer } from "node:http";
+import { resolve } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import { ChannelManager } from "./channel-manager.js";
+import { SubscriptionManager } from "./subscription-manager.js";
+import { HttpRouter } from "./http-router.js";
 import type { JsonRpcRequest, JsonRpcMessage } from "./protocol.js";
 import * as log from "./logger.js";
 
@@ -15,16 +16,18 @@ export class Server {
   // Track which WebSocket belongs to which node
   private wsNodeMap = new Map<WebSocket, string>(); // ws → nodeId
 
-  // Direct node subscriptions (node.subscribe): nodeId → Set<WebSocket>
-  private nodeSubscribers = new Map<string, Set<WebSocket>>();
+  // Direct node subscriptions (node.subscribe / node.unsubscribe)
+  private subs = new SubscriptionManager();
+  private httpRouter: HttpRouter;
 
   constructor(cm: ChannelManager, port: number) {
     this.cm = cm;
     this.port = port;
+    this.httpRouter = new HttpRouter(cm, port);
   }
 
   start(): void {
-    this.httpServer = createServer((req, res) => this.handleHttp(req, res));
+    this.httpServer = createServer((req, res) => this.httpRouter.handle(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
 
     // Hook into channel events for global broadcast
@@ -39,10 +42,10 @@ export class Server {
     // Hook into node events for direct subscriber push
     this.cm.onNodeEvent = (event, node, detail) => {
       if (event === "node.update" || event === "node.statusChanged") {
-        this.notifyNodeSubscribers(node.id, event, node, detail);
+        this.subs.notify(node.id, event, node, detail);
       }
       if (event === "node.stopped" || event === "node.removed") {
-        this.nodeSubscribers.delete(node.id);
+        this.subs.removeNode(node.id);
       }
       if (event === "node.registered") {
         this.broadcastToAllWsClients({
@@ -88,9 +91,7 @@ export class Server {
           this.wsNodeMap.delete(ws);
         }
         // Clean up any node subscriptions this WS had
-        for (const [, subs] of this.nodeSubscribers) {
-          subs.delete(ws);
-        }
+        this.subs.removeSubscriber(ws);
       });
     });
 
@@ -136,6 +137,14 @@ export class Server {
 
         case "channel.close": {
           this.cm.closeChannel(p.channelId as string);
+          this.sendResult(ws, id, { ok: true });
+          break;
+        }
+
+        case "channel.delete": {
+          const channelId = p.channelId as string;
+          if (!channelId) { this.sendError(ws, id, -32602, "channelId required"); return; }
+          this.cm.deleteChannel(channelId);
           this.sendResult(ws, id, { ok: true });
           break;
         }
@@ -253,23 +262,7 @@ export class Server {
           if (!targetId) { this.sendError(ws, id, -32602, "nodeId required"); return; }
           const targetNode = this.cm.nodePool.get(targetId);
           if (!targetNode) { this.sendError(ws, id, -32602, "node not found"); return; }
-
-          if (!this.nodeSubscribers.has(targetId)) {
-            this.nodeSubscribers.set(targetId, new Set());
-          }
-          this.nodeSubscribers.get(targetId)!.add(ws);
-
-          // Replay existing buffer to subscriber
-          if (targetNode.updateBuffer.length > 0) {
-            for (const update of targetNode.updateBuffer) {
-              ws.send(JSON.stringify({
-                jsonrpc: "2.0",
-                method: "node.update",
-                params: { nodeId: targetNode.id, name: targetNode.name, ...update },
-              }));
-            }
-          }
-
+          this.subs.subscribe(ws, targetId, targetNode);
           this.sendResult(ws, id, { ok: true });
           break;
         }
@@ -277,8 +270,7 @@ export class Server {
         case "node.unsubscribe": {
           const targetId = p.nodeId as string;
           if (!targetId) { this.sendError(ws, id, -32602, "nodeId required"); return; }
-          const subs = this.nodeSubscribers.get(targetId);
-          if (subs) subs.delete(ws);
+          this.subs.unsubscribe(ws, targetId);
           this.sendResult(ws, id, { ok: true });
           break;
         }
@@ -286,7 +278,7 @@ export class Server {
         case "node.spawn": {
           const adapter = p.adapter as string;
           const cwd = resolve((p.cwd as string) || process.cwd());
-          const name = (p.name as string) || this.generateNodeName(adapter, cwd);
+          const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
 
           if (this.cm.nodePool.isNameTaken(name)) {
             this.sendError(ws, id, -32602, `name "${name}" already taken`);
@@ -472,366 +464,10 @@ export class Server {
     }
   }
 
-  /**
-   * HTTP API for process nodes (CLI agents) to manage channels via terminal/curl.
-   * All POST endpoints accept JSON body with `from` field to identify the caller node.
-   */
-  private handleHttp(req: IncomingMessage, res: ServerResponse): void {
-    // Health check (includes log path for AI access)
-    if (req.method === "GET" && req.url === "/health") {
-      const logPath = log.getLogPath();
-      res.writeHead(200, { "Content-Type": "application/json" }).end(
-        JSON.stringify({ status: "ok", logFile: logPath })
-      );
-      return;
-    }
-
-    // Blob content retrieval
-    if (req.method === "GET" && req.url?.startsWith("/blob/")) {
-      const blobId = req.url.slice(6); // strip "/blob/"
-      const content = this.cm.blobStore.get(blobId);
-      if (content) {
-        res.writeHead(200, { "Content-Type": "text/plain" }).end(content);
-      } else {
-        res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "blob not found" }));
-      }
-      return;
-    }
-
-    // Log tail (AI can read recent logs via HTTP)
-    if (req.method === "GET" && req.url?.startsWith("/log")) {
-      const logPath = log.getLogPath();
-      if (!logPath) {
-        res.writeHead(200, { "Content-Type": "text/plain" }).end("no log file");
-        return;
-      }
-      try {
-        const content = readFileSync(logPath, "utf8");
-        const lines = content.split("\n");
-        const url = new URL(req.url, `http://localhost:${this.port}`);
-        const tail = parseInt(url.searchParams.get("tail") || "100");
-        const result = lines.slice(-tail).join("\n");
-        res.writeHead(200, { "Content-Type": "text/plain" }).end(result);
-      } catch (e: any) {
-        res.writeHead(500, { "Content-Type": "text/plain" }).end(e.message);
-      }
-      return;
-    }
-
-    if (req.method !== "POST") {
-      res.writeHead(404).end('{"error":"not found"}');
-      return;
-    }
-
-    let body = "";
-    req.on("data", (chunk) => { body += chunk; });
-    req.on("end", async () => {
-      try {
-        const data = JSON.parse(body) as Record<string, unknown>;
-        const result = await this.handleHttpRoute(req.url || "", data);
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: message }));
-      }
-    });
-  }
-
-  private async handleHttpRoute(url: string, data: Record<string, unknown>): Promise<unknown> {
-    const from = data.from as string;
-
-    switch (url) {
-      // --- Channel management ---
-      case "/channel/create": {
-        const cwd = resolve((data.cwd as string) || process.cwd());
-        const ch = this.cm.createChannel(cwd, data.name as string);
-        // Auto-join the calling node if identified
-        if (from) {
-          const node = this.cm.nodePool.getByName(from);
-          if (node) this.cm.addNodeToChannel(ch.id, node.id, from);
-        }
-        return { channelId: ch.id, name: ch.name, cwd: ch.cwd };
-      }
-
-      case "/channel/close": {
-        const channelId = data.channelId as string;
-        if (!channelId) throw new Error("channelId required");
-        this.cm.closeChannel(channelId);
-        return { ok: true };
-      }
-
-      case "/channel/list": {
-        let channelList = this.cm.listChannels();
-        const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
-        if (cwdFilter) {
-          channelList = channelList.filter(ch => ch.cwd === cwdFilter || ch.cwd.startsWith(cwdFilter + "/"));
-        }
-        const channels = channelList.map(ch => ({
-          id: ch.id,
-          name: ch.name,
-          cwd: ch.cwd,
-          nodes: Object.fromEntries(ch.nodes),
-        }));
-        return { channels };
-      }
-
-      case "/channel/listArchived": {
-        const activeIds = this.cm.listChannels().map(ch => ch.id);
-        const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
-        const query = data.query as string | undefined;
-        const rows = this.cm.store.listArchivedChannels(activeIds, cwdFilter, query);
-        const channels = rows.map(r => ({
-          id: r.id,
-          name: r.name,
-          cwd: r.cwd,
-          createdAt: r.createdAt,
-          memberCount: r.memberCount,
-          memberNames: r.memberNames ? r.memberNames.split(",") : [],
-          lastMessage: r.lastFrom ? { from: r.lastFrom, content: r.lastContent, timestamp: r.lastTs } : null,
-          agents: r.agents,
-        }));
-        return { channels };
-      }
-
-      case "/channel/restore": {
-        const channelId = data.channelId as string;
-        if (!channelId) throw new Error("channelId required");
-        const result = this.cm.restoreChannel(channelId);
-        if (!result) throw new Error("channel not found");
-        const { channel: ch, messages } = result;
-        return {
-          channelId: ch.id,
-          name: ch.name,
-          cwd: ch.cwd,
-          messages,
-          agents: this.cm.store.getChannelAgents(channelId),
-        };
-      }
-
-      case "/channel/addNode": {
-        const channelId = data.channelId as string;
-        const nodeId = data.nodeId as string;
-        const nodeName = data.nodeName as string;
-        if (!channelId || !nodeId) throw new Error("channelId and nodeId required");
-        this.cm.addNodeToChannel(channelId, nodeId, nodeName);
-        return { ok: true };
-      }
-
-      case "/channel/removeNode": {
-        const channelId = data.channelId as string;
-        const nodeName = data.nodeName as string;
-        if (!channelId || !nodeName) throw new Error("channelId and nodeName required");
-        this.cm.removeNodeFromChannel(channelId, nodeName);
-        return { ok: true };
-      }
-
-      case "/channel/post":
-      case "/post": {
-        const content = data.content as string;
-        if (!content) throw new Error("content required");
-        if (!from) throw new Error("from required");
-
-        const channelId = data.channelId as string;
-        if (channelId) {
-          // Post to specific channel
-          const msg = this.cm.postMessage(channelId, from, content);
-          if (!msg) throw new Error(`channel ${channelId} not found`);
-          return { ok: true, message: msg };
-        } else {
-          // Post to first channel this node is in (throws if not joined)
-          const msg = this.cm.postFromProcess(from, content);
-          return { ok: true, message: msg };
-        }
-      }
-
-      case "/channel/history": {
-        const channelId = data.channelId as string;
-        if (!channelId) throw new Error("channelId required");
-        const msgs = this.cm.getHistory(channelId, data.limit as number, data.before as number);
-        return { messages: msgs };
-      }
-
-      // --- Node management ---
-      case "/node/spawn": {
-        const adapter = data.adapter as string;
-        if (!adapter) throw new Error("adapter required");
-        const cwd = resolve((data.cwd as string) || process.cwd());
-        const name = (data.name as string) || this.generateNodeName(adapter, cwd);
-
-        if (this.cm.nodePool.isNameTaken(name)) {
-          throw new Error(`name "${name}" already taken`);
-        }
-
-        const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
-        return { nodeId, name, status: "connecting" };
-      }
-
-      case "/node/join": {
-        const nodeName = data.nodeName as string;
-        const channelId = data.channelId as string;
-        if (!nodeName || !channelId) throw new Error("nodeName and channelId required");
-        const node = this.cm.nodePool.getByName(nodeName);
-        if (!node) throw new Error(`node "${nodeName}" not found`);
-        this.cm.addNodeToChannel(channelId, node.id, nodeName);
-        return { ok: true };
-      }
-
-      case "/node/leave": {
-        const nodeName = data.nodeName as string;
-        const channelId = data.channelId as string;
-        if (!nodeName || !channelId) throw new Error("nodeName and channelId required");
-        this.cm.removeNodeFromChannel(channelId, nodeName);
-        return { ok: true };
-      }
-
-      case "/node/stop": {
-        const nodeId = data.nodeId as string;
-        const nodeName = data.nodeName as string;
-        if (nodeId) {
-          this.cm.stopNode(nodeId);
-        } else if (nodeName) {
-          const node = this.cm.nodePool.getByName(nodeName);
-          if (node) this.cm.stopNode(node.id);
-          else throw new Error(`node "${nodeName}" not found`);
-        } else {
-          throw new Error("nodeId or nodeName required");
-        }
-        return { ok: true };
-      }
-
-      case "/node/cancel": {
-        const nodeId = data.nodeId as string;
-        const nodeName = data.nodeName as string;
-        let targetId: string | undefined;
-        if (nodeId) {
-          targetId = nodeId;
-        } else if (nodeName) {
-          const node = this.cm.nodePool.getByName(nodeName);
-          if (!node) throw new Error(`node "${nodeName}" not found`);
-          targetId = node.id;
-        } else {
-          throw new Error("nodeId or nodeName required");
-        }
-        return await this.cm.nodePool.cancelNode(targetId);
-      }
-
-      case "/node/list": {
-        let nodes = this.cm.nodePool.listAll();
-        const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
-        if (cwdFilter) {
-          // Monitor nodes (e.g. context-guardian) are global — don't filter by cwd
-          nodes = nodes.filter(n =>
-            n.capabilities.includes("monitor") ||
-            n.cwd === cwdFilter ||
-            (n.cwd && n.cwd.startsWith(cwdFilter + "/"))
-          );
-        }
-        return { nodes: nodes.map(n => n.toInfo()) };
-      }
-
-      // --- Session management ---
-
-      case "/session/list": {
-        const nodeName = data.nodeName as string;
-        if (!nodeName) throw new Error("nodeName required");
-        const node = this.cm.nodePool.getByName(nodeName);
-        if (!node) throw new Error(`node "${nodeName}" not found`);
-        return await this.cm.nodePool.sessionList(node.id);
-      }
-
-      case "/session/load": {
-        const nodeName = data.nodeName as string;
-        const sessionId = data.sessionId as string;
-        if (!nodeName || !sessionId) throw new Error("nodeName and sessionId required");
-        const node = this.cm.nodePool.getByName(nodeName);
-        if (!node) throw new Error(`node "${nodeName}" not found`);
-        return await this.cm.nodePool.sessionLoad(node.id, sessionId);
-      }
-
-      case "/session/clear": {
-        const nodeName = data.nodeName as string;
-        if (!nodeName) throw new Error("nodeName required");
-        const node = this.cm.nodePool.getByName(nodeName);
-        if (!node) throw new Error(`node "${nodeName}" not found`);
-        return await this.cm.nodePool.sessionClear(node.id);
-      }
-
-      case "/session/compact": {
-        const nodeName = data.nodeName as string;
-        if (!nodeName) throw new Error("nodeName required");
-        const node = this.cm.nodePool.getByName(nodeName);
-        if (!node) throw new Error(`node "${nodeName}" not found`);
-        return await this.cm.nodePool.sessionCompact(node.id);
-      }
-
-      case "/session/reset": {
-        const nodeName = data.nodeName as string;
-        const expectedSessionId = data.expectedSessionId as string;
-        const summaryPath = data.summaryPath as string;
-        if (!nodeName) throw new Error("nodeName required");
-        if (!expectedSessionId) throw new Error("expectedSessionId required");
-        if (!summaryPath) throw new Error("summaryPath required");
-        const node = this.cm.nodePool.getByName(nodeName);
-        if (!node) throw new Error(`node "${nodeName}" not found`);
-        const selfReset = !!data.selfReset;
-        const result = await this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath, selfReset);
-        if (result.error) throw new Error(result.error);
-        return result;
-      }
-
-      default:
-        throw new Error(`unknown endpoint: ${url}`);
-    }
-  }
-
   /** Broadcast a notification to ALL connected WS clients (for global events like channel create/close) */
   private broadcastToAllWsClients(notification: Record<string, unknown>): void {
     const msg = JSON.stringify(notification);
     for (const ws of this.wss.clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(msg);
-      }
-    }
-  }
-
-  /** Generate auto name: {adapter}-{basename(cwd)}, with -2 -3 suffix for conflicts */
-  private generateNodeName(adapter: string, cwd: string): string {
-    const dir = basename(cwd) || "agent";
-    const base = `${adapter}-${dir}`;
-    if (!this.cm.nodePool.isNameTaken(base)) return base;
-    for (let i = 2; ; i++) {
-      const name = `${base}-${i}`;
-      if (!this.cm.nodePool.isNameTaken(name)) return name;
-    }
-  }
-
-  /** Notify direct subscribers of a node's events */
-  private notifyNodeSubscribers(
-    nodeId: string,
-    event: string,
-    node: { id: string; name: string; status: string; activity?: string },
-    detail?: Record<string, unknown>,
-  ): void {
-    const subs = this.nodeSubscribers.get(nodeId);
-    if (!subs || subs.size === 0) return;
-
-    let notification: Record<string, unknown>;
-    if (event === "node.update") {
-      notification = {
-        jsonrpc: "2.0",
-        method: "node.update",
-        params: { nodeId: node.id, name: node.name, ...(detail || {}) },
-      };
-    } else {
-      notification = {
-        jsonrpc: "2.0",
-        method: "node.statusChanged",
-        params: { nodeId: node.id, name: node.name, status: node.status, activity: node.activity },
-      };
-    }
-
-    const msg = JSON.stringify(notification);
-    for (const ws of subs) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(msg);
       }
