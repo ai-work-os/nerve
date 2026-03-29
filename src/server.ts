@@ -54,6 +54,13 @@ export class Server {
           params: { nodeId: node.id, name: node.name, adapter: node.adapter ?? null, transport: node.transport.type },
         });
       }
+      if (event === "node.statusChanged") {
+        this.broadcastToAllWsClients({
+          jsonrpc: "2.0",
+          method: "node.statusChanged",
+          params: { nodeId: node.id, name: node.name, status: node.status, activity: node.activity },
+        });
+      }
       if (event === "node.stopped") {
         this.broadcastToAllWsClients({
           jsonrpc: "2.0",

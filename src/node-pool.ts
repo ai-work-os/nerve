@@ -195,6 +195,7 @@ export class NodePool {
         node.status = "idle";
         this.store.updateNodeStatus(id, "idle", sessionId);
         this.onEvent("node.ready", node);
+        this.onEvent("node.statusChanged", node);
       },
       onError: (err) => {
         node.status = "error";
@@ -206,6 +207,7 @@ export class NodePool {
     this.acpClients.set(id, client);
     client.handshake(); // Don't await - let it run async
 
+    this.onEvent("node.registered", node);
     return node;
   }
 
