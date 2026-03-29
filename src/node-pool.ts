@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NerveNode } from "./node.js";
@@ -23,6 +23,11 @@ export class NodePool {
   constructor(store: Store, onEvent: NodeEventHandler) {
     this.store = store;
     this.onEvent = onEvent;
+  }
+
+  /** Emit a node event (for use by server when mutating node state externally) */
+  emitEvent(event: string, node: NerveNode, detail?: Record<string, unknown>): void {
+    this.onEvent(event, node, detail);
   }
 
   get(id: string): NerveNode | undefined {
@@ -91,15 +96,28 @@ export class NodePool {
     this.nameIndex.set(name, id);
     this.store.insertNode(id, name, "stdio", adapterName, adapter.capabilities, cwd);
 
-    // Ensure .claude/settings.local.json exists (claude-agent-acp requires it)
+    // Ensure .claude/settings.local.json exists with model preference (claude-agent-acp requires it)
     if (adapterName.startsWith("c") && adapterName !== "codex") {
       const settingsDir = join(cwd, ".claude");
       const settingsFile = join(settingsDir, "settings.local.json");
       if (!existsSync(settingsFile)) {
         mkdirSync(settingsDir, { recursive: true });
-        writeFileSync(settingsFile, JSON.stringify({
+        const settings: Record<string, unknown> = {
           permissions: { allow: [], deny: [], ask: [] },
-        }, null, 2));
+        };
+        if (adapter.model) {
+          settings.model = adapter.model;
+        }
+        writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+      } else if (adapter.model) {
+        // Ensure model is set in existing settings file
+        try {
+          const existing = JSON.parse(readFileSync(settingsFile, "utf8"));
+          if (existing.model !== adapter.model) {
+            existing.model = adapter.model;
+            writeFileSync(settingsFile, JSON.stringify(existing, null, 2));
+          }
+        } catch { /* ignore parse errors */ }
       }
     }
 

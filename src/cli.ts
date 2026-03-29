@@ -9,8 +9,9 @@
  *   nerve node list|spawn|stop
  */
 
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import http from "node:http";
 
 const DEFAULT_PORT = 4800;
@@ -65,10 +66,12 @@ function out(data: unknown): void {
 async function cmdServe(args: string[]) {
   let port = DEFAULT_PORT;
   let dataDir = resolve(homedir(), ".nerve");
+  let noGuardian = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
     else if (args[i] === "--data" && args[i + 1]) { dataDir = resolve(args[i + 1]); i++; }
+    else if (args[i] === "--no-guardian") { noGuardian = true; }
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
@@ -83,8 +86,57 @@ async function cmdServe(args: string[]) {
   const server = new Server(nerve, port);
   server.start();
 
+  // Auto-start context-guardian plugin
+  let guardianStopping = false;
+  let guardianProc: import("node:child_process").ChildProcess | undefined;
+
+  if (!noGuardian) {
+    const { spawn: spawnChild } = await import("node:child_process");
+    const srcDir = dirname(fileURLToPath(import.meta.url));
+    const guardianScript = resolve(srcDir, "plugins/context-guardian/index.ts");
+    let restarts = 0;
+    const MAX_RESTARTS = 3;
+
+    let resetTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const startGuardian = () => {
+      guardianProc = spawnChild("npx", ["tsx", guardianScript, "--port", String(port)], {
+        stdio: "ignore",
+        detached: false,
+      });
+      info(`guardian started (pid: ${guardianProc.pid})`);
+
+      // Reset restart counter after 60s of stable running
+      if (resetTimer) clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => { restarts = 0; }, 60_000);
+
+      guardianProc.on("error", (err) => {
+        info(`guardian start failed: ${err.message}`);
+      });
+
+      guardianProc.on("exit", (code) => {
+        if (resetTimer) clearTimeout(resetTimer);
+        info(`guardian exited (code: ${code})`);
+        if (!guardianStopping && restarts < MAX_RESTARTS) {
+          restarts++;
+          info(`guardian restarting (${restarts}/${MAX_RESTARTS})...`);
+          setTimeout(startGuardian, 2000);
+        } else if (restarts >= MAX_RESTARTS) {
+          info(`guardian exceeded max restarts (${MAX_RESTARTS}), giving up`);
+        }
+      });
+    };
+
+    startGuardian();
+  }
+
   const shutdown = async () => {
     info("shutting down...");
+    guardianStopping = true;
+    if (guardianProc && !guardianProc.killed) {
+      guardianProc.kill();
+      info("guardian stopped");
+    }
     await server.shutdown();
     closeLog();
     process.exit(0);
@@ -276,7 +328,8 @@ function showHelp() {
   console.log(`nerve — Nerve CLI
 
 Commands:
-  serve [--port 4800] [--data DIR]      Start the Nerve server
+  serve [--port 4800] [--data DIR] [--no-guardian]
+                                         Start the Nerve server
   status                                 Show server status
 
   channel list                           List channels

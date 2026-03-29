@@ -356,19 +356,8 @@ export class ChannelManager {
         break;
 
       case "node.update":
-        // Broadcast agent output to all channels the node is in
-        log.info(`node.update: ${node.name} channels=[${[...node.channels].join(",")}] detail=${JSON.stringify(detail || {}).slice(0, 300)}`);
-        for (const chId of node.channels) {
-          this.broadcastToChannel(chId, {
-            jsonrpc: "2.0",
-            method: "node.update",
-            params: {
-              nodeId: node.id,
-              name: node.name,
-              ...(detail || {}),
-            },
-          });
-        }
+        // Session output (thinking/tool_call/message_chunk) stays in node.subscribe path only.
+        // Channels only carry channel.message / channel.mention — no DM session leakage.
         break;
 
       case "node.statusChanged":

@@ -90,6 +90,7 @@ export interface NodeInfo {
   permissions: PermissionLevel;
   transport: "stdio" | "websocket";
   adapter?: string;
+  activity?: string;
   cwd?: string;
   sessionId?: string;
   channels: string[];

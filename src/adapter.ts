@@ -5,6 +5,8 @@ export interface AdapterConfig {
   authMethod?: string;
   capabilities: string[];
   terminal: boolean;
+  /** Model preference written to settings.local.json for claude-agent-acp */
+  model?: string;
 }
 
 // Proxy env from system (needed for API access)
@@ -20,6 +22,7 @@ const adapters: Record<string, AdapterConfig> = {
     env: { ...proxyEnv },
     capabilities: ["code", "terminal", "analysis"],
     terminal: true,
+    model: "opus[1m]",
   },
   c1: {
     cmd: "claude-agent-acp",

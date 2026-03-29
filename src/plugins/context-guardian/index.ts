@@ -62,6 +62,7 @@ class ContextGuardian extends PluginBase {
   private triggeredSessions = new Map<string, string>();  // nodeName → lastTriggeredSessionId
   private lastTriggerTime = new Map<string, number>();     // nodeName → timestamp
   private pollTimer?: ReturnType<typeof setInterval>;
+  private lastActivity?: string;  // Most recent notable activity for display
 
   constructor() {
     super({
@@ -74,6 +75,7 @@ class ContextGuardian extends PluginBase {
 
   protected async onReady(): Promise<void> {
     this.log("info", `config: threshold=${THRESHOLD}, cooldown=${COOLDOWN_MS}ms, interval=${INTERVAL_MS}ms`);
+    await this.setActivity("starting");
 
     // Start polling
     this.pollTimer = setInterval(() => this.poll(), INTERVAL_MS);
@@ -86,18 +88,36 @@ class ContextGuardian extends PluginBase {
       clearInterval(this.pollTimer);
       this.pollTimer = undefined;
     }
+    this.lastActivity = undefined;
   }
 
   private async poll(): Promise<void> {
     try {
       const result = await this.request("node.list");
-      this.checkAgents(result.nodes || []);
+      const nodes: NodeInfo[] = result.nodes || [];
+      // Count monitored agents (stdio nodes excluding self)
+      const agents = nodes.filter(n => n.transport === "stdio");
+      this.checkAgents(nodes);
+      // Update activity with current monitoring status
+      const triggered = this.lastActivity;
+      await this.setActivity(triggered || `monitoring ${agents.length} agents`);
     } catch (err) {
       this.log("warn", `poll failed: ${err}`);
+      await this.setActivity("poll failed").catch(() => {});
+    }
+  }
+
+  private async setActivity(activity: string): Promise<void> {
+    try {
+      await this.request("node.activity", { activity });
+    } catch {
+      // Ignore — activity update is best-effort
     }
   }
 
   private checkAgents(nodes: NodeInfo[]): void {
+    this.lastActivity = undefined;  // Reset per poll cycle
+
     for (const node of nodes) {
       if (node.name === this.options.name) continue;  // Skip self
 
@@ -107,12 +127,15 @@ class ContextGuardian extends PluginBase {
       const lastTime = this.lastTriggerTime.get(node.name) || 0;
       if (Date.now() - lastTime < COOLDOWN_MS) {
         this.log("info", `${node.name}: cooldown active, skipping`);
+        const remaining = Math.ceil((COOLDOWN_MS - (Date.now() - lastTime)) / 1000);
+        this.lastActivity = `cooldown ${node.name} ${remaining}s`;
         continue;
       }
 
       const ratio = node.usage!.tokenUsed / node.usage!.tokenSize;
       this.log("info", `${node.name}: usage ${(ratio * 100).toFixed(0)}% > ${(THRESHOLD * 100).toFixed(0)}% threshold, triggering`);
       this.triggerSummary(node, ratio);
+      this.lastActivity = `triggered ${node.name}`;
 
       // Mark as triggered
       this.triggeredSessions.set(node.name, node.sessionId!);

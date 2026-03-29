@@ -75,9 +75,11 @@ export class Server {
       ws.on("close", () => {
         const nodeId = this.wsNodeMap.get(ws);
         if (nodeId) {
-          // Remove node from all channels
           const node = this.cm.nodePool.get(nodeId);
           if (node) {
+            // Clear activity on disconnect
+            node.activity = undefined;
+            // Remove node from all channels
             for (const chId of node.channels) {
               this.cm.removeNodeFromChannel(chId, node.name);
             }
@@ -205,9 +207,6 @@ export class Server {
           const channelId = p.channelId as string;
           this.cm.addNodeToChannel(channelId, nodeId, p.name as string);
           this.sendResult(ws, id, { ok: true });
-
-          // Replay buffered updates from process nodes already in this channel
-          this.replayToClient(ws, channelId);
           break;
         }
 
@@ -225,10 +224,6 @@ export class Server {
           const addNodeId = p.nodeId as string;
           this.cm.addNodeToChannel(channelId, addNodeId, p.name as string);
           this.sendResult(ws, id, { ok: true });
-
-          // If the added node is a process node with buffered updates,
-          // replay them to all WS clients already in this channel
-          this.replayNodeUpdatesToChannel(channelId, addNodeId);
           break;
         }
 
@@ -316,9 +311,30 @@ export class Server {
           let nodes = this.cm.nodePool.listAll();
           const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
           if (cwdFilter) {
-            nodes = nodes.filter(n => n.cwd === cwdFilter || (n.cwd && n.cwd.startsWith(cwdFilter + "/")));
+            // Monitor nodes (e.g. context-guardian) are global — don't filter by cwd
+            nodes = nodes.filter(n =>
+              n.capabilities.includes("monitor") ||
+              n.cwd === cwdFilter ||
+              (n.cwd && n.cwd.startsWith(cwdFilter + "/"))
+            );
           }
           this.sendResult(ws, id, { nodes: nodes.map(n => n.toInfo()) });
+          break;
+        }
+
+        case "node.activity": {
+          // Only the node itself can update its own activity
+          const callerNodeId = this.wsNodeMap.get(ws);
+          if (!callerNodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
+          const node = this.cm.nodePool.get(callerNodeId);
+          if (!node) { this.sendError(ws, id, -32600, "node not found"); return; }
+          const activity = p.activity as string | null;
+          // Normalize empty string / null to undefined so toInfo() omits the field
+          node.activity = activity || undefined;
+          node.touch();
+          // Emit statusChanged to propagate activity update via existing pipeline
+          this.cm.nodePool.emitEvent("node.statusChanged", node);
+          this.sendResult(ws, id, { ok: true });
           break;
         }
 
@@ -703,7 +719,12 @@ export class Server {
         let nodes = this.cm.nodePool.listAll();
         const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
         if (cwdFilter) {
-          nodes = nodes.filter(n => n.cwd === cwdFilter || (n.cwd && n.cwd.startsWith(cwdFilter + "/")));
+          // Monitor nodes (e.g. context-guardian) are global — don't filter by cwd
+          nodes = nodes.filter(n =>
+            n.capabilities.includes("monitor") ||
+            n.cwd === cwdFilter ||
+            (n.cwd && n.cwd.startsWith(cwdFilter + "/"))
+          );
         }
         return { nodes: nodes.map(n => n.toInfo()) };
       }
@@ -769,53 +790,6 @@ export class Server {
     for (const ws of this.wss.clients) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(msg);
-      }
-    }
-  }
-
-  /** Replay buffered updates from process nodes already in a channel to a single WS client (on join) */
-  private replayToClient(ws: WebSocket, channelId: string): void {
-    const ch = this.cm.getChannel(channelId);
-    if (!ch) return;
-
-    for (const [, nodeId] of ch.nodes) {
-      const node = this.cm.nodePool.get(nodeId);
-      if (!node || !node.isProcess || node.updateBuffer.length === 0) continue;
-
-      log.info(`replay: ${node.name} → new client in ${channelId} (${node.updateBuffer.length} updates)`);
-      for (const update of node.updateBuffer) {
-        ws.send(JSON.stringify({
-          jsonrpc: "2.0",
-          method: "node.update",
-          params: { nodeId: node.id, name: node.name, ...update },
-        }));
-      }
-    }
-  }
-
-  /** Replay a specific node's buffer to all WS clients in a channel (after addNode) */
-  private replayNodeUpdatesToChannel(channelId: string, nodeId: string): void {
-    const node = this.cm.nodePool.get(nodeId);
-    if (!node || !node.isProcess || node.updateBuffer.length === 0) return;
-
-    const ch = this.cm.getChannel(channelId);
-    if (!ch) return;
-
-    log.info(`replay: ${node.name} addNode → channel ${channelId} (${node.updateBuffer.length} updates to WS clients)`);
-
-    for (const [, memberId] of ch.nodes) {
-      const member = this.cm.nodePool.get(memberId);
-      if (!member || member.isProcess || !member.transport.alive) continue;
-      for (const update of node.updateBuffer) {
-        member.transport.send({
-          jsonrpc: "2.0",
-          method: "node.update",
-          params: {
-            nodeId: node.id,
-            name: node.name,
-            ...update,
-          },
-        } as any);
       }
     }
   }

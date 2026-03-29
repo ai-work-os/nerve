@@ -709,15 +709,15 @@ async function testUpdateBuffer() {
     `got ${bufResult.updates?.length || 0} updates`,
   );
 
-  // Client 2: new connection, join same channel → should receive replay
+  // Client 2: new connection, subscribe to agent → should receive replay via node.subscribe
   const c2 = new WsClient("buf-client2");
   await c2.connect();
   await c2.request("node.register", { name: "buf-client2", capabilities: ["ui"] });
   c2.clearNotifications();
-  await c2.request("channel.join", { channelId: ch.channelId });
+  await c2.request("node.subscribe", { nodeId: agentNode.id });
   await sleep(500);
 
-  // c2 should have received replayed node.update notifications
+  // c2 should have received replayed node.update notifications via subscribe
   const replayed = c2.getNotifications("node.update");
   assert(
     replayed.length > 0,
@@ -844,20 +844,12 @@ async function testMultiTurnBuffer() {
     `positions: ${firstUser}, ${secondUser} in [${kinds.join(",")}]`,
   );
 
-  // Reconnect test: new client joins and should see all messages
-  const ch = await c1.request("channel.create", { cwd: "/tmp" });
-  await c1.request("channel.join", { channelId: ch.channelId });
-  await c1.request("channel.addNode", {
-    channelId: ch.channelId,
-    nodeId: agentNode.id,
-    name: "mt-agent",
-  });
-
+  // Reconnect test: new client subscribes and should see all messages via node.subscribe
   const c2 = new WsClient("mt-client2");
   await c2.connect();
   await c2.request("node.register", { name: "mt-client2", capabilities: ["ui"] });
   c2.clearNotifications();
-  await c2.request("channel.join", { channelId: ch.channelId });
+  await c2.request("node.subscribe", { nodeId: agentNode.id });
   await sleep(500);
 
   const replayed = c2.getNotifications("node.update");

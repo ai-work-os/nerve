@@ -95,6 +95,7 @@ export class NerveNode {
       permissions: this.permissions,
       transport: this.transport.type,
       adapter: this.adapter,
+      activity: this.activity,
       channels: [...this.channels],
       cwd: this.cwd,
       sessionId: this.sessionId,
