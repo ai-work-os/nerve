@@ -97,6 +97,13 @@ class ContextGuardian extends PluginBase {
       const nodes: NodeInfo[] = result.nodes || [];
       // Count monitored agents (stdio nodes excluding self)
       const agents = nodes.filter(n => n.transport === "stdio");
+      if (agents.length > 0) {
+        const summary = agents.map(a => {
+          const usage = a.usage ? `${((a.usage.tokenUsed / (a.usage.tokenSize || 1)) * 100).toFixed(0)}%` : "n/a";
+          return `${a.name}(${usage})`;
+        }).join(", ");
+        this.log("info", `poll: ${agents.length} agents — ${summary}`);
+      }
       this.checkAgents(nodes);
       // Update activity with current monitoring status
       const triggered = this.lastActivity;

@@ -321,6 +321,31 @@ export class Server {
           break;
         }
 
+        case "node.log": {
+          // Program nodes push log entries to their updateBuffer for DM observability
+          const callerNodeId = this.wsNodeMap.get(ws);
+          if (!callerNodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
+          const node = this.cm.nodePool.get(callerNodeId);
+          if (!node) { this.sendError(ws, id, -32600, "node not found"); return; }
+
+          const entries = p.entries as Array<{ level: string; message: string; ts?: string }> | undefined;
+          if (!Array.isArray(entries) || entries.length === 0) {
+            this.sendError(ws, id, -32602, "entries must be a non-empty array");
+            return;
+          }
+          // Fill in timestamps for entries missing them
+          const now = new Date().toISOString();
+          for (const entry of entries) {
+            if (!entry.ts) entry.ts = now;
+          }
+
+          const updateParams = { update: { sessionUpdate: "node_log", entries } };
+          node.pushUpdate(updateParams);
+          this.cm.nodePool.emitEvent("node.update", node, updateParams);
+          this.sendResult(ws, id, { ok: true });
+          break;
+        }
+
         case "node.activity": {
           // Only the node itself can update its own activity
           const callerNodeId = this.wsNodeMap.get(ws);

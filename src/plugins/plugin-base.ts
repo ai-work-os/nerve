@@ -6,6 +6,10 @@
  */
 
 import WebSocket from "ws";
+import { mkdirSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
 
 export interface PluginOptions {
   port: number;
@@ -22,6 +26,9 @@ export class PluginBase {
   protected ws!: WebSocket;
   protected nodeId?: string;
   protected options: Required<PluginOptions>;
+  /** Persistent data directory: ~/.nerve/plugins/{name}/ */
+  protected dataDir: string;
+  private logPath: string;
   private reqId = 1;
   private pending = new Map<number, { resolve: PendingResolve; reject: PendingReject }>();
   private notificationHandlers = new Map<string, (params: any) => void>();
@@ -35,6 +42,9 @@ export class PluginBase {
       reconnectDelay: 5000,
       ...opts,
     };
+    this.dataDir = resolve(homedir(), `.nerve/plugins/${this.options.name}`);
+    this.logPath = resolve(this.dataDir, "activity.log");
+    mkdirSync(this.dataDir, { recursive: true });
   }
 
   /** Start the plugin: connect → register → onReady() */
@@ -77,10 +87,17 @@ export class PluginBase {
     this.notificationHandlers.set(method, handler);
   }
 
-  /** Structured log with plugin name prefix */
+  /** Structured log: stdout + activity.log file + node.log RPC (DM observability). */
   log(level: "info" | "warn" | "error", msg: string): void {
     const ts = new Date().toISOString();
+    const line = `${ts} [${level.toUpperCase()}] ${msg}`;
     console.log(`${ts} [${this.options.name}] [${level.toUpperCase()}] ${msg}`);
+    // Append to persistent activity.log
+    appendFile(this.logPath, line + "\n").catch(() => {});
+    // Push to server for DM view (best-effort, don't block or error)
+    if (this.connected && this.nodeId) {
+      this.request("node.log", { entries: [{ level, message: msg, ts }] }).catch(() => {});
+    }
   }
 
   private send(msg: Record<string, unknown>): void {

@@ -11,7 +11,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rmSync, existsSync, readFileSync } from "node:fs";
+import { rmSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import http from "node:http";
 import WebSocket from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -1896,6 +1896,168 @@ async function testCwdNormalization() {
 }
 
 // ============================================================
+// node.log — program node observability
+// ============================================================
+
+async function testNodeLog() {
+  console.log("\n▸ node.log (program node DM observability)");
+
+  // 1. Register a WS node (simulating a program node like context-guardian)
+  const plugin = new WsClient("log-plugin");
+  await plugin.connect();
+  await plugin.request("node.register", { name: "log-plugin", capabilities: ["monitor"] });
+
+  // 2. Register an observer and subscribe to the plugin node
+  const observer = new WsClient("log-observer");
+  await observer.connect();
+  await observer.request("node.register", { name: "log-observer", capabilities: ["ui"] });
+
+  // Find the plugin node
+  const nodes = await observer.request("node.list");
+  const pluginNode = nodes.nodes.find((n: any) => n.name === "log-plugin");
+  assert(!!pluginNode, "node.log: plugin node found");
+  if (!pluginNode) { await plugin.disconnect(); await observer.disconnect(); return; }
+
+  // Subscribe to plugin node updates
+  observer.clearNotifications();
+  await observer.request("node.subscribe", { nodeId: pluginNode.id });
+
+  // 3. Plugin sends node.log with single entry
+  const logResult = await plugin.request("node.log", {
+    entries: [{ level: "info", message: "poll started" }],
+  });
+  assert(logResult.ok, "node.log: returns ok");
+  await sleep(200);
+
+  // Observer should receive node.update with sessionUpdate="node_log"
+  let updates = observer.getNotifications("node.update");
+  assert(updates.length > 0, "node.log: observer received node.update", `got ${updates.length}`);
+  if (updates.length > 0) {
+    const update = updates[0].params.update;
+    assertEq(update.sessionUpdate, "node_log", "node.log: sessionUpdate is node_log");
+    assert(Array.isArray(update.entries), "node.log: entries is array");
+    assertEq(update.entries[0].level, "info", "node.log: entry level is info");
+    assertEq(update.entries[0].message, "poll started", "node.log: entry message matches");
+    assert(!!update.entries[0].ts, "node.log: entry has timestamp");
+  }
+
+  // 4. Batch entries
+  observer.clearNotifications();
+  await plugin.request("node.log", {
+    entries: [
+      { level: "info", message: "found 3 agents" },
+      { level: "warn", message: "agent-1 usage 80%" },
+    ],
+  });
+  await sleep(200);
+
+  updates = observer.getNotifications("node.update");
+  assert(updates.length > 0, "node.log batch: observer received update");
+  if (updates.length > 0) {
+    const entries = updates[0].params.update.entries;
+    assertEq(entries.length, 2, "node.log batch: 2 entries");
+    assertEq(entries[0].message, "found 3 agents", "node.log batch: first entry");
+    assertEq(entries[1].level, "warn", "node.log batch: second level");
+  }
+
+  // 5. Replay on re-subscribe — new observer should get buffered log entries
+  const observer2 = new WsClient("log-observer-2");
+  await observer2.connect();
+  await observer2.request("node.register", { name: "log-observer-2", capabilities: ["ui"] });
+  observer2.clearNotifications();
+  await observer2.request("node.subscribe", { nodeId: pluginNode.id });
+  await sleep(200);
+
+  const replayed = observer2.getNotifications("node.update");
+  assert(replayed.length >= 2, "node.log replay: new subscriber gets buffered entries", `got ${replayed.length}`);
+  // Verify replayed entries contain node_log
+  const logReplays = replayed.filter((n: any) => n.params.update?.sessionUpdate === "node_log");
+  assert(logReplays.length >= 2, "node.log replay: replayed entries are node_log type", `got ${logReplays.length}`);
+
+  // 6. Error for non-registered caller
+  const stranger = new WsClient("log-stranger");
+  await stranger.connect();
+  // Don't register — try node.log directly
+  try {
+    await stranger.request("node.log", { entries: [{ level: "info", message: "nope" }] });
+    assert(false, "node.log: unregistered caller should fail");
+  } catch (e: any) {
+    assert(e.message.includes("not registered"), "node.log: unregistered caller gets error");
+  }
+
+  await plugin.disconnect();
+  await observer.disconnect();
+  await observer2.disconnect();
+  await stranger.disconnect();
+}
+
+// ============================================================
+// plugin-base: dataDir + activity.log
+// ============================================================
+
+async function testPluginDataDir() {
+  console.log("\n▸ plugin-base dataDir + activity.log");
+
+  // Import PluginBase dynamically
+  const { PluginBase } = await import("../src/plugins/plugin-base.js");
+
+  const testName = `test-plugin-${Date.now()}`;
+  const expectedDir = resolve(process.env.HOME || "~", `.nerve/plugins/${testName}`);
+
+  // Clean up from previous runs
+  if (existsSync(expectedDir)) rmSync(expectedDir, { recursive: true });
+
+  class TestPlugin extends PluginBase {
+    protected async onReady(): Promise<void> {
+      // Log some messages after registration
+      this.log("info", "ready");
+      this.log("warn", "test warning");
+      this.log("error", "test error");
+    }
+  }
+
+  const plugin = new TestPlugin({ port: TEST_PORT, name: testName });
+  await plugin.start();
+  // Give appendFile calls time to flush
+  await sleep(500);
+
+  // 1. dataDir exists
+  assert(existsSync(expectedDir), "plugin-dataDir: directory created");
+
+  // 2. dataDir property is accessible
+  assert((plugin as any).dataDir === expectedDir, "plugin-dataDir: dataDir property matches");
+
+  // 3. activity.log exists and has content
+  const logPath = resolve(expectedDir, "activity.log");
+  assert(existsSync(logPath), "plugin-dataDir: activity.log created");
+
+  if (existsSync(logPath)) {
+    const content = readFileSync(logPath, "utf-8");
+    const lines = content.trim().split("\n");
+    // Should have multiple log lines (connecting, connected, registered, ready, warning, error)
+    assert(lines.length >= 3, "plugin-dataDir: activity.log has multiple lines", `got ${lines.length}`);
+
+    // Verify format: ISO timestamp [{LEVEL}] message
+    const hasInfo = lines.some(l => l.includes("[INFO]") && l.includes("ready"));
+    const hasWarn = lines.some(l => l.includes("[WARN]") && l.includes("test warning"));
+    const hasError = lines.some(l => l.includes("[ERROR]") && l.includes("test error"));
+    assert(hasInfo, "plugin-dataDir: activity.log has INFO line");
+    assert(hasWarn, "plugin-dataDir: activity.log has WARN line");
+    assert(hasError, "plugin-dataDir: activity.log has ERROR line");
+
+    // Verify ISO timestamp format at start of line
+    const tsMatch = lines[0].match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    assert(!!tsMatch, "plugin-dataDir: log line starts with ISO timestamp");
+  }
+
+  plugin.stop();
+  await sleep(300);
+
+  // Clean up
+  if (existsSync(expectedDir)) rmSync(expectedDir, { recursive: true });
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 
@@ -1949,6 +2111,8 @@ async function main() {
     await testCwdNormalization();
     await testLogUsesLocalTime();
     await testMentionBusyCancels();
+    await testNodeLog();
+    await testPluginDataDir();
 
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
