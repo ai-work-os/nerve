@@ -86,6 +86,21 @@ rl.on("line", (line) => {
         },
       });
 
+      // "activity" prompts: simulate tool_call then delay 3s before end_turn
+      if (text.includes("activity")) {
+        sendNotification("session/update", {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            title: "mock_tool",
+          },
+        });
+        setTimeout(() => {
+          sendResponse(id, { stopReason: "end_turn" });
+        }, 3000);
+        break;
+      }
+
       // "mcpServers?" query — return what was received on session/new
       if (text.includes("mcpServers?")) {
         sendResponse(id, { stopReason: "end_turn", mcpServers: receivedMcpServers });

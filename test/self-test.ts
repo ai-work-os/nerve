@@ -2633,6 +2633,53 @@ async function testPromptNodeRejectRecovery() {
 }
 
 // ============================================================
+// promptNode: end_turn clears activity
+// ============================================================
+
+async function testPromptNodeEndTurnClearsActivity() {
+  console.log("\n▸ promptNode: end_turn clears activity");
+
+  const c = new WsClient("endturn-activity-test");
+  await c.connect();
+  await c.request("node.register", { name: "endturn-activity-test", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "endturn-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "endturn-activity: agent spawned");
+  await sleep(3000);
+
+  // Subscribe to observe status changes
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+
+  // Create channel and send prompt (mock agent responds with end_turn)
+  const ch = await c.request("channel.create", { cwd: "/tmp/endturn-test", name: "endturn-ch" });
+  await c.request("channel.join", { channelId: ch.channelId });
+  await httpPost("/channel/addNode", { channelId: ch.channelId, nodeId: spawn.nodeId, nodeName: "endturn-agent" });
+  await c.request("channel.post", { channelId: ch.channelId, content: "@endturn-agent activity test" });
+
+  // Brief wait for tool_call update to set activity (mock sends tool_call before responding)
+  await sleep(1000);
+
+  // Verify activity is set during prompt (tool_call → "tool: mock_tool")
+  let nodesList = await c.request("node.list");
+  let agent = nodesList.nodes.find((n: any) => n.name === "endturn-agent");
+  assert(!!agent?.activity, "endturn-activity: activity set during prompt", `got: ${agent?.activity}`);
+
+  // Wait for prompt to complete (mock agent responds with end_turn)
+  await sleep(4000);
+
+  // Verify agent is idle AND activity is cleared
+  nodesList = await c.request("node.list");
+  agent = nodesList.nodes.find((n: any) => n.name === "endturn-agent");
+  assertEq(agent?.status, "idle", "endturn-activity: status is idle");
+  assertEq(agent?.activity, undefined, "endturn-activity: activity cleared after end_turn");
+
+  await httpPost("/node/stop", { nodeId: spawn.nodeId as string });
+  await sleep(500);
+  await c.disconnect();
+}
+
+// ============================================================
 // mc-transcriber: pushToChannel logs success with channelId + subscribers + slicePath
 // ============================================================
 
@@ -3549,6 +3596,7 @@ async function main() {
     // Checker fixes: debug log, promptNode reject recovery, mc push success log
     await testPluginDebugLog();
     await testPromptNodeRejectRecovery();
+    await testPromptNodeEndTurnClearsActivity();
     await testMcPushToChannelSuccessLog();
 
     // mc subscriber mechanism

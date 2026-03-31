@@ -353,7 +353,6 @@ export class NodePool {
     switch (kind) {
       case "agent_thought_chunk": return "thinking";
       case "tool_call":           return `tool: ${(update as ToolCall & { sessionUpdate: string }).title || "..."}`;
-      case "end_turn":            return null;
       default:                    return undefined;
     }
   }
@@ -379,12 +378,14 @@ export class NodePool {
     } catch (err: any) {
       log.error(`promptNode: ${node.name} rejected: ${err.message}`);
       node.status = "idle";
+      node.activity = undefined;
       node.touch();
       this.onEvent("node.statusChanged", node);
       return { error: err.message };
     }
 
     node.status = "idle";
+    node.activity = undefined;
     node.touch();
     this.onEvent("node.statusChanged", node);
     log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);

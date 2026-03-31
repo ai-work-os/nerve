@@ -15,6 +15,7 @@
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "^0.17.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^11.8.1",
     "nanoid": "^5.1.5",
