@@ -16,7 +16,7 @@
  *   --interval <n>   poll interval seconds (default: 10)
  */
 
-import { PluginBase } from "../plugin-base.js";
+import { PluginBase, type CommandDef } from "../plugin-base.js";
 
 // --- CLI args ---
 
@@ -71,6 +71,31 @@ class ContextGuardian extends PluginBase {
       capabilities: ["monitor"],
       permissions: "observer",
     });
+  }
+
+  override getCommands(): Record<string, CommandDef> {
+    return {
+      status: { description: "Show monitoring status" },
+      trigger: { description: "Force trigger check on an agent", args: { name: "agent name" } },
+    };
+  }
+
+  override getEvents(): string[] {
+    return ["context_warning", "context_triggered"];
+  }
+
+  protected override onCommand(command: string, args: Record<string, string>, from?: string): void {
+    switch (command) {
+      case "status": {
+        const agents = this.triggeredSessions.size;
+        this.log("info", `status: monitoring, triggered=${agents}, threshold=${THRESHOLD}`);
+        break;
+      }
+      case "trigger":
+        this.log("info", `manual trigger requested for ${args.name || "unknown"}`);
+        this.poll();
+        break;
+    }
   }
 
   protected async onReady(): Promise<void> {
@@ -140,7 +165,9 @@ class ContextGuardian extends PluginBase {
       }
 
       const ratio = node.usage!.tokenUsed / node.usage!.tokenSize;
-      this.log("info", `${node.name}: usage ${(ratio * 100).toFixed(0)}% > ${(THRESHOLD * 100).toFixed(0)}% threshold, triggering`);
+      const used = node.usage!.tokenUsed;
+      const size = node.usage!.tokenSize;
+      this.log("info", `${node.name}: triggering reset — usage=${used}/${size} (${(ratio * 100).toFixed(0)}%), threshold=${(THRESHOLD * 100).toFixed(0)}%, status=${node.status}, session=${node.sessionId}, channels=${node.channels.join(",") || "none"}`);
       this.triggerSummary(node, ratio);
       this.lastActivity = `triggered ${node.name}`;
 
@@ -153,11 +180,14 @@ class ContextGuardian extends PluginBase {
   private async triggerSummary(node: NodeInfo, ratio: number): Promise<void> {
     const channelId = node.channels?.[0];
     if (!channelId) {
-      this.log("warn", `${node.name}: not in any channel, cannot trigger`);
+      this.log("warn", `${node.name}: not in any channel, cannot trigger (channels=[])`);
       return;
     }
 
     const pct = (ratio * 100).toFixed(0);
+    const used = node.usage?.tokenUsed ?? 0;
+    const size = node.usage?.tokenSize ?? 0;
+    this.log("info", `${node.name}: posting summary trigger to channel=${channelId}, usage=${used}/${size} (${pct}%), session=${node.sessionId}`);
     try {
       await this.request("channel.post", {
         channelId,
@@ -167,9 +197,9 @@ class ContextGuardian extends PluginBase {
           `2. 调用 nerve_session_reset({ summary_path: "写入的文件路径" })`,
         ].join("\n"),
       });
-      this.log("info", `${node.name}: summary trigger posted to channel ${channelId}`);
+      this.log("info", `${node.name}: summary trigger posted successfully to channel ${channelId}`);
     } catch (err) {
-      this.log("error", `${node.name}: failed to post trigger: ${err}`);
+      this.log("error", `${node.name}: failed to post trigger to channel=${channelId}: ${err}`);
     }
   }
 }

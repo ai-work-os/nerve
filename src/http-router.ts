@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { ChannelManager } from "./channel-manager.js";
+import type { SceneManager } from "./scene-manager.js";
 import * as log from "./logger.js";
 
 /**
@@ -9,10 +10,16 @@ import * as log from "./logger.js";
  * All POST endpoints accept JSON body with `from` field to identify the caller node.
  */
 export class HttpRouter {
+  private scenes?: SceneManager;
+
   constructor(
     private cm: ChannelManager,
     private port: number,
   ) {}
+
+  setSceneManager(scenes: SceneManager): void {
+    this.scenes = scenes;
+  }
 
   handle(req: IncomingMessage, res: ServerResponse): void {
     // Health check (includes log path for AI access)
@@ -200,12 +207,19 @@ export class HttpRouter {
         if (!adapter) throw new Error("adapter required");
         const cwd = resolve((data.cwd as string) || process.cwd());
         const name = (data.name as string) || this.generateNodeName(adapter, cwd);
+        const channelId = data.channelId as string | undefined;
 
         if (this.cm.nodePool.isNameTaken(name)) {
           throw new Error(`name "${name}" already taken`);
         }
 
         const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
+
+        // Auto-join channel if requested
+        if (channelId) {
+          this.cm.addNodeToChannel(channelId, nodeId, name);
+        }
+
         return { nodeId, name, status: "connecting" };
       }
 
@@ -239,6 +253,36 @@ export class HttpRouter {
         } else {
           throw new Error("nodeId or nodeName required");
         }
+        return { ok: true };
+      }
+
+      case "/node/message": {
+        const content = data.content as string;
+        if (!content) throw new Error("content required");
+        const nodeName = data.nodeName as string;
+        const nodeId = data.nodeId as string;
+        let targetNode;
+        if (nodeId) {
+          targetNode = this.cm.nodePool.get(nodeId);
+        } else if (nodeName) {
+          targetNode = this.cm.nodePool.getByName(nodeName);
+        } else {
+          throw new Error("nodeId or nodeName required");
+        }
+        if (!targetNode) throw new Error(`node not found`);
+
+        // kill on spawned program nodes
+        if (content.trim().toLowerCase() === "kill" && this.cm.nodePool.isProgramNode(targetNode.id)) {
+          this.cm.stopNode(targetNode.id);
+          return { ok: true, action: "killed" };
+        }
+
+        if (!targetNode.transport.alive) throw new Error("node transport not connected");
+        targetNode.transport.send({
+          jsonrpc: "2.0",
+          method: "node.message",
+          params: { content, from: from || "http" },
+        } as any);
         return { ok: true };
       }
 
@@ -316,9 +360,32 @@ export class HttpRouter {
         const node = this.cm.nodePool.getByName(nodeName);
         if (!node) throw new Error(`node "${nodeName}" not found`);
         const selfReset = !!data.selfReset;
-        const result = await this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath, selfReset);
+        const source = (data.source as string) || "http_api";
+        const result = await this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath, selfReset, source);
         if (result.error) throw new Error(result.error);
         return result;
+      }
+
+      case "/scene/list": {
+        if (!this.scenes) throw new Error("scene manager not initialized");
+        return { scenes: this.scenes.list() };
+      }
+
+      case "/scene/start": {
+        if (!this.scenes) throw new Error("scene manager not initialized");
+        const name = data.name as string;
+        if (!name) throw new Error("name required");
+        const cwd = data.cwd as string | undefined;
+        const scene = await this.scenes.start(name, cwd);
+        return { name: scene.name, nodeIds: scene.nodeIds, channelId: scene.channelId, warnings: scene.warnings };
+      }
+
+      case "/scene/stop": {
+        if (!this.scenes) throw new Error("scene manager not initialized");
+        const name = data.name as string;
+        if (!name) throw new Error("name required");
+        await this.scenes.stop(name);
+        return { ok: true };
       }
 
       default:

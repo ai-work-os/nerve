@@ -324,6 +324,48 @@ async function cmdNode(sub: string, args: string[]) {
   }
 }
 
+async function cmdScene(sub: string, args: string[]) {
+  try {
+    switch (sub) {
+      case "list": case "ls": {
+        const r = await post("/scene/list");
+        for (const s of r.scenes || []) {
+          const status = s.running ? " [运行中]" : "";
+          console.log(`  ${s.name}${status}  (${s.file})`);
+        }
+        if (!r.scenes?.length) console.log("(no scenes)");
+        break;
+      }
+      case "start": {
+        const name = args[0];
+        if (!name) die("Usage: nerve scene start <name> [--cwd DIR]");
+        let cwd: string | undefined;
+        for (let i = 1; i < args.length; i++) {
+          if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
+        }
+        const r = await post("/scene/start", { name, cwd });
+        if (r.error) die(r.error);
+        console.log(`场景 ${r.name} 已启动`);
+        if (r.channelId) console.log(`频道: ${r.channelId}`);
+        if (r.nodeIds?.length) console.log(`节点: ${r.nodeIds.join(", ")}`);
+        break;
+      }
+      case "stop": {
+        const name = args[0];
+        if (!name) die("Usage: nerve scene stop <name>");
+        const r = await post("/scene/stop", { name });
+        if (r.error) die(r.error);
+        console.log("ok");
+        break;
+      }
+      default:
+        die(`Unknown: nerve scene ${sub}\nCommands: list, start, stop`);
+    }
+  } catch (e: any) {
+    die(e.message);
+  }
+}
+
 function showHelp() {
   console.log(`nerve — Nerve CLI
 
@@ -343,6 +385,10 @@ Commands:
   node join <name> <channelId>           Join agent to channel
   node leave <name> <channelId>          Remove agent from channel
   node stop <ID|name>                    Stop a node
+
+  scene list                             List available scenes
+  scene start <name> [--cwd DIR]         Start a scene
+  scene stop <name>                      Stop a running scene
 
   bridge [--sock ADDR] [--channel ID]    Connect nvim to a channel
 
@@ -379,6 +425,10 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   cmdLog(argv.slice(1));
 } else if (cmd === "bridge" || cmd === "br") {
   import("./nvim-bridge.js").then(m => m.main(argv.slice(1))).catch(err => die(`bridge error: ${err.message}`));
+} else if (cmd === "scene" || cmd === "sc") {
+  const sub = argv[1];
+  if (!sub) die("Usage: nerve scene <list|start|stop> [name]");
+  cmdScene(sub, argv.slice(2));
 } else if (cmd === "--port") {
   // Legacy: nerve --port 4800 → treat as serve
   cmdServe(argv);

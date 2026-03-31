@@ -18,6 +18,8 @@ export class NerveNode {
   systemPrompt?: string;
   prompted = false;
   usage?: NodeUsage;
+  commands?: Record<string, { description: string; args?: Record<string, string> }>;
+  events?: string[];
 
   // For stdio nodes: prompt generation counter (prevent stale callbacks)
   promptGen = 0;
@@ -102,6 +104,8 @@ export class NerveNode {
       createdAt: this.createdAt,
       lastActiveAt: this.lastActiveAt,
       usage: this.usage,
+      commands: this.commands,
+      events: this.events,
     };
   }
 }

@@ -17,6 +17,7 @@ export class ChannelManager {
   readonly store: Store;
   readonly nodePool: NodePool;
   readonly blobStore: BlobStore;
+  readonly dataDir: string;
   private channels = new Map<string, Channel>();
   private port: number;
 
@@ -28,6 +29,7 @@ export class ChannelManager {
 
   constructor(opts: ChannelManagerOptions) {
     this.port = opts.port;
+    this.dataDir = opts.dataDir;
     this.store = new Store(`${opts.dataDir}/nerve.db`);
     this.blobStore = new BlobStore(opts.dataDir);
 
@@ -200,7 +202,19 @@ export class ChannelManager {
       ? JSON.stringify(blobRef)
       : content;
 
-    const msg = ch.postMessage(from, storedContent, this.store);
+    // Resolve nodeType from sender name
+    const senderNode = this.nodePool.getByName(from);
+    let nodeType: string | undefined;
+    if (senderNode) {
+      if (this.nodePool.isProgramNode(senderNode.id)) {
+        nodeType = "program";
+      } else {
+        nodeType = senderNode.transport.type; // "stdio" or "websocket"
+      }
+    }
+    const metadata = nodeType ? { nodeType } : undefined;
+
+    const msg = ch.postMessage(from, storedContent, this.store, metadata);
 
     // Broadcast to all nodes in channel
     this.broadcastToChannel(channelId, {

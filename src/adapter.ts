@@ -1,4 +1,6 @@
 export interface AdapterConfig {
+  /** Node type: "acp" for AI agents (stdio+ACP), "program" for program nodes (WS reconnect) */
+  type?: "acp" | "program";
   cmd: string;
   args: string[];
   env?: Record<string, string>;
@@ -7,6 +9,8 @@ export interface AdapterConfig {
   terminal: boolean;
   /** Model preference written to settings.local.json for claude-agent-acp */
   model?: string;
+  /** Program node connection timeout in ms (default 10000) */
+  connectTimeout?: number;
 }
 
 // Proxy env from system (needed for API access)
@@ -64,6 +68,53 @@ const adapters: Record<string, AdapterConfig> = {
     args: ["tsx", "test/mock-agent.ts"],
     capabilities: ["code"],
     terminal: false,
+  },
+  guardian: {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/context-guardian/index.ts"],
+    capabilities: ["monitor"],
+    terminal: false,
+  },
+  "mc": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/mc-transcriber/index.ts"],
+    env: {
+      DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY || "sk-cc174fc51cb6426e987bb97fb668f817",
+    },
+    capabilities: ["monitor"],
+    terminal: false,
+  },
+  "mock-program": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "test/mock-program.ts"],
+    capabilities: ["monitor"],
+    terminal: false,
+  },
+  "mock-program-timeout": {
+    type: "program",
+    cmd: "sleep",
+    args: ["60"],
+    capabilities: ["monitor"],
+    terminal: false,
+    connectTimeout: 3000,
+  },
+  "mock-program-crash": {
+    type: "program",
+    cmd: "node",
+    args: ["-e", "process.exit(42)"],
+    capabilities: ["monitor"],
+    terminal: false,
+  },
+  "mock-program-badcmd": {
+    type: "program",
+    cmd: "nonexistent-command-that-does-not-exist",
+    args: [],
+    capabilities: ["monitor"],
+    terminal: false,
+    connectTimeout: 3000,
   },
 };
 

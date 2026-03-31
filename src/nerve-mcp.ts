@@ -82,6 +82,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           adapter: { type: "string", description: "Adapter name", default: "claude" },
           name: { type: "string", description: "Optional agent name" },
           cwd: { type: "string", description: "Optional working directory" },
+          channel_id: { type: "string", description: "Optional channel id to auto-join after spawn" },
         },
       },
     },
@@ -185,7 +186,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === "nerve_spawn") {
-    const { adapter, name: agentName, cwd } = (args || {}) as { adapter?: string; name?: string; cwd?: string };
+    const { adapter, name: agentName, cwd, channel_id } = (args || {}) as { adapter?: string; name?: string; cwd?: string; channel_id?: string };
     try {
       const useAdapter = adapter || "claude";
       log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${cwd || process.cwd()}`);
@@ -197,21 +198,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const spawnedName = String(result.name || agentName || "agent");
       const spawnedId = String(result.nodeId || "?");
 
-      // Auto-join spawned agent to caller's current channel
+      // Auto-join spawned agent to explicit channel_id or caller's current channel
+      const targetChannel = channel_id || currentChannelId;
       let joinNote = "";
-      if (currentChannelId && spawnedId !== "?") {
+      if (targetChannel && spawnedId !== "?") {
         try {
           await post("/channel/addNode", {
-            channelId: currentChannelId,
+            channelId: targetChannel,
             nodeId: spawnedId,
             nodeName: spawnedName,
           });
-          log(`nerve_spawn: auto-joined ${spawnedName} to channel ${currentChannelId}`);
-          joinNote = `, joined channel ${currentChannelId}`;
+          log(`nerve_spawn: auto-joined ${spawnedName} to channel ${targetChannel}`);
+          joinNote = `, joined channel ${targetChannel}`;
         } catch (joinErr) {
           const errStr = String(joinErr);
           log(`nerve_spawn: auto-join failed: ${errStr}`);
-          if (errStr.includes("not found")) {
+          if (!channel_id && errStr.includes("not found")) {
             currentChannelId = undefined;
             log(`nerve_spawn: cleared stale currentChannelId`);
           }
@@ -345,6 +347,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         expectedSessionId,
         summaryPath: summary_path,
         selfReset: true,
+        source: "mcp_tool",
       });
       return ok(`session reset: ${result.sessionId} (previous: ${result.previousSessionId})`);
     } catch (err) {

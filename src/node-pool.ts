@@ -2,8 +2,9 @@ import { nanoid } from "nanoid";
 import { mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { NerveNode } from "./node.js";
-import { StdioTransport, WebSocketTransport } from "./transport.js";
+import { StdioTransport, WebSocketTransport, NullTransport } from "./transport.js";
 import { AcpClient, type McpServerConfig } from "./acp-client.js";
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
@@ -19,6 +20,10 @@ export class NodePool {
   private nameIndex = new Map<string, string>(); // name → id
   private onEvent: NodeEventHandler;
   private store: Store;
+
+  // Program node tracking
+  private pendingPrograms = new Map<string, { nodeId: string; process: ChildProcess; timer: NodeJS.Timeout }>();
+  private programProcesses = new Map<string, ChildProcess>(); // nodeId → process (for stop/shutdown)
 
   constructor(store: Store, onEvent: NodeEventHandler) {
     this.store = store;
@@ -80,6 +85,11 @@ export class NodePool {
   private _spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
     const adapter = getAdapter(adapterName);
     if (!adapter) throw new Error(`unknown adapter: ${adapterName}`);
+
+    // Route to program node path if adapter type is "program"
+    if (adapter.type === "program") {
+      return this.spawnProgramNode(adapterName, name, cwd, serverPort);
+    }
 
     const id = nanoid(12);
     const transport = new StdioTransport();
@@ -211,6 +221,132 @@ export class NodePool {
     return node;
   }
 
+  /** Spawn a Program Node (connects back via WebSocket) */
+  private spawnProgramNode(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
+    const adapter = getAdapter(adapterName)!;
+    const id = nanoid(12);
+
+    // Program nodes use nerve project root as cwd (adapter paths are relative to it)
+    const nerveRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    cwd = nerveRoot;
+
+    // Create placeholder node with NullTransport (replaced when program connects via WS)
+    const transport = new NullTransport();
+    const node = new NerveNode({
+      id,
+      name,
+      transport,
+      capabilities: adapter.capabilities,
+      adapter: adapterName,
+      cwd,
+    });
+    node.status = "connecting";
+
+    this.nodes.set(id, node);
+    this.nameIndex.set(name, id);
+    this.store.insertNode(id, name, "websocket", adapterName, adapter.capabilities, cwd);
+
+    // Spawn child process with env vars for WS reconnect
+    const proc = spawnChild(adapter.cmd, adapter.args, {
+      cwd,
+      env: {
+        ...process.env,
+        ...adapter.env,
+        NERVE_PORT: String(serverPort),
+        NERVE_NODE_NAME: name,
+        NERVE_SPAWNED: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Log stderr for debugging
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      log.debug(`program:${name} stderr: ${chunk.toString().trim()}`);
+    });
+
+    this.store.updateNodeStatus(id, "connecting", undefined, proc.pid);
+    log.info(`program node spawned: ${name} (pid=${proc.pid}, adapter=${adapterName})`);
+
+    // Connection timeout
+    const timeout = adapter.connectTimeout ?? 10000;
+    const timer = setTimeout(() => {
+      if (node.status === "connecting") {
+        log.warn(`program node timeout: ${name} did not connect within ${timeout}ms`);
+        node.status = "error";
+        this.store.updateNodeStatus(id, "error");
+        this.onEvent("node.statusChanged", node);
+        this.onEvent("node.error", node, { error: `program node did not connect within ${timeout}ms` });
+        proc.kill("SIGTERM");
+        // SIGKILL fallback after 5s if SIGTERM doesn't work
+        const forceTimer = setTimeout(() => {
+          try { proc.kill("SIGKILL"); } catch {}
+        }, 5000);
+        proc.on("exit", () => clearTimeout(forceTimer));
+      }
+    }, timeout);
+
+    // Store in pending map (for WS reconnect matching)
+    this.pendingPrograms.set(name, { nodeId: id, process: proc, timer });
+    this.programProcesses.set(id, proc);
+
+    // Process exit handler
+    proc.on("exit", (code) => {
+      clearTimeout(timer);
+      this.pendingPrograms.delete(name);
+      this.programProcesses.delete(id);
+
+      node.status = "stopped";
+      this.store.updateNodeStatus(id, "stopped");
+      this.onEvent("node.stopped", node, { exitCode: code });
+
+      // Remove node from pool (deferred from WS close for program nodes)
+      this.remove(id);
+    });
+
+    // Spawn error handler (e.g. cmd not found)
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      this.pendingPrograms.delete(name);
+      this.programProcesses.delete(id);
+      node.status = "error";
+      this.store.updateNodeStatus(id, "error");
+      log.error(`program node spawn error: ${name} — ${err.message}`);
+      this.onEvent("node.error", node, { error: err.message });
+      this.onEvent("node.statusChanged", node);
+    });
+
+    this.onEvent("node.registered", node);
+    return node;
+  }
+
+  /** Claim a pending program node by name (called from server.ts on WS node.register) */
+  claimPendingProgram(name: string): string | undefined {
+    const pending = this.pendingPrograms.get(name);
+    if (!pending) return undefined;
+    clearTimeout(pending.timer);
+    this.pendingPrograms.delete(name);
+    return pending.nodeId;
+  }
+
+  /** Check if a node is a program node (spawned process with WS transport) */
+  isProgramNode(nodeId: string): boolean {
+    return this.programProcesses.has(nodeId);
+  }
+
+  /** Bind a WebSocket transport to a program node after WS reconnect */
+  bindProgramTransport(nodeId: string, ws: WebSocket): void {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+
+    node.transport = new WebSocketTransport(ws);
+    node.status = "idle";
+    this.store.updateNodeStatus(nodeId, "idle");
+
+    log.info(`program node connected: ${node.name} (nodeId=${nodeId})`);
+    this.onEvent("node.ready", node);
+    this.onEvent("node.statusChanged", node);
+  }
+
   private extractActivity(update: Record<string, unknown>): string | null | undefined {
     const sessionUpdate = update.sessionUpdate as string;
     switch (sessionUpdate) {
@@ -225,18 +361,32 @@ export class NodePool {
   async promptNode(nodeId: string, text: string): Promise<{ stopReason?: string; error?: string }> {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
-    if (!client || !node) return { error: "node not found" };
+    if (!client || !node) {
+      log.warn(`promptNode: node ${nodeId} not found`);
+      return { error: "node not found" };
+    }
 
+    log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
     node.status = "busy";
     node.touch();
     node.pushUpdate({ update: { sessionUpdate: "user_message", content: { type: "text", text } } });
     this.onEvent("node.statusChanged", node);
 
-    const result = await client.prompt(text);
+    let result: { stopReason?: string; error?: string };
+    try {
+      result = await client.prompt(text);
+    } catch (err: any) {
+      log.error(`promptNode: ${node.name} rejected: ${err.message}`);
+      node.status = "idle";
+      node.touch();
+      this.onEvent("node.statusChanged", node);
+      return { error: err.message };
+    }
 
     node.status = "idle";
     node.touch();
     this.onEvent("node.statusChanged", node);
+    log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
 
     return result;
   }
@@ -302,13 +452,28 @@ export class NodePool {
   }
 
   /** Reset session — clear + recovery prompt with summary file reference */
-  async sessionReset(nodeId: string, expectedSessionId: string, summaryPath: string, selfReset = false): Promise<{ sessionId?: string; previousSessionId?: string; error?: string }> {
+  async sessionReset(nodeId: string, expectedSessionId: string, summaryPath: string, selfReset = false, source = "unknown"): Promise<{ sessionId?: string; previousSessionId?: string; error?: string }> {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
-    if (!client || !node) return { error: "node not found" };
-    if (node.status === "busy" && !selfReset) return { error: "node is busy" };
-    if (node.sessionId !== expectedSessionId) return { error: "session mismatch" };
-    if (node.resetInProgress) return { error: "reset in progress" };
+    if (!client || !node) {
+      log.warn(`session reset rejected: nodeId=${nodeId}, reason=node not found, source=${source}`);
+      return { error: "node not found" };
+    }
+
+    log.info(`session reset requested: ${node.name}, source=${source}, status=${node.status}, selfReset=${selfReset}, session=${expectedSessionId}`);
+
+    if (node.status === "busy" && !selfReset) {
+      log.warn(`session reset rejected: ${node.name}, reason=busy, source=${source}`);
+      return { error: "node is busy" };
+    }
+    if (node.sessionId !== expectedSessionId) {
+      log.warn(`session reset rejected: ${node.name}, reason=session mismatch, expected=${expectedSessionId}, actual=${node.sessionId}, source=${source}`);
+      return { error: "session mismatch" };
+    }
+    if (node.resetInProgress) {
+      log.warn(`session reset rejected: ${node.name}, reason=reset in progress, source=${source}`);
+      return { error: "reset in progress" };
+    }
 
     node.resetInProgress = true;
     try {
@@ -317,6 +482,7 @@ export class NodePool {
       // ACP session/new (reuse sessionClear logic)
       const result = await client.sessionClear();
       if (result.error || !result.sessionId) {
+        log.error(`session reset failed: ${node.name}, source=${source}, error=${result.error || "session clear failed"}`);
         return { error: result.error || "session clear failed" };
       }
 
@@ -339,8 +505,9 @@ export class NodePool {
         `当前工作目录：${node.cwd || process.cwd()}`,
       ].join("\n");
 
+      log.info(`session reset: ${node.name} ${previousSessionId} → ${result.sessionId}, source=${source}, summary=${summaryPath}`);
+      log.info(`recovery prompt: sending to ${node.name}, channel=${channelId}, summaryPath=${summaryPath}`);
       // Send recovery prompt (don't await — let agent process async)
-      log.info(`session reset: ${node.name} ${previousSessionId} → ${result.sessionId}, summary=${summaryPath}`);
       this.promptNode(nodeId, resetPrompt);
 
       return { sessionId: result.sessionId, previousSessionId };
@@ -353,7 +520,25 @@ export class NodePool {
   stopNode(nodeId: string): void {
     const node = this.nodes.get(nodeId);
     if (!node) return;
+    log.info(`stopNode: ${node.name} (${nodeId})`);
 
+    // Check if this is a program node (has a tracked process)
+    const proc = this.programProcesses.get(nodeId);
+    if (proc) {
+      // Program node: kill process, emit stopped event
+      // Also close WS transport if connected
+      if (node.transport.alive) node.transport.close();
+      proc.kill("SIGTERM");
+      // Force kill after 5s
+      const forceTimer = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch {}
+      }, 5000);
+      proc.on("exit", () => clearTimeout(forceTimer));
+      // Note: exit handler in spawnProgramNode will set status=stopped and emit node.stopped
+      return;
+    }
+
+    // ACP node: existing logic
     const client = this.acpClients.get(nodeId);
     if (client) {
       client.cleanup();
@@ -369,6 +554,7 @@ export class NodePool {
     const node = this.nodes.get(nodeId);
     if (!node) return;
 
+    log.info(`remove: ${node.name} (${nodeId})`);
     node.clearUpdateBuffer();
     this.nodes.delete(nodeId);
     this.nameIndex.delete(node.name);
@@ -379,12 +565,18 @@ export class NodePool {
   /** Shutdown all nodes */
   async shutdown(): Promise<void> {
     for (const [id, node] of this.nodes) {
-      if (node.isProcess) {
+      if (node.isProcess || this.programProcesses.has(id)) {
         this.stopNode(id);
       } else {
         node.transport.close();
       }
     }
+    // Clear pending program timers
+    for (const [, pending] of this.pendingPrograms) {
+      clearTimeout(pending.timer);
+      pending.process.kill("SIGTERM");
+    }
+    this.pendingPrograms.clear();
     // Wait for process nodes to exit
     await new Promise(r => setTimeout(r, 2000));
   }

@@ -104,6 +104,19 @@ export class StdioTransport implements Transport {
   }
 }
 
+// ------- Null Transport (placeholder for program nodes before WS connect) -------
+
+export class NullTransport implements Transport {
+  // Reports "websocket" because program nodes will be bound to a WebSocketTransport
+  // once the spawned process connects back. This placeholder is short-lived.
+  readonly type = "websocket" as const;
+  get alive() { return false; }
+  send(): void {}
+  onMessage(): void {}
+  onClose(): void {}
+  close(): void {}
+}
+
 // ------- WebSocket Transport (for external clients) -------
 
 export class WebSocketTransport implements Transport {

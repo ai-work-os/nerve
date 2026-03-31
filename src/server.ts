@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { ChannelManager } from "./channel-manager.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { HttpRouter } from "./http-router.js";
+import { SceneManager } from "./scene-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage } from "./protocol.js";
 import * as log from "./logger.js";
 
@@ -19,11 +20,14 @@ export class Server {
   // Direct node subscriptions (node.subscribe / node.unsubscribe)
   private subs = new SubscriptionManager();
   private httpRouter: HttpRouter;
+  private scenes: SceneManager;
 
   constructor(cm: ChannelManager, port: number) {
     this.cm = cm;
     this.port = port;
     this.httpRouter = new HttpRouter(cm, port);
+    this.scenes = new SceneManager(cm, cm.dataDir);
+    this.httpRouter.setSceneManager(this.scenes);
   }
 
   start(): void {
@@ -94,7 +98,10 @@ export class Server {
               this.cm.removeNodeFromChannel(chId, node.name);
             }
           }
-          this.cm.nodePool.remove(nodeId);
+          // Program nodes: don't remove on WS close — process exit handler manages lifecycle
+          if (!this.cm.nodePool.isProgramNode(nodeId)) {
+            this.cm.nodePool.remove(nodeId);
+          }
           this.wsNodeMap.delete(ws);
         }
         // Clean up any node subscriptions this WS had
@@ -116,6 +123,26 @@ export class Server {
         case "node.register": {
           let name = p.name as string;
           if (!name) { this.sendError(ws, id, -32602, "name required"); return; }
+
+          const commands = p.commands as Record<string, { description: string; args?: Record<string, string> }> | undefined;
+          const events = p.events as string[] | undefined;
+
+          // Check if this is a spawned program node reconnecting
+          const pendingNodeId = this.cm.nodePool.claimPendingProgram(name);
+          if (pendingNodeId) {
+            // Bind the WS transport to the existing placeholder node
+            this.cm.nodePool.bindProgramTransport(pendingNodeId, ws);
+            const pendingNode = this.cm.nodePool.get(pendingNodeId);
+            if (pendingNode) {
+              if (commands) pendingNode.commands = commands;
+              if (events) pendingNode.events = events;
+            }
+            this.wsNodeMap.set(ws, pendingNodeId);
+            log.info(`node.register: program node ${name} claimed pending slot ${pendingNodeId}`);
+            this.sendResult(ws, id, { nodeId: pendingNodeId, name });
+            break;
+          }
+
           // Auto-suffix if name taken (tui → tui-2 → tui-3 ...)
           if (this.cm.nodePool.isNameTaken(name)) {
             let suffix = 2;
@@ -130,6 +157,8 @@ export class Server {
             (p.capabilities as string[]) || ["ui"],
             (p.permissions as any) || "operator",
           );
+          if (commands) node.commands = commands;
+          if (events) node.events = events;
           this.wsNodeMap.set(ws, node.id);
           this.sendResult(ws, id, { nodeId: node.id, name: node.name });
           break;
@@ -286,6 +315,7 @@ export class Server {
           const adapter = p.adapter as string;
           const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
+          const channelId = p.channelId as string | undefined;
 
           if (this.cm.nodePool.isNameTaken(name)) {
             this.sendError(ws, id, -32602, `name "${name}" already taken`);
@@ -293,6 +323,10 @@ export class Server {
           }
 
           this.cm.spawnNode(adapter, name, cwd).then(node => {
+            // Auto-join channel if requested
+            if (channelId) {
+              this.cm.addNodeToChannel(channelId, node.id, node.name);
+            }
             this.sendResult(ws, id, { nodeId: node.id, name: node.name });
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
@@ -375,6 +409,36 @@ export class Server {
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
           });
+          break;
+        }
+
+        case "node.message": {
+          const nodeId = p.nodeId as string;
+          const content = p.content as string;
+          if (!nodeId || !content) { this.sendError(ws, id, -32602, "nodeId and content required"); return; }
+          const node = this.cm.nodePool.get(nodeId);
+          if (!node) { this.sendError(ws, id, -32602, "node not found"); return; }
+
+          // kill command on spawned program nodes: server-side SIGTERM
+          if (content.trim().toLowerCase() === "kill" && this.cm.nodePool.isProgramNode(nodeId)) {
+            this.cm.stopNode(nodeId);
+            this.sendResult(ws, id, { ok: true, action: "killed" });
+            break;
+          }
+
+          // Forward as notification to the target node
+          if (!node.transport.alive) {
+            this.sendError(ws, id, -32000, "node transport not connected");
+            break;
+          }
+          const callerNodeId = this.wsNodeMap.get(ws);
+          const callerNode = callerNodeId ? this.cm.nodePool.get(callerNodeId) : undefined;
+          node.transport.send({
+            jsonrpc: "2.0",
+            method: "node.message",
+            params: { content, from: callerNode?.name || "unknown" },
+          } as any);
+          this.sendResult(ws, id, { ok: true });
           break;
         }
 
@@ -479,9 +543,45 @@ export class Server {
           if (!summaryPath) { this.sendError(ws, id, -32602, "summaryPath required"); return; }
           const node = this.cm.nodePool.getByName(nodeName);
           if (!node) { this.sendError(ws, id, -32602, `node "${nodeName}" not found`); return; }
-          this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath).then(result => {
+          this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath, false, "ws_api").then(result => {
             if (result.error) { this.sendError(ws, id, -32000, result.error); return; }
             this.sendResult(ws, id, result);
+          }).catch(err => {
+            this.sendError(ws, id, -32000, String(err));
+          });
+          break;
+        }
+
+        case "scene.list": {
+          const scenes = this.scenes.list();
+          this.sendResult(ws, id, { scenes });
+          break;
+        }
+
+        case "scene.start": {
+          const sceneName = p.name as string;
+          if (!sceneName) { this.sendError(ws, id, -32602, "name required"); return; }
+          const cwd = p.cwd as string | undefined;
+
+          this.scenes.start(sceneName, cwd).then(scene => {
+            this.sendResult(ws, id, {
+              name: scene.name,
+              nodeIds: scene.nodeIds,
+              channelId: scene.channelId,
+              warnings: scene.warnings,
+            });
+          }).catch(err => {
+            this.sendError(ws, id, -32000, String(err));
+          });
+          break;
+        }
+
+        case "scene.stop": {
+          const sceneName = p.name as string;
+          if (!sceneName) { this.sendError(ws, id, -32602, "name required"); return; }
+
+          this.scenes.stop(sceneName).then(() => {
+            this.sendResult(ws, id, { ok: true });
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
           });

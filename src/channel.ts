@@ -46,13 +46,14 @@ export class Channel {
     return this.nodes.get(nodeName);
   }
 
-  postMessage(from: string, content: string, store: Store): MessageInfo {
+  postMessage(from: string, content: string, store: Store, metadata?: Record<string, unknown>): MessageInfo {
     const msg: MessageInfo = {
       id: nanoid(12),
       channelId: this.id,
       from,
       content,
       timestamp: Date.now(),
+      ...(metadata ? { metadata } : {}),
     };
     store.insertMessage(msg);
     return msg;

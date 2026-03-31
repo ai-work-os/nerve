@@ -97,6 +97,8 @@ export interface NodeInfo {
   createdAt: number;
   lastActiveAt: number;
   usage?: NodeUsage;
+  commands?: Record<string, { description: string; args?: Record<string, string> }>;
+  events?: string[];
 }
 
 export interface ChannelInfo {

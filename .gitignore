@@ -8,3 +8,9 @@ dist/
 
 # agent 对话产出（临时过程文档）
 notes/acp-bus/
+.nerve/
+.nerve/
+.build/
+*.o
+*.dia
+*.dSYM/
