@@ -1,5 +1,6 @@
 import type { Transport } from "./transport.js";
 import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage } from "./protocol.js";
+import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
 
 export class NerveNode {
   readonly id: string;
@@ -29,7 +30,7 @@ export class NerveNode {
 
   // In-memory buffer of ACP updates (for client reconnect replay)
   static readonly MAX_BUFFER_SIZE = 1000;
-  updateBuffer: Record<string, unknown>[] = [];
+  updateBuffer: (SessionNotification | Record<string, unknown>)[] = [];
 
   constructor(opts: {
     id: string;
@@ -64,21 +65,20 @@ export class NerveNode {
     this.lastActiveAt = Date.now();
   }
 
-  pushUpdate(params: Record<string, unknown>): void {
+  pushUpdate(params: SessionNotification | Record<string, unknown>): void {
     this.updateBuffer.push(params);
     if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
       this.updateBuffer.shift();
     }
 
     // Extract usage_update
-    const update = params.update as Record<string, unknown> | undefined;
+    const update = (params as SessionNotification).update as (UsageUpdate & { sessionUpdate: string }) | undefined;
     if (update?.sessionUpdate === "usage_update") {
+      const cost = update.cost as Cost | null | undefined;
       this.usage = {
-        tokenUsed: (update.used as number) || 0,
-        tokenSize: (update.size as number) || 0,
-        cost: typeof update.cost === "object" && update.cost !== null
-          ? ((update.cost as Record<string, unknown>).amount as number) || 0
-          : (update.cost as number) || 0,
+        tokenUsed: update.used || 0,
+        tokenSize: update.size || 0,
+        cost: cost?.amount || 0,
         lastUpdated: Date.now(),
       };
     }

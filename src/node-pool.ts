@@ -6,6 +6,7 @@ import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { NerveNode } from "./node.js";
 import { StdioTransport, WebSocketTransport, NullTransport } from "./transport.js";
 import { AcpClient, type McpServerConfig } from "./acp-client.js";
+import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
 import type { Store } from "./store.js";
@@ -181,13 +182,13 @@ export class NodePool {
       authMethod: adapter.authMethod,
       cwd,
       mcpServers,
-      onUpdate: (params) => {
+      onUpdate: (params: SessionNotification) => {
         node.pushUpdate(params);
 
         // 从 session/update 自动提取 activity，推送 statusChanged
-        const update = params.update as Record<string, unknown> | undefined;
+        const update = params.update;
         if (update) {
-          const newActivity = this.extractActivity(update);
+          const newActivity = this.extractActivity(update as SessionUpdate);
           if (newActivity !== undefined) {
             const normalized = newActivity ?? undefined;
             if (normalized !== node.activity) {
@@ -347,13 +348,13 @@ export class NodePool {
     this.onEvent("node.statusChanged", node);
   }
 
-  private extractActivity(update: Record<string, unknown>): string | null | undefined {
-    const sessionUpdate = update.sessionUpdate as string;
-    switch (sessionUpdate) {
-      case "thinking":       return "thinking";
-      case "tool_call":      return `tool: ${(update.name as string) || "..."}`;
-      case "end_turn":       return null;
-      default:               return undefined;
+  private extractActivity(update: SessionUpdate | Record<string, unknown>): string | null | undefined {
+    const kind = (update as any).sessionUpdate as string;
+    switch (kind) {
+      case "agent_thought_chunk": return "thinking";
+      case "tool_call":           return `tool: ${(update as ToolCall & { sessionUpdate: string }).title || "..."}`;
+      case "end_turn":            return null;
+      default:                    return undefined;
     }
   }
 

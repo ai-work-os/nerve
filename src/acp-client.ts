@@ -16,22 +16,45 @@ import {
   LineBuffer,
 } from "./protocol.js";
 import type { StdioTransport } from "./transport.js";
+import type {
+  InitializeRequest,
+  InitializeResponse,
+  NewSessionRequest,
+  NewSessionResponse,
+  LoadSessionRequest,
+  ListSessionsResponse,
+  PromptRequest,
+  PromptResponse,
+  SessionNotification,
+  CancelNotification,
+  McpServerStdio,
+  ReadTextFileRequest,
+  ReadTextFileResponse,
+  WriteTextFileRequest,
+  CreateTerminalRequest,
+  CreateTerminalResponse,
+  TerminalOutputRequest,
+  TerminalOutputResponse,
+  WaitForTerminalExitRequest,
+  WaitForTerminalExitResponse,
+  KillTerminalRequest,
+  ReleaseTerminalRequest,
+  RequestPermissionRequest,
+  RequestPermissionResponse,
+  PermissionOptionKind,
+} from "@agentclientprotocol/sdk";
 
 type PendingCallback = (result: unknown, error?: { code: number; message: string }) => void;
 
-export interface McpServerConfig {
-  name: string;
-  command: string;
-  args: string[];
-  env: Array<{ name: string; value: string }>;
-}
+/** Re-export McpServerStdio as McpServerConfig for backward compatibility */
+export type McpServerConfig = McpServerStdio;
 
 export interface AcpClientOptions {
   transport: StdioTransport;
   authMethod?: string;
   cwd: string;
   mcpServers?: McpServerConfig[];
-  onUpdate?: (params: Record<string, unknown>) => void;
+  onUpdate?: (params: SessionNotification) => void;
   onReady?: (sessionId: string) => void;
   onError?: (err: string) => void;
 }
@@ -46,7 +69,7 @@ export class AcpClient {
   private authMethod?: string;
   private cwd: string;
   private mcpServers: McpServerConfig[];
-  private onUpdate?: (params: Record<string, unknown>) => void;
+  private onUpdate?: (params: SessionNotification) => void;
   private onReady?: (sessionId: string) => void;
   private onError?: (err: string) => void;
 
@@ -77,17 +100,18 @@ export class AcpClient {
   async handshake(): Promise<void> {
     try {
       // Step 1: initialize
-      const initResult = await this.request("initialize", {
+      const initParams: InitializeRequest = {
         protocolVersion: 1,
         clientInfo: { name: "nerve", version: "0.1.0" },
         clientCapabilities: {
           fs: { readTextFile: true, writeTextFile: true },
           terminal: true,
         },
-      }, 30000) as Record<string, unknown>;
+      };
+      const initResult = await this.request("initialize", initParams, 30000) as InitializeResponse;
 
-      this.agentName = (initResult.agentInfo as any)?.name;
-      this.agentCapabilities = (initResult.agentCapabilities ?? initResult.capabilities) as Record<string, unknown>;
+      this.agentName = initResult.agentInfo?.name;
+      this.agentCapabilities = (initResult.agentCapabilities ?? (initResult as any).capabilities) as Record<string, unknown>;
 
       // Step 2: authenticate (optional)
       if (this.authMethod) {
@@ -97,12 +121,13 @@ export class AcpClient {
       }
 
       // Step 3: session/new
-      const sessionResult = await this.requestWithRetry("session/new", {
+      const newSessionParams: NewSessionRequest = {
         cwd: this.cwd,
         mcpServers: this.mcpServers,
-      }, 30000, 2) as Record<string, unknown>;
+      };
+      const sessionResult = await this.requestWithRetry("session/new", newSessionParams, 30000, 2) as NewSessionResponse;
 
-      this.sessionId = sessionResult.sessionId as string;
+      this.sessionId = sessionResult.sessionId;
       this.onReady?.(this.sessionId);
     } catch (err) {
       this.onError?.(`handshake failed: ${err}`);
@@ -110,10 +135,10 @@ export class AcpClient {
   }
 
   /** List all sessions from the agent */
-  async sessionList(): Promise<{ sessions?: Array<{ sessionId: string; [key: string]: unknown }>; error?: string }> {
+  async sessionList(): Promise<{ sessions?: ListSessionsResponse["sessions"]; error?: string }> {
     try {
-      const result = await this.request("session/list", {}, 15000) as Record<string, unknown>;
-      return { sessions: result.sessions as any[] };
+      const result = await this.request("session/list", {}, 15000) as ListSessionsResponse;
+      return { sessions: result.sessions };
     } catch (err) {
       return { error: String(err) };
     }
@@ -122,7 +147,8 @@ export class AcpClient {
   /** Load/resume a previous session (agent pushes history via session/update) */
   async sessionLoad(sessionId: string): Promise<{ error?: string }> {
     try {
-      await this.request("session/load", { sessionId }, 30000);
+      const loadParams: LoadSessionRequest = { sessionId, cwd: this.cwd, mcpServers: this.mcpServers };
+      await this.request("session/load", loadParams, 30000);
       this.sessionId = sessionId;
       return {};
     } catch (err) {
@@ -133,11 +159,9 @@ export class AcpClient {
   /** Clear session — creates a new session on the same agent, discarding history */
   async sessionClear(): Promise<{ sessionId?: string; error?: string }> {
     try {
-      const result = await this.request("session/new", {
-        cwd: this.cwd,
-        mcpServers: this.mcpServers,
-      }, 30000) as Record<string, unknown>;
-      this.sessionId = result.sessionId as string;
+      const newSessionParams: NewSessionRequest = { cwd: this.cwd, mcpServers: this.mcpServers };
+      const result = await this.request("session/new", newSessionParams, 30000) as NewSessionResponse;
+      this.sessionId = result.sessionId;
       return { sessionId: this.sessionId };
     } catch (err) {
       return { error: String(err) };
@@ -184,18 +208,19 @@ export class AcpClient {
           else resolve(result);
         });
 
+        const promptParams: PromptRequest = {
+          sessionId: this.sessionId!,
+          prompt: [{ type: "text", text }],
+        };
         this.transport.send({
           jsonrpc: "2.0",
           id,
           method: "session/prompt",
-          params: {
-            sessionId: this.sessionId,
-            prompt: [{ type: "text", text }],
-          },
+          params: promptParams,
         } as JsonRpcMessage);
-      }) as Record<string, unknown>;
+      }) as PromptResponse;
 
-      return { stopReason: result.stopReason as string, ...(result.error ? { error: result.error as string } : {}) };
+      return { stopReason: result.stopReason, ...((result as any).error ? { error: String((result as any).error) } : {}) };
     } catch (err) {
       return { error: String(err) };
     }
@@ -208,10 +233,11 @@ export class AcpClient {
 
     // session/cancel is a NOTIFICATION (no id), not a request.
     // Agent responds by resolving the pending session/prompt with stopReason: "cancelled".
+    const cancelParams: CancelNotification = { sessionId: this.sessionId };
     this.transport.send({
       jsonrpc: "2.0",
       method: "session/cancel",
-      params: { sessionId: this.sessionId },
+      params: cancelParams,
     } as JsonRpcMessage);
 
     return {};
@@ -264,7 +290,7 @@ export class AcpClient {
 
     if (isNotification(msg)) {
       if (msg.method === "session/update") {
-        this.onUpdate?.(msg.params || {});
+        this.onUpdate?.((msg.params || {}) as SessionNotification);
       }
       return;
     }
@@ -282,38 +308,44 @@ export class AcpClient {
     switch (method) {
       case "session/request_permission": {
         // Auto-approve: pick allow_once/allow_always from options, match ACP spec format
-        const options = (p.options as Array<{ kind: string; optionId: string }>) || [];
-        const allowOption = options.find(o => o.kind === "allow_once" || o.kind === "allow_always");
+        const permReq = p as RequestPermissionRequest;
+        const options = permReq.options || [];
+        const allowKinds: PermissionOptionKind[] = ["allow_once", "allow_always"];
+        const allowOption = options.find(o => allowKinds.includes(o.kind));
         const optionId = allowOption?.optionId || "allow";
-        this.sendResponse(id, { outcome: { outcome: "selected", optionId } });
+        const permResp: RequestPermissionResponse = { outcome: { outcome: "selected", optionId } };
+        this.sendResponse(id, permResp);
         break;
       }
 
       case "fs/read_text_file": {
         try {
-          const filePath = (p.path || p.filePath) as string;
+          const readReq = p as ReadTextFileRequest;
+          const filePath = readReq.path;
           if (!filePath) {
             this.sendError(id, -32602, "missing path");
             break;
           }
           const content = readFileSync(filePath, "utf8");
           const lines = content.split("\n");
-          const line = (p.line as number) || 0;
-          const limit = (p.limit as number) || lines.length;
+          const line = readReq.line || 0;
+          const limit = readReq.limit || lines.length;
           const sliced = lines.slice(line, line + limit).join("\n");
-          this.sendResponse(id, { content: sliced });
+          const readResp: ReadTextFileResponse = { content: sliced };
+          this.sendResponse(id, readResp);
         } catch (err) {
           // File not found — return empty content (match nvim behavior)
-          this.sendResponse(id, { content: "" });
+          const readResp: ReadTextFileResponse = { content: "" };
+          this.sendResponse(id, readResp);
         }
         break;
       }
 
       case "fs/write_text_file": {
         try {
-          const filePath = (p.path || p.filePath) as string;
-          mkdirSync(dirname(filePath), { recursive: true });
-          writeFileSync(filePath, p.content as string, "utf8");
+          const writeReq = p as WriteTextFileRequest;
+          mkdirSync(dirname(writeReq.path), { recursive: true });
+          writeFileSync(writeReq.path, writeReq.content, "utf8");
           this.sendResponse(id, {});
         } catch (err) {
           this.sendError(id, -32000, `write failed: ${err}`);
@@ -322,9 +354,10 @@ export class AcpClient {
       }
 
       case "terminal/create": {
+        const createReq = p as CreateTerminalRequest;
         const termId = nanoid(8);
-        const cmd = (p.command as string) || "/bin/sh";
-        const args = (p.args as string[]) || [];
+        const cmd = createReq.command || "/bin/sh";
+        const args = createReq.args || [];
         const proc = spawn(cmd, args, {
           cwd: this.cwd,
           env: process.env,
@@ -338,12 +371,13 @@ export class AcpClient {
         const term = this.terminals.get(termId)!;
         proc.stdout?.on("data", () => { term.output = output; });
         proc.stderr?.on("data", () => { term.output = output; });
-        this.sendResponse(id, { terminalId: termId });
+        const createResp: CreateTerminalResponse = { terminalId: termId };
+        this.sendResponse(id, createResp);
         break;
       }
 
       case "terminal/output": {
-        const termId = p.terminalId as string;
+        const termId = (p as TerminalOutputRequest).terminalId;
         const term = this.terminals.get(termId);
         if (term) {
           this.sendResponse(id, { output: term.output });
@@ -354,7 +388,7 @@ export class AcpClient {
       }
 
       case "terminal/wait_for_exit": {
-        const termId = p.terminalId as string;
+        const termId = (p as WaitForTerminalExitRequest).terminalId;
         const term = this.terminals.get(termId);
         if (term) {
           if (term.process.exitCode !== null) {
@@ -371,7 +405,7 @@ export class AcpClient {
       }
 
       case "terminal/kill": {
-        const termId = p.terminalId as string;
+        const termId = (p as KillTerminalRequest).terminalId;
         const term = this.terminals.get(termId);
         if (term) {
           term.process.kill("SIGTERM");
@@ -383,7 +417,7 @@ export class AcpClient {
       }
 
       case "terminal/release": {
-        const termId = p.terminalId as string;
+        const termId = (p as ReleaseTerminalRequest).terminalId;
         const term = this.terminals.get(termId);
         if (term) {
           term.process.kill("SIGTERM");
