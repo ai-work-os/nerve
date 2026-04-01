@@ -373,7 +373,7 @@ export class NodePool {
   }
 
   /** Prompt a Process Node */
-  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }): Promise<{ stopReason?: string; error?: string }> {
+  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }, excludeWs?: WebSocket): Promise<{ stopReason?: string; error?: string }> {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
     if (!client || !node) {
@@ -384,9 +384,9 @@ export class NodePool {
     log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
     node.status = "busy";
     node.touch();
-    const userMsgParams = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
+    const userMsgParams: Record<string, unknown> = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
     node.pushUpdate(userMsgParams);
-    this.onEvent("node.update", node, userMsgParams);
+    this.onEvent("node.update", node, excludeWs ? { ...userMsgParams, _excludeWs: excludeWs } : userMsgParams);
     this.onEvent("node.statusChanged", node);
 
     let result: { stopReason?: string; error?: string };

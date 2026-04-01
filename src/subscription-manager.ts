@@ -55,6 +55,7 @@ export class SubscriptionManager {
     event: string,
     node: { id: string; name: string; status: string; activity?: string },
     detail?: Record<string, unknown>,
+    excludeWs?: WebSocket,
   ): void {
     const subs = this.nodeSubscribers.get(nodeId);
     if (!subs || subs.size === 0) return;
@@ -76,6 +77,7 @@ export class SubscriptionManager {
 
     const msg = JSON.stringify(notification);
     for (const ws of subs) {
+      if (ws === excludeWs) continue;
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(msg);
       }

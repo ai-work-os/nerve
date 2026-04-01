@@ -4576,6 +4576,12 @@ async function main() {
     // Bug fix: multi-client DM user_message sync
     await testMultiClientUserMessageSync();
 
+    // Bug fix: DM user_message duplicate display (sender echo)
+    await testDmUserMessageNoDuplicateForSender();
+
+    // Bug fix: guardian stop 后无法重启
+    await testGuardianRestartAfterStop();
+
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
     failed++;
@@ -4638,21 +4644,141 @@ async function testMultiClientUserMessageSync() {
   assert(!!userMsgUpdate, "user_message sync: client B received user_message from client A",
     `got ${bUpdates.length} updates, sessionUpdate types: [${bSessionTypes.join(", ")}]`);
 
-  // Client A should also receive its own user_message (for consistency)
+  // Client A (sender) should NOT receive its own user_message echo (avoids duplicate display)
   const aUpdates = clientA.getNotifications("node.update");
-  const aSessionTypes = aUpdates.map((n: any) => n.params?.update?.sessionUpdate).filter(Boolean);
   const aUserMsg = aUpdates.find((n: any) =>
     n.params?.update?.sessionUpdate === "user_message" &&
     n.params?.update?.content?.text === "hello from A"
   );
-  assert(!!aUserMsg, "user_message sync: client A also receives own user_message notification",
-    `got ${aUpdates.length} updates, sessionUpdate types: [${aSessionTypes.join(", ")}]`);
+  assert(!aUserMsg, "user_message sync: client A does NOT receive own user_message echo",
+    `got ${aUpdates.length} updates, user_message echo present = ${!!aUserMsg}`);
 
   // Cleanup
   await httpPost("/node/stop", { nodeId: agent.nodeId });
   await sleep(500);
   await clientA.disconnect();
   await clientB.disconnect();
+}
+
+// ============================================================
+// Bug fix: DM user_message should NOT echo back to sender
+// When client A prompts an agent, client A should NOT receive
+// a node.update with sessionUpdate=user_message for its own message.
+// The sender already displays the message locally — broadcasting it
+// back causes duplicate display (same message shown twice).
+// ============================================================
+
+async function testDmUserMessageNoDuplicateForSender() {
+  console.log("\n▸ Bug fix: DM user_message not echoed back to sender");
+
+  const sender = new WsClient("dup-sender");
+  const observer = new WsClient("dup-observer");
+  await sender.connect();
+  await observer.connect();
+  await sender.request("node.register", { name: "dup-sender", capabilities: ["ui"] });
+  await observer.request("node.register", { name: "dup-observer", capabilities: ["ui"] });
+
+  // Spawn a mock agent
+  const agent = await sender.request("node.spawn", { adapter: "mock", name: "dup-test-agent", cwd: ROOT });
+  assert(!!agent.nodeId, "dup-fix: agent spawned");
+  await sleep(3000);
+
+  // Both subscribe to the agent
+  await sender.request("node.subscribe", { nodeId: agent.nodeId });
+  await observer.request("node.subscribe", { nodeId: agent.nodeId });
+  sender.clearNotifications();
+  observer.clearNotifications();
+
+  // Sender prompts the agent
+  await sender.request("node.prompt", { nodeId: agent.nodeId, content: "test message" });
+  await sleep(500);
+
+  // Observer (non-sender) SHOULD receive user_message — this is correct behavior
+  const obsUpdates = observer.getNotifications("node.update");
+  const obsUserMsg = obsUpdates.find((n: any) =>
+    n.params?.update?.sessionUpdate === "user_message" &&
+    n.params?.update?.content?.text === "test message"
+  );
+  assert(!!obsUserMsg, "dup-fix: observer receives user_message broadcast",
+    `got ${obsUpdates.length} updates`);
+
+  // Sender should NOT receive user_message echo for its own message
+  // The sender already displayed the message locally in the TUI input.
+  // Getting it back via broadcast causes it to appear twice.
+  const senderUpdates = sender.getNotifications("node.update");
+  const senderUserMsg = senderUpdates.find((n: any) =>
+    n.params?.update?.sessionUpdate === "user_message" &&
+    n.params?.update?.content?.text === "test message"
+  );
+  assert(!senderUserMsg, "dup-fix: sender does NOT receive own user_message echo",
+    `sender got ${senderUpdates.length} updates, user_message echo present = ${!!senderUserMsg}`);
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: agent.nodeId });
+  await sleep(500);
+  await sender.disconnect();
+  await observer.disconnect();
+}
+
+// ============================================================
+// Bug fix: guardian stop 后无法重启
+// guardian 是 plugin 程序节点（adapter="guardian"），stop 后
+// 用 adapter="context-guardian" 再 spawn 报 "unknown adapter"
+// 方案 A：node.spawn 识别 "context-guardian" 映射到 startGuardian()
+// ============================================================
+
+async function testGuardianRestartAfterStop() {
+  console.log("\n▸ Bug fix: guardian stop → re-spawn should succeed");
+
+  const c = new WsClient("guardian-restart-test");
+  await c.connect();
+  await c.request("node.register", { name: "guardian-restart-test", capabilities: ["ui"] });
+
+  // 1. Spawn guardian with adapter="context-guardian" — this is the bug entry point
+  let spawn1Ok = false;
+  let spawn1NodeId = "";
+  let spawn1Error = "";
+  try {
+    const result = await c.request("node.spawn", { adapter: "context-guardian", name: "restart-guardian", cwd: ROOT });
+    spawn1Ok = !!result.nodeId;
+    spawn1NodeId = result.nodeId;
+  } catch (err: any) {
+    spawn1Error = err.message || String(err);
+  }
+
+  assert(spawn1Ok, "guardian-restart: spawn with adapter='context-guardian' succeeds",
+    spawn1Ok ? undefined : `spawn failed: ${spawn1Error}`);
+
+  if (!spawn1Ok) {
+    // Bug confirmed — first spawn already fails
+    await c.disconnect();
+    return;
+  }
+
+  await sleep(2000);
+
+  // 2. Stop it
+  await c.request("node.stop", { nodeId: spawn1NodeId });
+  await sleep(1000);
+
+  // 3. Re-spawn — should succeed
+  let respawnOk = false;
+  let respawnError = "";
+  try {
+    const spawn2 = await c.request("node.spawn", { adapter: "context-guardian", name: "restart-guardian-2", cwd: ROOT });
+    respawnOk = !!spawn2.nodeId;
+    if (spawn2.nodeId) {
+      await c.request("node.stop", { nodeId: spawn2.nodeId });
+      await sleep(500);
+    }
+  } catch (err: any) {
+    respawnError = err.message || String(err);
+  }
+
+  assert(respawnOk, "guardian-restart: re-spawn after stop succeeds",
+    respawnOk ? undefined : `re-spawn failed: ${respawnError}`);
+
+  await c.disconnect();
 }
 
 main();

@@ -117,6 +117,7 @@ const adapters: Record<string, AdapterConfig> = {
     connectTimeout: 3000,
   },
 };
+adapters["context-guardian"] = adapters["guardian"]; // alias: node name → adapter
 
 export function getAdapter(name: string): AdapterConfig | undefined {
   return adapters[name];

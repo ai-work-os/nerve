@@ -46,7 +46,10 @@ export class Server {
     // Hook into node events for direct subscriber push
     this.cm.onNodeEvent = (event, node, detail) => {
       if (event === "node.update" || event === "node.statusChanged") {
-        this.subs.notify(node.id, event, node, detail);
+        // Extract excludeWs if present (set by promptNode to avoid echoing user_message back to sender)
+        const excludeWs = detail?._excludeWs as WebSocket | undefined;
+        const cleanDetail = excludeWs ? { ...detail, _excludeWs: undefined } : detail;
+        this.subs.notify(node.id, event, node, cleanDetail, excludeWs);
       }
       if (event === "node.stopped" || event === "node.removed") {
         this.subs.removeNode(node.id);
@@ -407,7 +410,7 @@ export class Server {
           const callerNodeId = this.wsNodeMap.get(ws);
           const callerNode = callerNodeId ? this.cm.nodePool.get(callerNodeId) : undefined;
           const from = callerNode ? { nodeId: callerNode.id, name: callerNode.name } : undefined;
-          this.cm.nodePool.promptNode(nodeId, content, from).then(result => {
+          this.cm.nodePool.promptNode(nodeId, content, from, ws).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
