@@ -347,7 +347,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         expectedSessionId,
         summaryPath: summary_path,
         selfReset: true,
-        source: "mcp_tool",
+        source: `mcp_tool:${NERVE_NODE_NAME}`,
       });
       return ok(`session reset: ${result.sessionId} (previous: ${result.previousSessionId})`);
     } catch (err) {

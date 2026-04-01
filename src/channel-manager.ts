@@ -190,6 +190,39 @@ export class ChannelManager {
     });
   }
 
+  /**
+   * Clean up a stale guardian node before re-spawning.
+   * Identity check: must be a program node (spawned via spawnProgramNode, tracked in programProcesses).
+   * Returns: "cleaned" if stale node was removed, "alive" if a live guardian exists, "none" if no guardian found.
+   */
+  cleanupStaleGuardian(name: string): "cleaned" | "alive" | "none" {
+    const node = this.nodePool.getByName(name);
+    if (!node) return "none";
+
+    // Identity check: must be a program node (spawned by server, not an external WS client)
+    if (!this.nodePool.isProgramNode(node.id)) {
+      log.info(`cleanupStaleGuardian: ${name} (${node.id}) is not a program node, removing impostor`);
+      for (const chId of node.channels) {
+        this.removeNodeFromChannel(chId, node.name);
+      }
+      this.nodePool.remove(node.id);
+      return "none"; // Non-program node cannot be a real guardian
+    }
+
+    if (node.transport.alive) {
+      log.info(`cleanupStaleGuardian: ${name} (${node.id}) transport alive, skipping`);
+      return "alive";
+    }
+
+    // Transport dead — full cleanup: channels first, then remove
+    log.info(`cleanupStaleGuardian: cleaning stale program node ${name} (${node.id})`);
+    for (const chId of node.channels) {
+      this.removeNodeFromChannel(chId, node.name);
+    }
+    this.nodePool.remove(node.id);
+    return "cleaned";
+  }
+
   // --- Messaging ---
 
   postMessage(channelId: string, from: string, content: string): MessageInfo | null {
@@ -253,7 +286,10 @@ export class ChannelManager {
       throw new Error(`node "${nodeName}" has not joined any channel`);
     }
 
-    // MVP: post to first channel only
+    if (node.channels.size > 1) {
+      throw new Error(`node "${nodeName}" is in ${node.channels.size} channels, specify channelId`);
+    }
+
     const chId = [...node.channels][0];
     const msg = this.postMessage(chId, nodeName, content);
     if (!msg) throw new Error(`failed to post to channel ${chId}`);

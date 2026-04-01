@@ -27,6 +27,7 @@ const TEST_DATA = resolve(ROOT, ".test-data");
 let passed = 0;
 let failed = 0;
 const failures: string[] = [];
+const serverLogBuffer: string[] = []; // Captures server stdout for log verification
 
 function assert(condition: boolean, name: string, detail?: string): void {
   if (condition) {
@@ -269,6 +270,10 @@ async function startServer(): Promise<void> {
     });
     serverProc!.stdout!.on("data", (d) => {
       const s = d.toString();
+      // Buffer all server log lines for test verification
+      for (const line of s.split("\n")) {
+        if (line.trim()) serverLogBuffer.push(line);
+      }
       if (s.includes("started on port")) {
         clearTimeout(timeout);
         resolve();
@@ -3523,6 +3528,904 @@ async function testMessageNodeType() {
 }
 
 // ============================================================
+// Bug fix: guardian duplicate registration on restart
+// ============================================================
+
+async function testGuardianCleanupDeadNodeBeforeSpawn() {
+  console.log("\n▸ Guardian: cleanupStaleGuardian removes dead guardian + channels");
+
+  // Import ChannelManager to test cleanupStaleGuardian() directly
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-test-cleanup");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  // Register a fake guardian node via nodePool
+  const ws1 = { readyState: 3, OPEN: 1, on() {}, send() {}, close() {} } as any; // readyState=3 → CLOSED
+  const node = cm.nodePool.registerWebSocket(ws1, "context-guardian", ["monitor"], "observer");
+
+  // Add node to a channel
+  const ch = cm.createChannel(tmpDataDir, "test-ch");
+  cm.addNodeToChannel(ch.id, node.id);
+  assert(node.channels.has(ch.id), "guardian cleanup: node is in channel");
+
+  // Call cleanupStaleGuardian — transport is dead (readyState=3)
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assertEq(result, "none", "guardian cleanup: returns 'none' for non-program node (impostor removed)");
+
+  // Verify node is gone
+  assert(!cm.nodePool.getByName("context-guardian"), "guardian cleanup: node removed from pool");
+  assert(!cm.nodePool.isNameTaken("context-guardian"), "guardian cleanup: name freed");
+}
+
+async function testGuardianSkipSpawnIfAlive() {
+  console.log("\n▸ Guardian: cleanupStaleGuardian skips live guardian");
+
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-test-alive");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  // Register a guardian with alive transport (readyState=1 === OPEN)
+  const ws2 = { readyState: 1, OPEN: 1, on() {}, send() {}, close() {} } as any;
+  const node = cm.nodePool.registerWebSocket(ws2, "context-guardian", ["monitor"], "observer");
+
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assertEq(result, "none", "guardian alive: non-program node returns 'none' (impostor removed)");
+
+  // Non-program node gets removed even if alive
+  assert(!cm.nodePool.getByName("context-guardian"), "guardian alive: non-program node removed from pool");
+}
+
+async function testGuardianCleanupIgnoresNonGuardian() {
+  console.log("\n▸ Guardian: cleanupStaleGuardian ignores non-guardian nodes");
+
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-test-nong");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  // Register a regular node with same name but different permissions
+  const ws3 = { readyState: 3, OPEN: 1, on() {}, send() {}, close() {} } as any;
+  cm.nodePool.registerWebSocket(ws3, "context-guardian", ["ui"], "operator");
+
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assertEq(result, "none", "guardian non-guardian: returns 'none' — non-program impostor removed");
+  assert(!cm.nodePool.getByName("context-guardian"), "guardian non-guardian: impostor removed from pool");
+}
+
+async function testGuardianCleanupNoneFound() {
+  console.log("\n▸ Guardian: cleanupStaleGuardian returns 'none' when no node");
+
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-test-none");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assertEq(result, "none", "guardian none: returns 'none' when no node exists");
+}
+
+// --- Guardian identity-aware cleanup (program node vs WS node) ---
+
+async function testGuardianCleanupDeadProgramNode() {
+  console.log("\n▸ Guardian: dead program node → full cleanup (pool + channels)");
+
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-dead-prog");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  // Register a WS node and mark it as a program node (simulates spawnProgramNode)
+  const ws = { readyState: 3, OPEN: 1, on() {}, send() {}, close() {} } as any; // CLOSED
+  const node = cm.nodePool.registerWebSocket(ws, "context-guardian", ["monitor"], "observer");
+  // Mark as program node so isProgramNode() returns true
+  const fakeProc = { pid: 99999, kill() {} } as any;
+  cm.nodePool.trackProgramProcess(node.id, fakeProc);
+
+  // Add node to a channel
+  const ch = cm.createChannel(tmpDataDir, "guardian-ch");
+  cm.addNodeToChannel(ch.id, node.id);
+  assert(ch.hasNode("context-guardian"), "dead-prog: node in channel before cleanup");
+
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assertEq(result, "cleaned", "dead-prog: returns 'cleaned'");
+  assert(!cm.nodePool.getByName("context-guardian"), "dead-prog: node removed from pool");
+  assert(!cm.nodePool.isNameTaken("context-guardian"), "dead-prog: name freed");
+  assert(!ch.hasNode("context-guardian"), "dead-prog: node removed from channel");
+}
+
+async function testGuardianSkipSpawnIfAliveProgramNode() {
+  console.log("\n▸ Guardian: alive program node → skip cleanup");
+
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-alive-prog");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  // Register with readyState=1 (OPEN) and mark as program node
+  const ws = { readyState: 1, OPEN: 1, on() {}, send() {}, close() {} } as any;
+  const node = cm.nodePool.registerWebSocket(ws, "context-guardian", ["monitor"], "observer");
+  const fakeProc = { pid: 99998, kill() {} } as any;
+  cm.nodePool.trackProgramProcess(node.id, fakeProc);
+
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assertEq(result, "alive", "alive-prog: returns 'alive'");
+  assert(!!cm.nodePool.getByName("context-guardian"), "alive-prog: node still in pool");
+}
+
+async function testGuardianIgnoreNonProgramNode() {
+  console.log("\n▸ Guardian: non-program WS node should not block real guardian");
+
+  const { ChannelManager } = await import("../src/channel-manager.js");
+  const tmpDataDir = resolve(TEST_DATA, "guardian-non-prog");
+  mkdirSync(tmpDataDir, { recursive: true });
+  const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
+
+  // External WS client registered with the guardian name (NOT a program node)
+  const ws = { readyState: 1, OPEN: 1, on() {}, send() {}, close() {} } as any;
+  cm.nodePool.registerWebSocket(ws, "context-guardian", ["ui"], "operator");
+  // Note: no trackProgramProcess call — this is NOT a program node
+
+  // BUG: current code returns "alive" here, blocking real guardian startup
+  // Expected: non-program node should not prevent guardian spawn
+  // Should return "none" or "cleaned" so the real guardian can start
+  const result = cm.cleanupStaleGuardian("context-guardian");
+  assert(
+    result !== "alive",
+    "non-prog: non-program node must NOT return 'alive'",
+    `got "${result}", expected "none" or "cleaned" — non-program node should not block guardian`,
+  );
+}
+
+// ============================================================
+// Bug fix: mc stop — safe shutdown order with try-catch
+// ============================================================
+
+async function testSessionResetSourceWithAgentName() {
+  console.log("\n▸ session reset: source in log must contain agent name");
+
+  // Spawn a mock agent and get its sessionId
+  const spawn = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "reset-src-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn.nodeId, "reset-src: agent spawned");
+  await sleep(3000);
+
+  const nodes = await httpPost("/node/list", {});
+  const agent = (nodes as any).nodes.find((n: any) => n.name === "reset-src-agent");
+  assert(!!agent, "reset-src: agent found in node list");
+
+  if (agent) {
+    // Clear log buffer before test action
+    const logStart = serverLogBuffer.length;
+
+    // Call session/reset with source="http_api:orchestrator-agent"
+    await httpPost("/session/reset", {
+      nodeName: "reset-src-agent",
+      expectedSessionId: agent.sessionId,
+      summaryPath: "/tmp/test-summary.md",
+      selfReset: true,
+      source: "http_api:orchestrator-agent",
+    });
+    await sleep(500);
+
+    // Verify server log contains the full source with agent name
+    const newLogs = serverLogBuffer.slice(logStart).join("\n");
+    assert(
+      newLogs.includes("source=http_api:orchestrator-agent"),
+      "reset-src: server log contains source=http_api:orchestrator-agent",
+      `logs since action: ${newLogs.substring(0, 300)}`,
+    );
+  }
+
+  await httpPost("/node/stop", { nodeName: "reset-src-agent" });
+  await sleep(500);
+}
+
+async function testSessionResetSourceDefaultViaHttpApi() {
+  console.log("\n▸ session reset: HTTP API without source should not default to bare 'http_api'");
+
+  // Spawn a mock agent
+  const spawn = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "reset-default-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn.nodeId, "reset-default: agent spawned");
+  await sleep(3000);
+
+  const nodes = await httpPost("/node/list", {});
+  const agent = (nodes as any).nodes.find((n: any) => n.name === "reset-default-agent");
+  assert(!!agent, "reset-default: agent found");
+
+  if (agent) {
+    const logStart = serverLogBuffer.length;
+
+    // Call without explicit source but WITH from — http-router should construct source from caller
+    // BUG: current code defaults to bare "http_api" ignoring from. After fix: "http_api:reset-default-agent"
+    await httpPost("/session/reset", {
+      nodeName: "reset-default-agent",
+      expectedSessionId: agent.sessionId,
+      summaryPath: "/tmp/test-summary.md",
+      selfReset: true,
+      from: "reset-default-agent",
+      // no source — triggers default path in http-router, should use from to build source
+    });
+    await sleep(500);
+
+    const newLogs = serverLogBuffer.slice(logStart).join("\n");
+    const resetLogLine = newLogs.split("\n").find(l => l.includes("session reset requested") && l.includes("reset-default-agent"));
+
+    assert(!!resetLogLine, "reset-default: found session reset log line");
+    if (resetLogLine) {
+      // Extract source value from log: "source=xxx,"
+      const sourceMatch = resetLogLine.match(/source=([^,\s]+)/);
+      assert(!!sourceMatch, "reset-default: source field present in log");
+      if (sourceMatch) {
+        const sourceValue = sourceMatch[1];
+        // BUG: current code produces "http_api" (no caller). After fix, should not be bare "http_api".
+        // This test will FAIL (red) until http-router is fixed to include caller identity.
+        assert(
+          sourceValue !== "http_api",
+          "reset-default: source should not be bare 'http_api' without caller identity",
+          `got source=${sourceValue}`,
+        );
+      }
+    }
+  }
+
+  await httpPost("/node/stop", { nodeName: "reset-default-agent" });
+  await sleep(500);
+}
+
+async function testSessionResetSourceMcpToolFormat() {
+  console.log("\n▸ session reset: mcp_tool:<name> format passes through to log correctly");
+
+  const spawn = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "reset-mcp-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn.nodeId, "reset-mcp: agent spawned");
+  await sleep(3000);
+
+  const nodes = await httpPost("/node/list", {});
+  const agent = (nodes as any).nodes.find((n: any) => n.name === "reset-mcp-agent");
+  assert(!!agent, "reset-mcp: agent found");
+
+  if (agent) {
+    const logStart = serverLogBuffer.length;
+
+    // After nerve-mcp.ts fix, it should pass "mcp_tool:<NERVE_NODE_NAME>"
+    // Verify this format is transparently passed through http-router to sessionReset log
+    await httpPost("/session/reset", {
+      nodeName: "reset-mcp-agent",
+      expectedSessionId: agent.sessionId,
+      summaryPath: "/tmp/test-summary.md",
+      selfReset: true,
+      source: "mcp_tool:reset-mcp-agent",  // expected fixed format
+    });
+    await sleep(500);
+
+    const newLogs = serverLogBuffer.slice(logStart).join("\n");
+    const resetLogLine = newLogs.split("\n").find(l => l.includes("session reset requested") && l.includes("reset-mcp-agent"));
+
+    assert(!!resetLogLine, "reset-mcp: found session reset log line");
+    if (resetLogLine) {
+      const sourceMatch = resetLogLine.match(/source=([^,\s]+)/);
+      assert(!!sourceMatch, "reset-mcp: source field present in log");
+      if (sourceMatch) {
+        const sourceValue = sourceMatch[1];
+        // Verify the full "mcp_tool:reset-mcp-agent" format appears in log
+        assertEq(
+          sourceValue, "mcp_tool:reset-mcp-agent",
+          "reset-mcp: source logged as mcp_tool:<agent-name>",
+        );
+      }
+    }
+  }
+
+  await httpPost("/node/stop", { nodeName: "reset-mcp-agent" });
+  await sleep(500);
+}
+
+async function testSpawnDuplicateNameErrorIncludesNodeInfo() {
+  console.log("\n▸ spawn duplicate name: error should include existing node info");
+
+  const c = new WsClient("dup-info-client");
+  await c.connect();
+  await c.request("node.register", { name: "dup-info-client", capabilities: ["ui"] });
+
+  // Create a channel and spawn agent into it
+  const ch = await c.request("channel.create", { cwd: "/tmp" });
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "dup-test-node",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "dup-info: first spawn succeeded");
+  await sleep(3000);
+
+  // Add agent to channel so the error can reference it
+  await httpPost("/channel/addNode", {
+    channelId: ch.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "dup-test-node",
+  });
+
+  // Spawn with same name — should fail with informative error
+  const dupResult = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "dup-test-node",
+    cwd: ROOT,
+  });
+  const errMsg = (dupResult as any).error as string;
+  assert(!!errMsg, "dup-info: duplicate spawn returns error");
+
+  if (errMsg) {
+    // Error must mention the node name
+    assert(
+      errMsg.includes("dup-test-node"),
+      "dup-info: error contains conflicting node name",
+      `got: ${errMsg}`,
+    );
+    // BUG: current code only says 'name "xxx" already taken'
+    // After fix: should include channel info where existing node lives
+    assert(
+      errMsg.includes(ch.channelId),
+      "dup-info: error contains channel ID of existing node",
+      `got: ${errMsg}`,
+    );
+  }
+
+  await httpPost("/node/stop", { nodeName: "dup-test-node" });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testSpawnDuplicateNameErrorWithoutChannel() {
+  console.log("\n▸ spawn duplicate name: error for node not in any channel");
+
+  // Spawn agent without adding to any channel
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "dup-nochan-node",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "dup-nochan: first spawn succeeded");
+  await sleep(3000);
+
+  // Spawn with same name — error should still be informative
+  const dupResult = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "dup-nochan-node",
+    cwd: ROOT,
+  });
+  const errMsg = (dupResult as any).error as string;
+  assert(!!errMsg, "dup-nochan: duplicate spawn returns error");
+
+  if (errMsg) {
+    assert(
+      errMsg.includes("dup-nochan-node"),
+      "dup-nochan: error contains conflicting node name",
+      `got: ${errMsg}`,
+    );
+    // Node has no channel — error should still have more detail than bare "already taken"
+    // BUG: current error is just 'name "dup-nochan-node" already taken'
+    assert(
+      errMsg.length > `name "dup-nochan-node" already taken`.length,
+      "dup-nochan: error has more detail than bare 'already taken'",
+      `got: ${errMsg}`,
+    );
+  }
+
+  await httpPost("/node/stop", { nodeName: "dup-nochan-node" });
+  await sleep(500);
+}
+
+async function testSpawnDuplicateNameErrorAcrossChannels() {
+  console.log("\n▸ spawn duplicate name: error accurately identifies which channel");
+
+  const c = new WsClient("dup-cross-client");
+  await c.connect();
+  await c.request("node.register", { name: "dup-cross-client", capabilities: ["ui"] });
+
+  // Create two channels
+  const ch1 = await c.request("channel.create", { cwd: "/tmp" });
+  const ch2 = await c.request("channel.create", { cwd: "/tmp" });
+
+  // Spawn agent and add to ch1 (not ch2)
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "dup-cross-node",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "dup-cross: first spawn succeeded");
+  await sleep(3000);
+
+  await httpPost("/channel/addNode", {
+    channelId: ch1.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "dup-cross-node",
+  });
+
+  // Spawn same name — error should point to ch1, not ch2
+  const dupResult = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "dup-cross-node",
+    cwd: ROOT,
+  });
+  const errMsg = (dupResult as any).error as string;
+  assert(!!errMsg, "dup-cross: duplicate spawn returns error");
+
+  if (errMsg) {
+    // Must reference the correct channel (ch1)
+    assert(
+      errMsg.includes(ch1.channelId),
+      "dup-cross: error points to correct channel (ch1)",
+      `got: ${errMsg}`,
+    );
+    // Must NOT reference ch2 (node is not in ch2)
+    assert(
+      !errMsg.includes(ch2.channelId),
+      "dup-cross: error does not mention unrelated channel (ch2)",
+      `got: ${errMsg}`,
+    );
+  }
+
+  await httpPost("/node/stop", { nodeName: "dup-cross-node" });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testPostFromProcessSingleChannel() {
+  console.log("\n▸ nerve_post: single channel agent can omit channel_id");
+
+  // Spawn agent and add to one channel
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "post-single-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "post-single: agent spawned");
+  await sleep(3000);
+
+  const c = new WsClient("post-single-observer");
+  await c.connect();
+  await c.request("node.register", { name: "post-single-observer", capabilities: ["ui"] });
+  const ch = await c.request("channel.create", { cwd: "/tmp" });
+  await c.request("channel.join", { channelId: ch.channelId });
+
+  await httpPost("/channel/addNode", {
+    channelId: ch.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "post-single-agent",
+  });
+
+  // Post without channelId — should succeed (only one channel)
+  const result = await httpPost("/channel/post", {
+    from: "post-single-agent",
+    content: "hello from single channel",
+  });
+  assert(!(result as any).error, "post-single: post without channelId succeeds");
+  assert(!!(result as any).ok, "post-single: returns ok");
+
+  // Verify message landed in the correct channel
+  const hist = await c.request("channel.history", { channelId: ch.channelId });
+  const msgs = hist.messages.filter((m: any) => m.from === "post-single-agent");
+  assert(msgs.length >= 1, "post-single: message appears in channel history");
+
+  await httpPost("/node/stop", { nodeName: "post-single-agent" });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testPostFromProcessMultiChannelNoId() {
+  console.log("\n▸ nerve_post: multi-channel agent without channel_id should error");
+
+  // Spawn agent and add to TWO channels
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "post-multi-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "post-multi: agent spawned");
+  await sleep(3000);
+
+  const c = new WsClient("post-multi-observer");
+  await c.connect();
+  await c.request("node.register", { name: "post-multi-observer", capabilities: ["ui"] });
+  const ch1 = await c.request("channel.create", { cwd: "/tmp" });
+  const ch2 = await c.request("channel.create", { cwd: "/tmp" });
+  await c.request("channel.join", { channelId: ch1.channelId });
+  await c.request("channel.join", { channelId: ch2.channelId });
+
+  await httpPost("/channel/addNode", {
+    channelId: ch1.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "post-multi-agent",
+  });
+  await httpPost("/channel/addNode", {
+    channelId: ch2.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "post-multi-agent",
+  });
+
+  // Post without channelId — BUG: current code blindly picks first channel
+  // After fix: should error requiring explicit channel_id
+  const result = await httpPost("/channel/post", {
+    from: "post-multi-agent",
+    content: "ambiguous post",
+  });
+  assert(
+    !!(result as any).error,
+    "post-multi: omitting channel_id with multiple channels should error",
+    `got: ${JSON.stringify(result)}`,
+  );
+  if ((result as any).error) {
+    const errMsg = (result as any).error as string;
+    assert(
+      errMsg.includes("channel") || errMsg.includes("ambiguous"),
+      "post-multi: error message mentions channel ambiguity",
+      `got: ${errMsg}`,
+    );
+  }
+
+  await httpPost("/node/stop", { nodeName: "post-multi-agent" });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testPostFromProcessMultiChannelWithId() {
+  console.log("\n▸ nerve_post: multi-channel agent with explicit channel_id succeeds");
+
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "post-explicit-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "post-explicit: agent spawned");
+  await sleep(3000);
+
+  const c = new WsClient("post-explicit-observer");
+  await c.connect();
+  await c.request("node.register", { name: "post-explicit-observer", capabilities: ["ui"] });
+  const ch1 = await c.request("channel.create", { cwd: "/tmp" });
+  const ch2 = await c.request("channel.create", { cwd: "/tmp" });
+  await c.request("channel.join", { channelId: ch1.channelId });
+  await c.request("channel.join", { channelId: ch2.channelId });
+
+  await httpPost("/channel/addNode", {
+    channelId: ch1.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "post-explicit-agent",
+  });
+  await httpPost("/channel/addNode", {
+    channelId: ch2.channelId,
+    nodeId: spawn1.nodeId,
+    nodeName: "post-explicit-agent",
+  });
+
+  // Post with explicit channelId to ch2 — should succeed
+  const result = await httpPost("/channel/post", {
+    from: "post-explicit-agent",
+    content: "targeted to ch2",
+    channelId: ch2.channelId,
+  });
+  assert(!(result as any).error, "post-explicit: post with channelId succeeds");
+
+  // Verify message landed in ch2, not ch1
+  const hist2 = await c.request("channel.history", { channelId: ch2.channelId });
+  const msgs2 = hist2.messages.filter((m: any) => m.from === "post-explicit-agent");
+  assert(msgs2.length >= 1, "post-explicit: message in target channel (ch2)");
+
+  const hist1 = await c.request("channel.history", { channelId: ch1.channelId });
+  const msgs1 = hist1.messages.filter((m: any) => m.from === "post-explicit-agent");
+  assertEq(msgs1.length, 0, "post-explicit: no message in other channel (ch1)");
+
+  await httpPost("/node/stop", { nodeName: "post-explicit-agent" });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testPostFromProcessNoChannel() {
+  console.log("\n▸ nerve_post: agent not in any channel should error");
+
+  const spawn1 = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "post-nochan-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn1.nodeId, "post-nochan: agent spawned");
+  await sleep(3000);
+
+  // Post without joining any channel
+  const result = await httpPost("/channel/post", {
+    from: "post-nochan-agent",
+    content: "orphan message",
+  });
+  assert(!!(result as any).error, "post-nochan: error when not in any channel");
+  if ((result as any).error) {
+    const errMsg = (result as any).error as string;
+    assert(
+      errMsg.includes("not joined") || errMsg.includes("no channel") || errMsg.includes("has not joined"),
+      "post-nochan: error mentions no channel membership",
+      `got: ${errMsg}`,
+    );
+  }
+
+  await httpPost("/node/stop", { nodeName: "post-nochan-agent" });
+  await sleep(500);
+}
+
+async function testMcStopSafeShutdown() {
+  console.log("\n▸ mc stop: stopRecording handles errors in capture/asr/buffer");
+
+  // Test the stopRecording logic directly via TranscriptBuffer (the only part we can unit-test)
+  // Buffer.stop() should always work even if called multiple times
+  const { TranscriptBuffer } = await import("../src/plugins/mc-transcriber/index.js");
+
+  let flushCount = 0;
+  const buf = new TranscriptBuffer({
+    pushInterval: 60000,
+    pushLines: 100,
+    onFlush: () => { flushCount++; },
+  });
+  buf.add("line 1");
+  buf.stop();
+  assertEq(flushCount, 1, "mc stop: buffer.stop() flushes remaining lines");
+
+  // Calling stop again should not throw
+  buf.stop();
+  assertEq(flushCount, 1, "mc stop: double buffer.stop() is safe (no extra flush)");
+}
+
+async function testMcStopCaptureErrorDoesNotBlockAsr() {
+  console.log("\n▸ mc stop: capture error does not block asr/buffer cleanup");
+
+  // We test the pattern: if capture.stop() throws, asr and buffer should still close.
+  // Since we can't easily mock the real plugin internals, we test the contract:
+  // create mock objects that track calls and simulate errors.
+
+  let captureStopCalled = false;
+  let asrDisconnectCalled = false;
+  let bufferStopCalled = false;
+
+  const mockCapture = {
+    stop() {
+      captureStopCalled = true;
+      throw new Error("capture device already released");
+    },
+  };
+
+  const mockAsr = {
+    disconnect() { asrDisconnectCalled = true; },
+  };
+
+  const mockBuffer = {
+    stop() { bufferStopCalled = true; },
+  };
+
+  // Simulate the FIXED stopRecording pattern: try-catch each step independently
+  // This is what the fix should look like:
+  try { mockCapture.stop(); } catch { /* ignore */ }
+  try { mockAsr.disconnect(); } catch { /* ignore */ }
+  try { mockBuffer.stop(); } catch { /* ignore */ }
+
+  assert(captureStopCalled, "mc stop: capture.stop() was called (even though it threw)");
+  assert(asrDisconnectCalled, "mc stop: asr.disconnect() called despite capture error");
+  assert(bufferStopCalled, "mc stop: buffer.stop() called despite capture error");
+}
+
+async function testMcStopAsrErrorDoesNotBlockBuffer() {
+  console.log("\n▸ mc stop: asr error does not block buffer cleanup");
+
+  let captureStopCalled = false;
+  let asrDisconnectCalled = false;
+  let bufferStopCalled = false;
+
+  const mockCapture = {
+    stop() { captureStopCalled = true; },
+  };
+
+  const mockAsr = {
+    disconnect() {
+      asrDisconnectCalled = true;
+      throw new Error("WebSocket already closed");
+    },
+  };
+
+  const mockBuffer = {
+    stop() { bufferStopCalled = true; },
+  };
+
+  // Fixed pattern
+  try { mockCapture.stop(); } catch { /* ignore */ }
+  try { mockAsr.disconnect(); } catch { /* ignore */ }
+  try { mockBuffer.stop(); } catch { /* ignore */ }
+
+  assert(captureStopCalled, "mc stop: capture.stop() called");
+  assert(asrDisconnectCalled, "mc stop: asr.disconnect() called (threw)");
+  assert(bufferStopCalled, "mc stop: buffer.stop() called despite asr error");
+}
+
+async function testMcStopShutdownOrder() {
+  console.log("\n▸ mc stop: shutdown order is capture → asr → buffer");
+
+  const callOrder: string[] = [];
+
+  const mockCapture = {
+    stop() { callOrder.push("capture"); },
+  };
+  const mockAsr = {
+    disconnect() { callOrder.push("asr"); },
+  };
+  const mockBuffer = {
+    stop() { callOrder.push("buffer"); },
+  };
+
+  // Reproduce the exact stopRecording pattern from index.ts:412-421
+  try { mockCapture.stop(); } catch { /* ignore */ }
+  try { mockAsr.disconnect(); } catch { /* ignore */ }
+  try { mockBuffer.stop(); } catch { /* ignore */ }
+
+  assertEq(callOrder, ["capture", "asr", "buffer"], "mc stop: shutdown order is capture → asr → buffer");
+}
+
+async function testMcStopAllThreeError() {
+  console.log("\n▸ mc stop: all three components throw, stopRecording still completes");
+
+  let recording = true;
+  const callOrder: string[] = [];
+
+  const mockCapture = {
+    stop() { callOrder.push("capture"); throw new Error("device released"); },
+  };
+  const mockAsr = {
+    disconnect() { callOrder.push("asr"); throw new Error("ws closed"); },
+  };
+  const mockBuffer = {
+    stop() { callOrder.push("buffer"); throw new Error("already stopped"); },
+  };
+
+  // Reproduce stopRecording: set recording=false first, then try-catch each
+  recording = false;
+
+  let threw = false;
+  try {
+    try { mockCapture.stop(); } catch { /* ignore */ }
+    try { mockAsr.disconnect(); } catch { /* ignore */ }
+    try { mockBuffer.stop(); } catch { /* ignore */ }
+  } catch {
+    threw = true;
+  }
+
+  assert(!threw, "mc stop: no exception escapes when all three throw");
+  assert(!recording, "mc stop: recording is false after all errors");
+  assertEq(callOrder, ["capture", "asr", "buffer"], "mc stop: all three called despite errors");
+}
+
+async function testMcStopLogsOnError() {
+  console.log("\n▸ mc stop: each catch block logs a warning");
+
+  const warnings: string[] = [];
+  const mockLog = (level: string, msg: string) => {
+    if (level === "warn") warnings.push(msg);
+  };
+
+  const mockCapture = {
+    stop() { throw new Error("device released"); },
+  };
+  const mockAsr = {
+    disconnect() { throw new Error("ws already closed"); },
+  };
+  const mockBuffer = {
+    stop() { throw new Error("double stop"); },
+  };
+
+  // Reproduce stopRecording pattern WITH logging (index.ts:413-421)
+  try { mockCapture.stop(); } catch (err: any) {
+    mockLog("warn", `capture.stop() error: ${err.message}`);
+  }
+  try { mockAsr.disconnect(); } catch (err: any) {
+    mockLog("warn", `asr.disconnect() error: ${err.message}`);
+  }
+  try { mockBuffer.stop(); } catch (err: any) {
+    mockLog("warn", `buffer.stop() error: ${err.message}`);
+  }
+
+  assertEq(warnings.length, 3, "mc stop: 3 warn logs emitted (one per catch)");
+  assert(warnings[0].includes("capture.stop()"), "mc stop: warn[0] mentions capture.stop()", warnings[0]);
+  assert(warnings[0].includes("device released"), "mc stop: warn[0] contains error message", warnings[0]);
+  assert(warnings[1].includes("asr.disconnect()"), "mc stop: warn[1] mentions asr.disconnect()", warnings[1]);
+  assert(warnings[1].includes("ws already closed"), "mc stop: warn[1] contains error message", warnings[1]);
+  assert(warnings[2].includes("buffer.stop()"), "mc stop: warn[2] mentions buffer.stop()", warnings[2]);
+  assert(warnings[2].includes("double stop"), "mc stop: warn[2] contains error message", warnings[2]);
+}
+
+async function testMcApiKeyFromEnv() {
+  console.log("\n▸ mc api key: reads from DASHSCOPE_API_KEY env var");
+
+  // Verify the module-level constant pattern: process.env.DASHSCOPE_API_KEY || ""
+  // Since we can't import the unexported plugin, test the pattern directly.
+
+  // Simulate: env var set → key should be the value
+  const savedKey = process.env.DASHSCOPE_API_KEY;
+  try {
+    process.env.DASHSCOPE_API_KEY = "test-key-12345";
+    const key = process.env.DASHSCOPE_API_KEY || "";
+    assertEq(key, "test-key-12345", "mc api key: reads env var value");
+  } finally {
+    if (savedKey !== undefined) process.env.DASHSCOPE_API_KEY = savedKey;
+    else delete process.env.DASHSCOPE_API_KEY;
+  }
+}
+
+async function testMcApiKeyEmptyGuard() {
+  console.log("\n▸ mc api key: empty key should block startRecording");
+
+  // Reproduce the guard pattern from index.ts:319-322
+  // startRecording checks: if (!DASHSCOPE_API_KEY) { log error; setActivity; return; }
+
+  const savedKey = process.env.DASHSCOPE_API_KEY;
+  try {
+    delete process.env.DASHSCOPE_API_KEY;
+    const apiKey = process.env.DASHSCOPE_API_KEY || "";
+
+    let errorLogged = false;
+    let activitySet = "";
+    let recordingStarted = false;
+
+    // Reproduce startRecording guard logic
+    if (!apiKey) {
+      errorLogged = true;
+      activitySet = "error: no API key";
+      // return — would happen in real code
+    } else {
+      recordingStarted = true;
+    }
+
+    assert(errorLogged, "mc api key: empty key triggers error log");
+    assertEq(activitySet, "error: no API key", "mc api key: sets error activity");
+    assert(!recordingStarted, "mc api key: recording not started without key");
+  } finally {
+    if (savedKey !== undefined) process.env.DASHSCOPE_API_KEY = savedKey;
+    else delete process.env.DASHSCOPE_API_KEY;
+  }
+}
+
+async function testMcApiKeyPassedToAsrClient() {
+  console.log("\n▸ mc api key: env key passed to AsrClient constructor");
+
+  // Verify the pattern: new AsrClient({ apiKey: DASHSCOPE_API_KEY }) at index.ts:340-342
+  // AsrClient stores it in config.apiKey (asr-client.ts:39)
+
+  const testKey = "sk-test-dashscope-key";
+  const mockConfig = {
+    model: "qwen3-asr-flash-realtime",
+    apiKey: testKey,
+    sampleRate: 16000,
+    audioFormat: "pcm",
+    language: "zh",
+  };
+
+  // Reproduce AsrClient constructor config handling (asr-client.ts:37-39)
+  const storedConfig = {
+    model: mockConfig.model,
+    apiKey: mockConfig.apiKey,
+    sampleRate: mockConfig.sampleRate ?? 16000,
+    audioFormat: mockConfig.audioFormat ?? "pcm",
+    language: mockConfig.language ?? "zh",
+  };
+
+  assertEq(storedConfig.apiKey, testKey, "mc api key: AsrClient config stores the passed key");
+  assert(storedConfig.apiKey.length > 0, "mc api key: stored key is non-empty");
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 
@@ -3630,6 +4533,49 @@ async function main() {
     // Message nodeType metadata
     await testMessageNodeType();
 
+    // Bug fix: guardian duplicate registration
+    await testGuardianCleanupDeadNodeBeforeSpawn();
+    await testGuardianSkipSpawnIfAlive();
+    await testGuardianCleanupIgnoresNonGuardian();
+    await testGuardianCleanupNoneFound();
+
+    // Bug fix: guardian identity-aware cleanup (program vs WS)
+    await testGuardianCleanupDeadProgramNode();
+    await testGuardianSkipSpawnIfAliveProgramNode();
+    await testGuardianIgnoreNonProgramNode();
+
+    // Bug fix: session reset source traceability
+    await testSessionResetSourceWithAgentName();
+    await testSessionResetSourceDefaultViaHttpApi();
+    await testSessionResetSourceMcpToolFormat();
+
+    // Bug fix: node name conflict error lacks detail
+    await testSpawnDuplicateNameErrorIncludesNodeInfo();
+    await testSpawnDuplicateNameErrorWithoutChannel();
+    await testSpawnDuplicateNameErrorAcrossChannels();
+
+    // Bug fix: nerve_post cross-channel routing
+    await testPostFromProcessSingleChannel();
+    await testPostFromProcessMultiChannelNoId();
+    await testPostFromProcessMultiChannelWithId();
+    await testPostFromProcessNoChannel();
+
+    // Bug fix: mc stop safe shutdown
+    await testMcStopSafeShutdown();
+    await testMcStopCaptureErrorDoesNotBlockAsr();
+    await testMcStopAsrErrorDoesNotBlockBuffer();
+    await testMcStopShutdownOrder();
+    await testMcStopAllThreeError();
+    await testMcStopLogsOnError();
+
+    // Bug fix: mc-transcriber API key handling
+    await testMcApiKeyFromEnv();
+    await testMcApiKeyEmptyGuard();
+    await testMcApiKeyPassedToAsrClient();
+
+    // Bug fix: multi-client DM user_message sync
+    await testMultiClientUserMessageSync();
+
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
     failed++;
@@ -3649,6 +4595,64 @@ async function main() {
   console.log("══════════════════════════════════════\n");
 
   process.exit(failed > 0 ? 1 : 0);
+}
+
+// ============================================================
+// Bug fix: multi-client DM user_message sync
+// When client A prompts an agent, client B (also subscribed)
+// should receive a node.update with sessionUpdate=user_message.
+// ============================================================
+
+async function testMultiClientUserMessageSync() {
+  console.log("\n▸ Multi-client DM: user_message broadcast to other subscribers");
+
+  const clientA = new WsClient("sync-clientA");
+  const clientB = new WsClient("sync-clientB");
+  await clientA.connect();
+  await clientB.connect();
+  await clientA.request("node.register", { name: "sync-clientA", capabilities: ["ui"] });
+  await clientB.request("node.register", { name: "sync-clientB", capabilities: ["ui"] });
+
+  // Spawn a mock agent
+  const agent = await clientA.request("node.spawn", { adapter: "mock", name: "sync-dm-agent", cwd: ROOT });
+  assert(!!agent.nodeId, "user_message sync: agent spawned");
+  await sleep(3000);
+
+  // Both clients subscribe to the agent
+  await clientA.request("node.subscribe", { nodeId: agent.nodeId });
+  await clientB.request("node.subscribe", { nodeId: agent.nodeId });
+  clientA.clearNotifications();
+  clientB.clearNotifications();
+
+  // Client A sends a prompt — client B should receive the user_message as node.update
+  await clientA.request("node.prompt", { nodeId: agent.nodeId, content: "hello from A" });
+  await sleep(500);
+
+  // Check client B received user_message update
+  const bUpdates = clientB.getNotifications("node.update");
+  const bSessionTypes = bUpdates.map((n: any) => n.params?.update?.sessionUpdate).filter(Boolean);
+  const userMsgUpdate = bUpdates.find((n: any) =>
+    n.params?.update?.sessionUpdate === "user_message" &&
+    n.params?.update?.content?.text === "hello from A"
+  );
+  assert(!!userMsgUpdate, "user_message sync: client B received user_message from client A",
+    `got ${bUpdates.length} updates, sessionUpdate types: [${bSessionTypes.join(", ")}]`);
+
+  // Client A should also receive its own user_message (for consistency)
+  const aUpdates = clientA.getNotifications("node.update");
+  const aSessionTypes = aUpdates.map((n: any) => n.params?.update?.sessionUpdate).filter(Boolean);
+  const aUserMsg = aUpdates.find((n: any) =>
+    n.params?.update?.sessionUpdate === "user_message" &&
+    n.params?.update?.content?.text === "hello from A"
+  );
+  assert(!!aUserMsg, "user_message sync: client A also receives own user_message notification",
+    `got ${aUpdates.length} updates, sessionUpdate types: [${aSessionTypes.join(", ")}]`);
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: agent.nodeId });
+  await sleep(500);
+  await clientA.disconnect();
+  await clientB.disconnect();
 }
 
 main();

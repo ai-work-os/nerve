@@ -49,6 +49,16 @@ export class NodePool {
     return this.nameIndex.has(name);
   }
 
+  getNameConflictInfo(name: string): string {
+    const id = this.nameIndex.get(name);
+    if (!id) return `name "${name}" already taken`;
+    const node = this.nodes.get(id);
+    if (!node) return `name "${name}" already taken`;
+    const channels = [...node.channels];
+    if (channels.length === 0) return `name "${name}" already taken (no channel)`;
+    return `name "${name}" already taken (in channel ${channels.join(", ")})`;
+  }
+
   listAll(): NerveNode[] {
     return [...this.nodes.values()];
   }
@@ -334,6 +344,11 @@ export class NodePool {
     return this.programProcesses.has(nodeId);
   }
 
+  /** Track a process as a program node (used internally by spawnProgramNode, exposed for testing) */
+  trackProgramProcess(nodeId: string, proc: ChildProcess): void {
+    this.programProcesses.set(nodeId, proc);
+  }
+
   /** Bind a WebSocket transport to a program node after WS reconnect */
   bindProgramTransport(nodeId: string, ws: WebSocket): void {
     const node = this.nodes.get(nodeId);
@@ -358,7 +373,7 @@ export class NodePool {
   }
 
   /** Prompt a Process Node */
-  async promptNode(nodeId: string, text: string): Promise<{ stopReason?: string; error?: string }> {
+  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }): Promise<{ stopReason?: string; error?: string }> {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
     if (!client || !node) {
@@ -369,7 +384,9 @@ export class NodePool {
     log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
     node.status = "busy";
     node.touch();
-    node.pushUpdate({ update: { sessionUpdate: "user_message", content: { type: "text", text } } });
+    const userMsgParams = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
+    node.pushUpdate(userMsgParams);
+    this.onEvent("node.update", node, userMsgParams);
     this.onEvent("node.statusChanged", node);
 
     let result: { stopReason?: string; error?: string };

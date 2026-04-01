@@ -86,45 +86,24 @@ async function cmdServe(args: string[]) {
   const server = new Server(nerve, port);
   server.start();
 
-  // Auto-start context-guardian plugin
-  let guardianStopping = false;
-  let guardianProc: import("node:child_process").ChildProcess | undefined;
+  // Auto-start context-guardian plugin via program node path
+  let guardianNodeId: string | undefined;
 
   if (!noGuardian) {
-    const { spawn: spawnChild } = await import("node:child_process");
-    const srcDir = dirname(fileURLToPath(import.meta.url));
-    const guardianScript = resolve(srcDir, "plugins/context-guardian/index.ts");
-    let restarts = 0;
-    const MAX_RESTARTS = 3;
-
-    let resetTimer: ReturnType<typeof setTimeout> | undefined;
-
     const startGuardian = () => {
-      guardianProc = spawnChild("npx", ["tsx", guardianScript, "--port", String(port)], {
-        stdio: "ignore",
-        detached: false,
-      });
-      info(`guardian started (pid: ${guardianProc.pid})`);
+      const result = nerve.cleanupStaleGuardian("context-guardian");
+      if (result === "alive") {
+        info("guardian already running, skipping spawn");
+        return;
+      }
 
-      // Reset restart counter after 60s of stable running
-      if (resetTimer) clearTimeout(resetTimer);
-      resetTimer = setTimeout(() => { restarts = 0; }, 60_000);
-
-      guardianProc.on("error", (err) => {
-        info(`guardian start failed: ${err.message}`);
-      });
-
-      guardianProc.on("exit", (code) => {
-        if (resetTimer) clearTimeout(resetTimer);
-        info(`guardian exited (code: ${code})`);
-        if (!guardianStopping && restarts < MAX_RESTARTS) {
-          restarts++;
-          info(`guardian restarting (${restarts}/${MAX_RESTARTS})...`);
-          setTimeout(startGuardian, 2000);
-        } else if (restarts >= MAX_RESTARTS) {
-          info(`guardian exceeded max restarts (${MAX_RESTARTS}), giving up`);
-        }
-      });
+      try {
+        const node = nerve.nodePool.spawnProcessSync("guardian", "context-guardian", resolve(dataDir), port);
+        guardianNodeId = node.id;
+        info(`guardian spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`guardian spawn failed: ${err.message}`);
+      }
     };
 
     startGuardian();
@@ -132,9 +111,8 @@ async function cmdServe(args: string[]) {
 
   const shutdown = async () => {
     info("shutting down...");
-    guardianStopping = true;
-    if (guardianProc && !guardianProc.killed) {
-      guardianProc.kill();
+    if (guardianNodeId) {
+      nerve.nodePool.stopNode(guardianNodeId);
       info("guardian stopped");
     }
     await server.shutdown();

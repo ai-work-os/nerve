@@ -404,7 +404,10 @@ export class Server {
           if (!node) { this.sendError(ws, id, -32602, `node not found`); return; }
           if (!node.isProcess) { this.sendError(ws, id, -32602, "can only prompt process nodes"); return; }
 
-          this.cm.nodePool.promptNode(nodeId, content).then(result => {
+          const callerNodeId = this.wsNodeMap.get(ws);
+          const callerNode = callerNodeId ? this.cm.nodePool.get(callerNodeId) : undefined;
+          const from = callerNode ? { nodeId: callerNode.id, name: callerNode.name } : undefined;
+          this.cm.nodePool.promptNode(nodeId, content, from).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));

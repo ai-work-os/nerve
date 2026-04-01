@@ -210,7 +210,7 @@ export class HttpRouter {
         const channelId = data.channelId as string | undefined;
 
         if (this.cm.nodePool.isNameTaken(name)) {
-          throw new Error(`name "${name}" already taken`);
+          throw new Error(this.cm.nodePool.getNameConflictInfo(name));
         }
 
         const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
@@ -360,7 +360,7 @@ export class HttpRouter {
         const node = this.cm.nodePool.getByName(nodeName);
         if (!node) throw new Error(`node "${nodeName}" not found`);
         const selfReset = !!data.selfReset;
-        const source = (data.source as string) || "http_api";
+        const source = (data.source as string) || (from ? `http_api:${from}` : "http_api");
         const result = await this.cm.nodePool.sessionReset(node.id, expectedSessionId, summaryPath, selfReset, source);
         if (result.error) throw new Error(result.error);
         return result;

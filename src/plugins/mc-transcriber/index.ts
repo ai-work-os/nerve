@@ -408,9 +408,17 @@ class McTranscriberPlugin extends PluginBase {
     if (!this.recording) return;
 
     this.recording = false;
-    this.capture?.stop();
-    this.asr?.disconnect();
-    this.buffer?.stop(); // Flushes remaining lines
+
+    // Safe shutdown: each step independent, one failure doesn't block the rest
+    try { this.capture?.stop(); } catch (err: any) {
+      this.log("warn", `capture.stop() error: ${err.message}`);
+    }
+    try { this.asr?.disconnect(); } catch (err: any) {
+      this.log("warn", `asr.disconnect() error: ${err.message}`);
+    }
+    try { this.buffer?.stop(); } catch (err: any) {
+      this.log("warn", `buffer.stop() error: ${err.message}`);
+    }
 
     const duration = Math.round((Date.now() - this.startTime) / 1000);
     this.log("info", `recording stopped. duration=${duration}s, file=${this.meetingFile}`);
