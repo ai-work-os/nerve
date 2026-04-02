@@ -143,6 +143,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "nerve_members",
+      description: "List members of a channel. If channel_id is given, returns members of that channel. If omitted, returns members from all channels the caller is in.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          channel_id: { type: "string", description: "Channel id to query (optional — omit to get all caller's channels)" },
+        },
+      },
+    },
+    {
+      name: "nerve_channels",
+      description: "List all active channels. Returns channel id, name, cwd, and member count.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          cwd: { type: "string", description: "Filter channels by working directory (optional)" },
+        },
+      },
+    },
+    {
       name: "nerve_session_reset",
       description: "Reset current session after writing context summary. Creates a new session with initial prompt pointing to the summary file. Call this after you have written the summary file.",
       inputSchema: {
@@ -326,6 +346,43 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok(`stopped ${agent_name}`);
     } catch (err) {
       log(`nerve_stop failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_members") {
+    const { channel_id } = (args || {}) as { channel_id?: string };
+    try {
+      if (channel_id) {
+        log(`nerve_members channel=${channel_id}`);
+        const result = await post("/channel/members", { channelId: channel_id });
+        return ok(JSON.stringify(result));
+      } else {
+        log(`nerve_members caller=${NERVE_NODE_NAME} (all channels)`);
+        const result = await post("/channel/members", { nodeName: NERVE_NODE_NAME });
+        return ok(JSON.stringify(result));
+      }
+    } catch (err) {
+      log(`nerve_members failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_channels") {
+    const { cwd } = (args || {}) as { cwd?: string };
+    try {
+      log(`nerve_channels cwd=${cwd || "all"}`);
+      const result = await post("/channel/list", cwd ? { cwd } : {});
+      const channels = (result.channels as Array<{ id: string; name?: string; cwd: string; nodes: Record<string, string> }>) || [];
+      const mapped = channels.map(ch => ({
+        id: ch.id,
+        name: ch.name || null,
+        cwd: ch.cwd,
+        member_count: Object.keys(ch.nodes).length,
+      }));
+      return ok(JSON.stringify({ channels: mapped }));
+    } catch (err) {
+      log(`nerve_channels failed: ${err}`);
       return fail(String(err));
     }
   }

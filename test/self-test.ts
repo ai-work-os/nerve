@@ -4426,6 +4426,280 @@ async function testMcApiKeyPassedToAsrClient() {
 }
 
 // ============================================================
+// nerve_members MCP tool tests
+// ============================================================
+
+async function testNerveMembersWithChannelId() {
+  console.log("\n▸ nerve_members: query by channel_id");
+
+  // Setup: create channel, register two WS nodes, add them
+  const c1 = new WsClient("members-a");
+  const c2 = new WsClient("members-b");
+  await c1.connect();
+  await c2.connect();
+  const r1 = await c1.request("node.register", { name: "members-a", capabilities: ["ui"] });
+  const r2 = await c2.request("node.register", { name: "members-b", capabilities: ["ui"] });
+
+  const ch = await c1.request("channel.create", { cwd: "/tmp", name: "members-test-ch" });
+  await c1.request("channel.join", { channelId: ch.channelId });
+  await c2.request("channel.addNode", { channelId: ch.channelId, nodeId: r2.nodeId, nodeName: "members-b" });
+
+  // Call nerve_members MCP tool with channel_id
+  const mcp = new McpToolClient("members-a");
+  await mcp.connect();
+
+  const result = await mcp.callTool("nerve_members", { channel_id: ch.channelId });
+  const text = result.content?.[0]?.text || "";
+  const isError = result.isError || false;
+
+  assert(!isError, "nerve_members with channel_id: no error");
+  assert(text.includes("members-a"), "nerve_members with channel_id: includes members-a");
+  assert(text.includes("members-b"), "nerve_members with channel_id: includes members-b");
+
+  // Parse as JSON and check structure
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch {}
+  assert(parsed !== null, "nerve_members with channel_id: returns valid JSON");
+  if (parsed) {
+    const members = parsed.members || parsed;
+    assert(Array.isArray(members), "nerve_members with channel_id: members is array");
+    if (Array.isArray(members)) {
+      const names = members.map((m: any) => m.name);
+      assert(names.includes("members-a"), "nerve_members with channel_id: member a in list");
+      assert(names.includes("members-b"), "nerve_members with channel_id: member b in list");
+      // Each member should have status
+      const memberA = members.find((m: any) => m.name === "members-a");
+      assert(memberA && "status" in memberA, "nerve_members with channel_id: member has status field");
+    }
+  }
+
+  await mcp.close();
+  await c1.request("channel.close", { channelId: ch.channelId });
+  await c1.disconnect();
+  await c2.disconnect();
+}
+
+async function testNerveMembersWithoutChannelId() {
+  console.log("\n▸ nerve_members: query without channel_id (all caller's channels)");
+
+  // Setup: register node, create two channels, join both
+  const c = new WsClient("members-self");
+  await c.connect();
+  const reg = await c.request("node.register", { name: "members-self", capabilities: ["ui"] });
+
+  const ch1 = await c.request("channel.create", { cwd: "/tmp", name: "members-ch1" });
+  await c.request("channel.join", { channelId: ch1.channelId });
+
+  const ch2 = await c.request("channel.create", { cwd: "/tmp", name: "members-ch2" });
+  await c.request("channel.join", { channelId: ch2.channelId });
+
+  // Also add another node to ch2
+  const c2 = new WsClient("members-other");
+  await c2.connect();
+  const r2 = await c2.request("node.register", { name: "members-other", capabilities: ["ui"] });
+  await c.request("channel.addNode", { channelId: ch2.channelId, nodeId: r2.nodeId, nodeName: "members-other" });
+
+  // Call nerve_members without channel_id — should return members from all channels the caller is in
+  // The caller here is "members-self" (set via NERVE_NODE_NAME env)
+  const mcp = new McpToolClient("members-self");
+  await mcp.connect();
+
+  const result = await mcp.callTool("nerve_members", {});
+  const text = result.content?.[0]?.text || "";
+  const isError = result.isError || false;
+
+  assert(!isError, "nerve_members no channel_id: no error");
+
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch {}
+  assert(parsed !== null, "nerve_members no channel_id: returns valid JSON");
+  if (parsed) {
+    // Should have entries for both channels
+    const channels = parsed.channels || parsed;
+    assert(Array.isArray(channels), "nerve_members no channel_id: channels is array");
+    if (Array.isArray(channels)) {
+      assert(channels.length >= 2, "nerve_members no channel_id: at least 2 channels");
+      // ch2 should have both members-self and members-other
+      const ch2Entry = channels.find((c: any) => c.channel_id === ch2.channelId);
+      if (ch2Entry) {
+        const names = ch2Entry.members.map((m: any) => m.name);
+        assert(names.includes("members-self"), "nerve_members no channel_id: ch2 has members-self");
+        assert(names.includes("members-other"), "nerve_members no channel_id: ch2 has members-other");
+      } else {
+        assert(false, "nerve_members no channel_id: ch2 found in response");
+      }
+    }
+  }
+
+  await mcp.close();
+  await c.request("channel.close", { channelId: ch1.channelId });
+  await c.request("channel.close", { channelId: ch2.channelId });
+  await c.disconnect();
+  await c2.disconnect();
+}
+
+async function testNerveMembersInvalidChannel() {
+  console.log("\n▸ nerve_members: invalid channel_id returns error");
+
+  const mcp = new McpToolClient("members-err");
+  await mcp.connect();
+
+  // Register the node first so it exists
+  const c = new WsClient("members-err");
+  await c.connect();
+  await c.request("node.register", { name: "members-err", capabilities: ["ui"] });
+
+  const result = await mcp.callTool("nerve_members", { channel_id: "nonexistent-channel-id" });
+  const isError = result.isError || false;
+  const text = result.content?.[0]?.text || "";
+
+  assert(isError, "nerve_members invalid channel: returns error");
+  assert(text.includes("not found") || text.includes("error"), "nerve_members invalid channel: error message mentions not found");
+
+  await mcp.close();
+  await c.disconnect();
+}
+
+// ============================================================
+// nerve_channels MCP tool tests
+// ============================================================
+
+async function testNerveChannelsListAll() {
+  console.log("\n▸ nerve_channels: list all channels");
+
+  // Setup: create two channels with different names
+  const c = new WsClient("ch-list-all");
+  await c.connect();
+  await c.request("node.register", { name: "ch-list-all", capabilities: ["ui"] });
+
+  const ch1 = await c.request("channel.create", { cwd: "/tmp/ch-list-a", name: "channels-test-a" });
+  await c.request("channel.join", { channelId: ch1.channelId });
+
+  const ch2 = await c.request("channel.create", { cwd: "/tmp/ch-list-b", name: "channels-test-b" });
+  await c.request("channel.join", { channelId: ch2.channelId });
+
+  // Add another node to ch2 so member count differs
+  const c2 = new WsClient("ch-list-extra");
+  await c2.connect();
+  const r2 = await c2.request("node.register", { name: "ch-list-extra", capabilities: ["ui"] });
+  await c.request("channel.addNode", { channelId: ch2.channelId, nodeId: r2.nodeId, nodeName: "ch-list-extra" });
+
+  // Call nerve_channels MCP tool (no args)
+  const mcp = new McpToolClient("ch-list-all");
+  await mcp.connect();
+
+  const result = await mcp.callTool("nerve_channels", {});
+  const text = result.content?.[0]?.text || "";
+  const isError = result.isError || false;
+
+  assert(!isError, "nerve_channels list all: no error");
+
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch {}
+  assert(parsed !== null, "nerve_channels list all: returns valid JSON");
+
+  if (parsed) {
+    const channels = parsed.channels || parsed;
+    assert(Array.isArray(channels), "nerve_channels list all: channels is array");
+    if (Array.isArray(channels)) {
+      const chA = channels.find((c: any) => c.name === "channels-test-a");
+      const chB = channels.find((c: any) => c.name === "channels-test-b");
+      assert(!!chA, "nerve_channels list all: channels-test-a found");
+      assert(!!chB, "nerve_channels list all: channels-test-b found");
+
+      // Each channel should have id, name, member_count
+      if (chA) {
+        assert("id" in chA, "nerve_channels list all: channel has id");
+        assert("name" in chA, "nerve_channels list all: channel has name");
+        assert("member_count" in chA, "nerve_channels list all: channel has member_count");
+        assertEq(chA.member_count, 1, "nerve_channels list all: ch-a has 1 member");
+      }
+      if (chB) {
+        assertEq(chB.member_count, 2, "nerve_channels list all: ch-b has 2 members");
+      }
+    }
+  }
+
+  await mcp.close();
+  await c.request("channel.close", { channelId: ch1.channelId });
+  await c.request("channel.close", { channelId: ch2.channelId });
+  await c.disconnect();
+  await c2.disconnect();
+}
+
+async function testNerveChannelsFilterByCwd() {
+  console.log("\n▸ nerve_channels: filter by cwd");
+
+  const c = new WsClient("ch-cwd-filter");
+  await c.connect();
+  await c.request("node.register", { name: "ch-cwd-filter", capabilities: ["ui"] });
+
+  // Create channels with different cwd
+  const ch1 = await c.request("channel.create", { cwd: "/tmp/filter-target", name: "cwd-match" });
+  await c.request("channel.join", { channelId: ch1.channelId });
+
+  const ch2 = await c.request("channel.create", { cwd: "/tmp/filter-other", name: "cwd-other" });
+  await c.request("channel.join", { channelId: ch2.channelId });
+
+  const mcp = new McpToolClient("ch-cwd-filter");
+  await mcp.connect();
+
+  const result = await mcp.callTool("nerve_channels", { cwd: "/tmp/filter-target" });
+  const text = result.content?.[0]?.text || "";
+  const isError = result.isError || false;
+
+  assert(!isError, "nerve_channels cwd filter: no error");
+
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch {}
+  assert(parsed !== null, "nerve_channels cwd filter: returns valid JSON");
+
+  if (parsed) {
+    const channels = parsed.channels || parsed;
+    assert(Array.isArray(channels), "nerve_channels cwd filter: channels is array");
+    if (Array.isArray(channels)) {
+      const match = channels.find((c: any) => c.name === "cwd-match");
+      const other = channels.find((c: any) => c.name === "cwd-other");
+      assert(!!match, "nerve_channels cwd filter: matching channel found");
+      assert(!other, "nerve_channels cwd filter: non-matching channel excluded");
+    }
+  }
+
+  await mcp.close();
+  await c.request("channel.close", { channelId: ch1.channelId });
+  await c.request("channel.close", { channelId: ch2.channelId });
+  await c.disconnect();
+}
+
+async function testNerveChannelsEmptyList() {
+  console.log("\n▸ nerve_channels: empty list when no channels match cwd");
+
+  const mcp = new McpToolClient("ch-empty");
+  await mcp.connect();
+
+  // Use a cwd that no channel uses
+  const result = await mcp.callTool("nerve_channels", { cwd: "/nonexistent/path/no-channels-here" });
+  const text = result.content?.[0]?.text || "";
+  const isError = result.isError || false;
+
+  assert(!isError, "nerve_channels empty: no error");
+
+  let parsed: any = null;
+  try { parsed = JSON.parse(text); } catch {}
+  assert(parsed !== null, "nerve_channels empty: returns valid JSON");
+
+  if (parsed) {
+    const channels = parsed.channels || parsed;
+    assert(Array.isArray(channels), "nerve_channels empty: channels is array");
+    if (Array.isArray(channels)) {
+      assertEq(channels.length, 0, "nerve_channels empty: returns empty array");
+    }
+  }
+
+  await mcp.close();
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 
@@ -4581,6 +4855,16 @@ async function main() {
 
     // Bug fix: guardian stop 后无法重启
     await testGuardianRestartAfterStop();
+
+    // nerve_members MCP tool
+    await testNerveMembersWithChannelId();
+    await testNerveMembersWithoutChannelId();
+    await testNerveMembersInvalidChannel();
+
+    // nerve_channels MCP tool
+    await testNerveChannelsListAll();
+    await testNerveChannelsFilterByCwd();
+    await testNerveChannelsEmptyList();
 
   } catch (err) {
     console.error("\n💥 Fatal error:", err);

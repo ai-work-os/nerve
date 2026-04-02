@@ -127,6 +127,41 @@ export class HttpRouter {
         return { channels };
       }
 
+      case "/channel/members": {
+        const channelId = data.channelId as string;
+        const nodeName = data.nodeName as string | undefined;
+
+        if (channelId) {
+          // Query specific channel
+          const ch = this.cm.getChannel(channelId);
+          if (!ch) throw new Error(`channel not found: ${channelId}`);
+          const members = [...ch.nodes.entries()].map(([name, nodeId]) => {
+            const node = this.cm.nodePool.get(nodeId);
+            return { name, nodeId, status: node?.status || "unknown" };
+          });
+          return { members };
+        }
+
+        if (nodeName) {
+          // Return members from all channels the caller is in
+          const node = this.cm.nodePool.getByName(nodeName);
+          if (!node) throw new Error(`node not found: ${nodeName}`);
+          const channels = [];
+          for (const chId of node.channels) {
+            const ch = this.cm.getChannel(chId);
+            if (!ch) continue;
+            const members = [...ch.nodes.entries()].map(([name, nId]) => {
+              const n = this.cm.nodePool.get(nId);
+              return { name, nodeId: nId, status: n?.status || "unknown" };
+            });
+            channels.push({ channel_id: chId, name: ch.name, members });
+          }
+          return { channels };
+        }
+
+        throw new Error("channelId or nodeName required");
+      }
+
       case "/channel/listArchived": {
         const activeIds = this.cm.listChannels().map(ch => ch.id);
         const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
