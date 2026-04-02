@@ -1,6 +1,7 @@
 import type { Transport } from "./transport.js";
 import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage } from "./protocol.js";
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
+import { debug } from "./logger.js";
 
 export class NerveNode {
   readonly id: string;
@@ -74,7 +75,7 @@ export class NerveNode {
     // Extract usage_update
     const update = (params as SessionNotification).update as (UsageUpdate & { sessionUpdate: string }) | undefined;
     if (update?.sessionUpdate === "usage_update") {
-      log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} cost=${JSON.stringify(update.cost)}`);
+      debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} cost=${JSON.stringify(update.cost)}`);
       const cost = update.cost as Cost | null | undefined;
       this.usage = {
         tokenUsed: update.used || 0,
