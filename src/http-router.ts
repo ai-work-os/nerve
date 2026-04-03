@@ -280,10 +280,10 @@ export class HttpRouter {
         const nodeId = data.nodeId as string;
         const nodeName = data.nodeName as string;
         if (nodeId) {
-          this.cm.stopNode(nodeId);
+          await this.cm.stopNode(nodeId);
         } else if (nodeName) {
           const node = this.cm.nodePool.getByName(nodeName);
-          if (node) this.cm.stopNode(node.id);
+          if (node) await this.cm.stopNode(node.id);
           else throw new Error(`node "${nodeName}" not found`);
         } else {
           throw new Error("nodeId or nodeName required");

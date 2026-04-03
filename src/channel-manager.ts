@@ -128,7 +128,7 @@ export class ChannelManager {
     return node.id;
   }
 
-  stopNode(nodeId: string): void {
+  async stopNode(nodeId: string): Promise<void> {
     // Remove from all channels first
     const node = this.nodePool.get(nodeId);
     if (node) {
@@ -144,7 +144,7 @@ export class ChannelManager {
         }
       }
     }
-    this.nodePool.stopNode(nodeId);
+    await this.nodePool.stopNode(nodeId);
   }
 
   // --- Channel-Node binding ---

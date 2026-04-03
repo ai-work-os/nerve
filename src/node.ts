@@ -1,6 +1,8 @@
 import type { Transport } from "./transport.js";
 import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage } from "./protocol.js";
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
+import { getContextWindow } from "./model-registry.js";
+import { getAdapter } from "./adapter.js";
 
 export class NerveNode {
   readonly id: string;
@@ -27,6 +29,9 @@ export class NerveNode {
 
   // Mutex for session reset — prevents concurrent resets
   resetInProgress = false;
+
+  // Cleanup guard — prevents duplicate node.stopped emit
+  _cleaned = false;
 
   // In-memory buffer of ACP updates (for client reconnect replay)
   static readonly MAX_BUFFER_SIZE = 1000;
@@ -66,6 +71,7 @@ export class NerveNode {
   }
 
   pushUpdate(params: SessionNotification | Record<string, unknown>): void {
+    log.debug(`[${this.name}] pushUpdate raw: sessionUpdate=${(params as any)?.update?.sessionUpdate} keys=${JSON.stringify(Object.keys((params as any)?.update || {}))}`);
     this.updateBuffer.push(params);
     if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
       this.updateBuffer.shift();
@@ -74,11 +80,13 @@ export class NerveNode {
     // Extract usage_update
     const update = (params as SessionNotification).update as (UsageUpdate & { sessionUpdate: string }) | undefined;
     if (update?.sessionUpdate === "usage_update") {
-      log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} cost=${JSON.stringify(update.cost)}`);
+      const adapterModel = this.adapter ? getAdapter(this.adapter)?.model : undefined;
+      const actualSize = getContextWindow(adapterModel);
+      log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} actualSize=${actualSize} model=${adapterModel} cost=${JSON.stringify(update.cost)}`);
       const cost = update.cost as Cost | null | undefined;
       this.usage = {
         tokenUsed: update.used || 0,
-        tokenSize: update.size || 0,
+        tokenSize: actualSize ?? update.size ?? 0,
         cost: cost?.amount || 0,
         lastUpdated: Date.now(),
       };

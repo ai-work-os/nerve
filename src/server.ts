@@ -338,8 +338,11 @@ export class Server {
         }
 
         case "node.stop": {
-          this.cm.stopNode(p.nodeId as string);
-          this.sendResult(ws, id, { ok: true });
+          this.cm.stopNode(p.nodeId as string).then(() => {
+            this.sendResult(ws, id, { ok: true });
+          }).catch((err) => {
+            this.sendError(ws, id, -32000, String(err));
+          });
           break;
         }
 

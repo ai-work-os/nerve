@@ -36,6 +36,63 @@ export class NodePool {
     this.onEvent(event, node, detail);
   }
 
+  /** Unified node cleanup — all cleanup paths converge here */
+  private _cleanupNode(nodeId: string, opts?: {
+    newStatus?: "stopped" | "error";
+    removeFromPool?: boolean;
+    exitCode?: number | null;
+  }): void {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+
+    // Idempotent guard: _cleaned prevents duplicate emit
+    if (node._cleaned) {
+      if (opts?.removeFromPool) {
+        this.nodes.delete(nodeId);
+        this.onEvent("node.removed", node);
+      }
+      return;
+    }
+    node._cleaned = true;
+
+    // Status update (don't overwrite error with stopped)
+    if (opts?.newStatus && node.status !== "error") {
+      node.status = opts.newStatus;
+      this.store.updateNodeStatus(nodeId, opts.newStatus);
+    }
+
+    // Name index cleanup
+    this.nameIndex.delete(node.name);
+
+    // Activity reset
+    node.activity = undefined;
+
+    // ACP client cleanup
+    const client = this.acpClients.get(nodeId);
+    if (client) {
+      client.cleanup();
+      this.acpClients.delete(nodeId);
+    }
+
+    // Program-related cleanup
+    this.programProcesses.delete(nodeId);
+    this.pendingPrograms.delete(node.name);
+
+    // Update buffer
+    node.clearUpdateBuffer();
+
+    // Event notification
+    this.onEvent("node.stopped", node, { exitCode: opts?.exitCode });
+
+    // Optional: remove from pool
+    if (opts?.removeFromPool) {
+      this.nodes.delete(nodeId);
+      this.onEvent("node.removed", node);
+    }
+
+    log.info(`_cleanupNode: ${node.name} (${nodeId}), status=${node.status}, removed=${!!opts?.removeFromPool}`);
+  }
+
   get(id: string): NerveNode | undefined {
     return this.nodes.get(id);
   }
@@ -158,15 +215,7 @@ export class NodePool {
     this.store.updateNodeStatus(id, "connecting", undefined, transport.pid);
 
     transport.onClose((code) => {
-      node.status = "stopped";
-      this.store.updateNodeStatus(id, "stopped");
-      this.onEvent("node.stopped", node, { exitCode: code });
-      // Clean up ACP client
-      const client = this.acpClients.get(id);
-      if (client) {
-        client.cleanup();
-        this.acpClients.delete(id);
-      }
+      this._cleanupNode(id, { newStatus: "stopped", exitCode: code });
     });
 
     // Build MCP server config for nerve tools injection
@@ -283,8 +332,7 @@ export class NodePool {
     const timer = setTimeout(() => {
       if (node.status === "connecting") {
         log.warn(`program node timeout: ${name} did not connect within ${timeout}ms`);
-        node.status = "error";
-        this.store.updateNodeStatus(id, "error");
+        this._cleanupNode(id, { newStatus: "error" });
         this.onEvent("node.statusChanged", node);
         this.onEvent("node.error", node, { error: `program node did not connect within ${timeout}ms` });
         proc.kill("SIGTERM");
@@ -303,25 +351,14 @@ export class NodePool {
     // Process exit handler
     proc.on("exit", (code) => {
       clearTimeout(timer);
-      this.pendingPrograms.delete(name);
-      this.programProcesses.delete(id);
-
-      node.status = "stopped";
-      this.store.updateNodeStatus(id, "stopped");
-      this.onEvent("node.stopped", node, { exitCode: code });
-
-      // Remove node from pool (deferred from WS close for program nodes)
-      this.remove(id);
+      this._cleanupNode(id, { newStatus: "stopped", removeFromPool: true, exitCode: code });
     });
 
     // Spawn error handler (e.g. cmd not found)
     proc.on("error", (err) => {
       clearTimeout(timer);
-      this.pendingPrograms.delete(name);
-      this.programProcesses.delete(id);
-      node.status = "error";
-      this.store.updateNodeStatus(id, "error");
       log.error(`program node spawn error: ${name} — ${err.message}`);
+      this._cleanupNode(id, { newStatus: "error" });
       this.onEvent("node.error", node, { error: err.message });
       this.onEvent("node.statusChanged", node);
     });
@@ -535,8 +572,8 @@ export class NodePool {
     }
   }
 
-  /** Stop a Process Node */
-  stopNode(nodeId: string): void {
+  /** Stop a Process Node. Returns a promise that resolves after graceful close (ACP nodes). */
+  async stopNode(nodeId: string): Promise<void> {
     const node = this.nodes.get(nodeId);
     if (!node) return;
     log.info(`stopNode: ${node.name} (${nodeId})`);
@@ -557,15 +594,14 @@ export class NodePool {
       return;
     }
 
-    // ACP node: existing logic
+    // ACP node: closeSession first, then unified cleanup
     const client = this.acpClients.get(nodeId);
     if (client) {
-      client.cleanup();
-      this.acpClients.delete(nodeId);
+      await client.closeSession();
     }
 
+    this._cleanupNode(nodeId, { newStatus: "stopped" });
     node.transport.close();
-    // Node removal happens in onClose handler
   }
 
   /** Remove a node from the pool */
@@ -574,11 +610,7 @@ export class NodePool {
     if (!node) return;
 
     log.info(`remove: ${node.name} (${nodeId})`);
-    node.clearUpdateBuffer();
-    this.nodes.delete(nodeId);
-    this.nameIndex.delete(node.name);
-
-    this.onEvent("node.removed", node);
+    this._cleanupNode(nodeId, { removeFromPool: true });
   }
 
   /** Shutdown all nodes */

@@ -69,6 +69,19 @@ const adapters: Record<string, AdapterConfig> = {
     capabilities: ["code"],
     terminal: false,
   },
+  "mock-session-close": {
+    cmd: "npx",
+    args: ["tsx", "test/mock-agent-session-close.ts"],
+    capabilities: ["code"],
+    terminal: false,
+  },
+  "mock-session-close-hang": {
+    cmd: "npx",
+    args: ["tsx", "test/mock-agent-session-close.ts"],
+    env: { HANG_ON_CLOSE: "1" },
+    capabilities: ["code"],
+    terminal: false,
+  },
   guardian: {
     type: "program",
     cmd: "npx",
@@ -83,6 +96,13 @@ const adapters: Record<string, AdapterConfig> = {
     env: {
       DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY || "sk-cc174fc51cb6426e987bb97fb668f817",
     },
+    capabilities: ["monitor"],
+    terminal: false,
+  },
+  "duty-monitor": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/duty-monitor/index.ts"],
     capabilities: ["monitor"],
     terminal: false,
   },
