@@ -3,13 +3,14 @@
  * Observer Plugin Tests (TDD)
  *
  * Phase 1: event collection + auto-join channels.
+ * Phase 2: stats aggregation + report generation + commands.
  * Run: npx tsx test/observer.test.ts
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rmSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import { rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import WebSocket from "ws";
 
@@ -56,6 +57,15 @@ import {
   formatNodeStatusChanged,
   type ObserverEvent,
 } from "../src/plugins/observer/events.js";
+
+import {
+  readDayEvents,
+  readDateRange,
+  aggregateStats,
+  formatDailyReport,
+  formatWeeklyReport,
+  type DailyStats,
+} from "../src/plugins/observer/stats.js";
 
 function testFormatChannelMessage() {
   console.log("\n▸ formatChannelMessage: structures channel.message params");
@@ -149,6 +159,225 @@ function testFormatNodeStatusChangedNoActivity() {
 
   assertEq(event.status, "idle", "has status");
   assert(event.activity === undefined, "activity is undefined");
+}
+
+// ============================================================
+// PHASE 2 UNIT TESTS — stats aggregation + report formatting
+// ============================================================
+
+const STATS_TEST_DIR = resolve(ROOT, ".test-stats-events");
+
+function setupStatsTestDir() {
+  if (existsSync(STATS_TEST_DIR)) rmSync(STATS_TEST_DIR, { recursive: true });
+  mkdirSync(STATS_TEST_DIR, { recursive: true });
+}
+
+function cleanupStatsTestDir() {
+  if (existsSync(STATS_TEST_DIR)) rmSync(STATS_TEST_DIR, { recursive: true });
+}
+
+function writeTestEvents(date: string, events: ObserverEvent[]) {
+  const path = resolve(STATS_TEST_DIR, `${date}.jsonl`);
+  const content = events.map(e => JSON.stringify(e)).join("\n") + "\n";
+  writeFileSync(path, content);
+}
+
+async function testReadDayEventsEmpty() {
+  console.log("\n▸ readDayEvents: returns empty for missing file");
+  const events = await readDayEvents(STATS_TEST_DIR, "2026-01-01");
+  assertEq(events.length, 0, "no events for missing date");
+}
+
+async function testReadDayEventsWithData() {
+  console.log("\n▸ readDayEvents: reads JSONL correctly");
+  const testEvents: ObserverEvent[] = [
+    { ts: "2026-04-02T10:00:00Z", type: "channel.message", ch: "ch1", chName: "test", from: "alice", content: "hello" },
+    { ts: "2026-04-02T10:01:00Z", type: "node.registered", node: "bob", adapter: "claude", transport: "stdio" },
+    { ts: "2026-04-02T10:02:00Z", type: "node.stopped", node: "bob", exitCode: 0 },
+  ];
+  writeTestEvents("2026-04-02", testEvents);
+
+  const events = await readDayEvents(STATS_TEST_DIR, "2026-04-02");
+  assertEq(events.length, 3, "reads 3 events");
+  assertEq(events[0].type, "channel.message", "first event is message");
+  assertEq(events[2].type, "node.stopped", "third event is stopped");
+}
+
+async function testReadDayEventsSkipsMalformed() {
+  console.log("\n▸ readDayEvents: skips malformed lines");
+  const path = resolve(STATS_TEST_DIR, "2026-04-03.jsonl");
+  writeFileSync(path, '{"ts":"2026-04-03T10:00:00Z","type":"channel.message"}\nNOT JSON\n{"ts":"2026-04-03T11:00:00Z","type":"node.registered"}\n');
+
+  const events = await readDayEvents(STATS_TEST_DIR, "2026-04-03");
+  assertEq(events.length, 2, "skips malformed line, reads 2");
+}
+
+function testAggregateStatsBasic() {
+  console.log("\n▸ aggregateStats: basic counts");
+  const events: ObserverEvent[] = [
+    { ts: "2026-04-02T09:00:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "alice", fromType: "websocket", content: "start" },
+    { ts: "2026-04-02T09:01:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "bob", fromType: "stdio", content: "ok" },
+    { ts: "2026-04-02T09:02:00Z", type: "channel.message", ch: "ch2", chName: "impl", from: "alice", fromType: "websocket", content: "go" },
+    { ts: "2026-04-02T10:00:00Z", type: "node.registered", node: "bob", adapter: "claude", transport: "stdio" },
+    { ts: "2026-04-02T10:01:00Z", type: "node.statusChanged", node: "bob", status: "busy", activity: "thinking" },
+    { ts: "2026-04-02T10:02:00Z", type: "node.statusChanged", node: "bob", status: "idle" },
+    { ts: "2026-04-02T11:00:00Z", type: "node.stopped", node: "bob", exitCode: 0 },
+  ];
+
+  const stats = aggregateStats(events, "2026-04-02");
+
+  assertEq(stats.totalEvents, 7, "total events");
+  assertEq(stats.messageCount, 3, "message count");
+  assertEq(stats.nodeRegistered, 1, "node registered");
+  assertEq(stats.nodeStopped, 1, "node stopped");
+  assertEq(stats.statusChanges, 2, "status changes");
+  assertEq(stats.channels.size, 2, "2 channels");
+  assertEq(stats.agents.size, 2, "2 agents");
+}
+
+function testAggregateStatsChannelDetails() {
+  console.log("\n▸ aggregateStats: channel details");
+  const events: ObserverEvent[] = [
+    { ts: "2026-04-02T09:00:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "alice", content: "a" },
+    { ts: "2026-04-02T09:01:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "bob", content: "b" },
+    { ts: "2026-04-02T09:02:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "alice", content: "c" },
+  ];
+
+  const stats = aggregateStats(events, "2026-04-02");
+  const ch = stats.channels.get("ch1");
+  assert(!!ch, "channel ch1 exists");
+  assertEq(ch!.messageCount, 3, "ch1 has 3 messages");
+  assertEq(ch!.participants.size, 2, "ch1 has 2 participants");
+  assert(ch!.participants.has("alice"), "alice is participant");
+  assert(ch!.participants.has("bob"), "bob is participant");
+}
+
+function testAggregateStatsAgentDetails() {
+  console.log("\n▸ aggregateStats: agent lifecycle tracking");
+  const events: ObserverEvent[] = [
+    { ts: "2026-04-02T10:00:00Z", type: "node.registered", node: "coder", adapter: "claude", transport: "stdio" },
+    { ts: "2026-04-02T10:01:00Z", type: "node.statusChanged", node: "coder", status: "busy" },
+    { ts: "2026-04-02T10:02:00Z", type: "channel.message", ch: "ch1", chName: "work", from: "coder", content: "done" },
+    { ts: "2026-04-02T10:03:00Z", type: "node.stopped", node: "coder", exitCode: 0 },
+  ];
+
+  const stats = aggregateStats(events, "2026-04-02");
+  const agent = stats.agents.get("coder");
+  assert(!!agent, "agent coder exists");
+  assertEq(agent!.wasSpawned, true, "coder was spawned");
+  assertEq(agent!.wasStopped, true, "coder was stopped");
+  assertEq(agent!.messageCount, 1, "coder sent 1 message");
+  assertEq(agent!.statusChanges, 1, "coder had 1 status change");
+}
+
+function testAggregateStatsHourlyDistribution() {
+  console.log("\n▸ aggregateStats: hourly message distribution (local time)");
+  // Use local time strings to avoid UTC/local mismatch
+  const d = new Date(2026, 3, 2, 9, 0, 0); // April 2, 2026 09:00 local
+  const d2 = new Date(2026, 3, 2, 9, 30, 0); // 09:30 local
+  const d3 = new Date(2026, 3, 2, 14, 0, 0); // 14:00 local
+  const events: ObserverEvent[] = [
+    { ts: d.toISOString(), type: "channel.message", ch: "ch1", from: "a", content: "1" },
+    { ts: d2.toISOString(), type: "channel.message", ch: "ch1", from: "a", content: "2" },
+    { ts: d3.toISOString(), type: "channel.message", ch: "ch1", from: "a", content: "3" },
+  ];
+
+  const stats = aggregateStats(events, "2026-04-02");
+  assertEq(stats.hourlyMessages[9], 2, "2 messages at local hour 9");
+  assertEq(stats.hourlyMessages[14], 1, "1 message at local hour 14");
+  assertEq(stats.hourlyMessages[0], 0, "0 messages at hour 0");
+}
+
+function testAggregateStatsEmpty() {
+  console.log("\n▸ aggregateStats: empty events");
+  const stats = aggregateStats([], "2026-04-02");
+  assertEq(stats.totalEvents, 0, "0 total events");
+  assertEq(stats.channels.size, 0, "0 channels");
+  assertEq(stats.agents.size, 0, "0 agents");
+}
+
+function testFormatDailyReport() {
+  console.log("\n▸ formatDailyReport: generates valid markdown");
+  const events: ObserverEvent[] = [
+    { ts: "2026-04-02T09:00:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "alice", content: "start" },
+    { ts: "2026-04-02T09:01:00Z", type: "node.registered", node: "bob" },
+  ];
+  const stats = aggregateStats(events, "2026-04-02");
+  const report = formatDailyReport(stats);
+
+  assert(report.startsWith("# 日报 — 2026-04-02"), "starts with title");
+  assert(report.includes("总事件: 2"), "contains total events");
+  assert(report.includes("频道消息: 1"), "contains message count");
+  assert(report.includes("design"), "contains channel name");
+  assert(report.includes("alice"), "contains agent name");
+}
+
+function testFormatWeeklyReport() {
+  console.log("\n▸ formatWeeklyReport: generates valid markdown");
+  const day1 = aggregateStats([
+    { ts: "2026-04-01T09:00:00Z", type: "channel.message", ch: "ch1", from: "alice", content: "a" },
+  ], "2026-04-01");
+  const day2 = aggregateStats([
+    { ts: "2026-04-02T09:00:00Z", type: "channel.message", ch: "ch1", from: "alice", content: "b" },
+    { ts: "2026-04-02T10:00:00Z", type: "channel.message", ch: "ch1", from: "bob", content: "c" },
+  ], "2026-04-02");
+
+  const report = formatWeeklyReport([day1, day2], "2026-W14");
+
+  assert(report.startsWith("# 周报 — 2026-W14"), "starts with title");
+  assert(report.includes("活跃天数: 2/7"), "contains active days");
+  assert(report.includes("频道消息: 3"), "contains total messages");
+  assert(report.includes("alice"), "contains top agent");
+}
+
+async function testReadDateRangeLocalDates() {
+  console.log("\n▸ readDateRange: iterates local dates correctly");
+  // Write events for 3 consecutive days
+  writeTestEvents("2026-04-01", [
+    { ts: "2026-04-01T01:00:00Z", type: "channel.message", from: "a", content: "day1" },
+  ]);
+  writeTestEvents("2026-04-02", [
+    { ts: "2026-04-02T01:00:00Z", type: "channel.message", from: "a", content: "day2-1" },
+    { ts: "2026-04-02T02:00:00Z", type: "channel.message", from: "b", content: "day2-2" },
+  ]);
+  writeTestEvents("2026-04-03", [
+    { ts: "2026-04-03T01:00:00Z", type: "channel.message", from: "a", content: "day3" },
+  ]);
+
+  const events = await readDateRange(STATS_TEST_DIR, "2026-04-01", "2026-04-03");
+  assertEq(events.length, 4, "reads all 4 events across 3 days");
+
+  // Partial range
+  const partial = await readDateRange(STATS_TEST_DIR, "2026-04-02", "2026-04-02");
+  assertEq(partial.length, 2, "single day range reads 2 events");
+
+  // Range with missing day
+  const withGap = await readDateRange(STATS_TEST_DIR, "2026-04-01", "2026-04-05");
+  assertEq(withGap.length, 4, "range with missing days still reads available events");
+}
+
+function testFormatDailyReportSetSerialization() {
+  console.log("\n▸ formatDailyReport: Set fields serialize correctly (not [object Set])");
+  const events: ObserverEvent[] = [
+    { ts: "2026-04-02T09:00:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "alice", content: "a" },
+    { ts: "2026-04-02T09:01:00Z", type: "channel.message", ch: "ch1", chName: "design", from: "bob", content: "b" },
+  ];
+  const stats = aggregateStats(events, "2026-04-02");
+  const report = formatDailyReport(stats);
+
+  // Participants should appear as comma-separated names, not [object Set]
+  assert(!report.includes("[object Set]"), "no [object Set] in report");
+  assert(report.includes("alice"), "alice appears in participants");
+  assert(report.includes("bob"), "bob appears in participants");
+}
+
+function testFormatDailyReportEmpty() {
+  console.log("\n▸ formatDailyReport: empty day produces valid report");
+  const stats = aggregateStats([], "2026-04-02");
+  const report = formatDailyReport(stats);
+  assert(report.includes("# 日报"), "has title");
+  assert(report.includes("总事件: 0"), "shows 0 events");
+  assert(!report.includes("频道活跃度"), "no channel section for empty day");
 }
 
 // ============================================================
@@ -465,6 +694,72 @@ async function testObserverPluginRecordsEvents() {
   if (existsSync(observerHome)) rmSync(observerHome, { recursive: true });
 }
 
+// --- Integration: Observer commands (status, report) ---
+
+async function testObserverStatusCommand() {
+  console.log("\n▸ Observer plugin: status command via @mention");
+
+  const observerHome = resolve(ROOT, ".test-observer-home-cmd");
+  if (existsSync(observerHome)) rmSync(observerHome, { recursive: true });
+  mkdirSync(observerHome, { recursive: true });
+
+  const observerProc = spawn("npx", ["tsx", "src/plugins/observer/index.ts", "--port", String(TEST_PORT)], {
+    cwd: ROOT,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, HOME: observerHome },
+  });
+
+  // Capture observer stdout for status output
+  let observerOutput = "";
+  observerProc.stdout!.on("data", (d) => { observerOutput += d.toString(); });
+  observerProc.stderr!.on("data", (d) => { observerOutput += d.toString(); });
+
+  await sleep(3000);
+
+  // Create a channel and add observer + a test client
+  const client = new WsClient();
+  await client.connect();
+  await client.request("node.register", { name: "cmd-tester", capabilities: ["ui"] });
+  const ch = await client.request("channel.create", { cwd: ROOT, name: "cmd-test-ch" });
+  await client.request("channel.join", { channelId: ch.channelId });
+
+  await sleep(1000); // let observer auto-join
+
+  // Send a few messages first
+  await client.request("channel.post", { channelId: ch.channelId, content: "msg 1" });
+  await client.request("channel.post", { channelId: ch.channelId, content: "msg 2" });
+  await sleep(500);
+
+  // Send @observer status command
+  observerOutput = ""; // clear
+  await client.request("channel.post", { channelId: ch.channelId, content: "@observer status" });
+  await sleep(1000);
+
+  // Observer should have logged status info
+  assert(observerOutput.includes("events collected") || observerOutput.includes("status"), "observer responded to status command");
+
+  // Send @observer report daily command
+  observerOutput = "";
+  await client.request("channel.post", { channelId: ch.channelId, content: "@observer report daily" });
+  await sleep(2000);
+
+  // Check report file was created
+  const today = new Date().toISOString().slice(0, 10);
+  const reportPath = resolve(observerHome, `.nerve/plugins/observer/reports/daily-${today}.md`);
+  assert(existsSync(reportPath), "daily report file created");
+  if (existsSync(reportPath)) {
+    const report = readFileSync(reportPath, "utf-8");
+    assert(report.includes("# 日报"), "report contains title");
+    assert(report.includes("频道消息"), "report contains message stats");
+  }
+
+  // Cleanup
+  observerProc.kill("SIGTERM");
+  await sleep(500);
+  await client.disconnect();
+  if (existsSync(observerHome)) rmSync(observerHome, { recursive: true });
+}
+
 // ============================================================
 // MAIN
 // ============================================================
@@ -474,13 +769,33 @@ async function main() {
   console.log("  Observer Plugin Tests");
   console.log("═══════════════════════════════════════");
 
-  // Unit tests (no server needed)
+  // Phase 1 unit tests
   testFormatChannelMessage();
   testFormatNodeRegistered();
   testFormatNodeStopped();
   testFormatNodeStoppedNullExitCode();
   testFormatNodeStatusChanged();
   testFormatNodeStatusChangedNoActivity();
+
+  // Phase 2 unit tests — stats
+  setupStatsTestDir();
+  try {
+    await testReadDayEventsEmpty();
+    await testReadDayEventsWithData();
+    await testReadDayEventsSkipsMalformed();
+    testAggregateStatsBasic();
+    testAggregateStatsChannelDetails();
+    testAggregateStatsAgentDetails();
+    testAggregateStatsHourlyDistribution();
+    testAggregateStatsEmpty();
+    testFormatDailyReport();
+    testFormatWeeklyReport();
+    await testReadDateRangeLocalDates();
+    testFormatDailyReportSetSerialization();
+    testFormatDailyReportEmpty();
+  } finally {
+    cleanupStatsTestDir();
+  }
 
   // Integration tests (need server)
   try {
@@ -494,6 +809,7 @@ async function main() {
     await testObserverReceivesNodeLifecycle();
     await testObserverCanListExistingChannels();
     await testObserverPluginRecordsEvents();
+    await testObserverStatusCommand();
 
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
