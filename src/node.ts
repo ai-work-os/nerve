@@ -3,6 +3,7 @@ import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage } from "./protoco
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
 import { getContextWindow } from "./model-registry.js";
 import { getAdapter } from "./adapter.js";
+import * as log from "./logger.js";
 
 export class NerveNode {
   readonly id: string;

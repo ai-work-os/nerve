@@ -106,6 +106,13 @@ const adapters: Record<string, AdapterConfig> = {
     capabilities: ["monitor"],
     terminal: false,
   },
+  "observer": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/observer/index.ts"],
+    capabilities: ["monitor"],
+    terminal: false,
+  },
   "mock-program": {
     type: "program",
     cmd: "npx",
