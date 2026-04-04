@@ -209,6 +209,23 @@ class McpToolClient {
   }
 }
 
+// --- Notification wait helper ---
+
+async function waitForNotification(
+  client: WsClient,
+  method: string,
+  predicate: (params: any) => boolean,
+  timeoutMs = 5000,
+): Promise<any> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const match = client.getNotifications(method).find(n => predicate(n.params));
+    if (match) return match.params;
+    await sleep(100);
+  }
+  throw new Error(`timeout waiting for ${method}`);
+}
+
 // --- Server process management ---
 
 let serverProc: ChildProcess | null = null;
@@ -4866,6 +4883,15 @@ async function main() {
     await testNerveChannelsFilterByCwd();
     await testNerveChannelsEmptyList();
 
+    // Integration: full spawn → prompt → session/update → pushUpdate chain
+    await testIntegrationSpawnPromptUpdate();
+    await testIntegrationProgramNodeMessage();
+    await testIntegrationStopCleanup();
+    await testIntegrationSpawnPromptSubscribeUpdate();
+
+    // Model info in node.list
+    await testIntegrationModelInfoInNodeList();
+
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
     failed++;
@@ -5062,6 +5088,298 @@ async function testGuardianRestartAfterStop() {
   assert(respawnOk, "guardian-restart: re-spawn after stop succeeds",
     respawnOk ? undefined : `re-spawn failed: ${respawnError}`);
 
+  await c.disconnect();
+}
+
+// ============================================================
+// Integration: full spawn → prompt → session/update → pushUpdate chain
+// These tests catch bugs like missing imports in node.ts that break
+// the update delivery path (all unit tests pass but nothing works).
+// ============================================================
+
+async function testIntegrationSpawnPromptUpdate() {
+  console.log("\n▸ Integration: spawn ACP node → prompt → verify session/update delivered");
+
+  const c = new WsClient("integ-prompt");
+  await c.connect();
+  await c.request("node.register", { name: "integ-prompt", capabilities: ["ui"] });
+
+  // Spawn mock ACP agent
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "integ-agent-1", cwd: ROOT });
+  assert(!!spawn.nodeId, "integ-prompt: agent spawned");
+
+  // Wait for ACP handshake (session/new → idle)
+  await sleep(3000);
+
+  // Verify node is idle (handshake completed)
+  const list = await c.request("node.list", {});
+  const agentNode = (list as any).nodes.find((n: any) => n.name === "integ-agent-1");
+  assert(!!agentNode, "integ-prompt: agent in node list");
+  assertEq(agentNode?.status, "idle", "integ-prompt: agent status is idle after handshake");
+
+  // Subscribe to receive session/update notifications
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+  c.clearNotifications();
+
+  // Prompt the agent — this exercises the full chain:
+  // server.handleRequest → nodePool.promptNode → acpClient.prompt
+  // → mock-agent session/update notification → node.pushUpdate → subscriber notification
+  const promptResult = await c.request("node.prompt", { nodeId: spawn.nodeId, content: "integration test ping" });
+  assert(!!promptResult, "integ-prompt: prompt returned result");
+  assertEq(promptResult.stopReason, "end_turn", "integ-prompt: stopReason is end_turn");
+
+  // Verify we received session/update notifications (the critical path)
+  await sleep(500);
+  const updates = c.getNotifications("node.update");
+  assert(updates.length > 0, "integ-prompt: received node.update notifications via subscription",
+    `got ${updates.length} updates`);
+
+  // Verify at least one update contains agent_message_chunk (mock-agent sends this)
+  const hasAgentChunk = updates.some((n: any) =>
+    n.params?.update?.sessionUpdate === "agent_message_chunk"
+  );
+  assert(hasAgentChunk, "integ-prompt: received agent_message_chunk in session/update",
+    `updates: ${updates.map((n: any) => n.params?.update?.sessionUpdate).join(", ")}`);
+
+  // Verify statusChanged notifications (busy → idle transition)
+  const statusChanges = c.getNotifications("node.statusChanged");
+  const busyChange = statusChanges.find((n: any) => n.params?.name === "integ-agent-1" && n.params?.status === "busy");
+  const idleChange = statusChanges.find((n: any) => n.params?.name === "integ-agent-1" && n.params?.status === "idle");
+  assert(!!busyChange, "integ-prompt: received statusChanged busy");
+  assert(!!idleChange, "integ-prompt: received statusChanged idle (after prompt completes)");
+
+  // Verify update buffer has the updates (for replay on reconnect)
+  const bufResult = await c.request("node.updates", { nodeName: "integ-agent-1" });
+  assert(Array.isArray(bufResult.updates), "integ-prompt: node.updates returns array");
+  assert(bufResult.updates.length > 0, "integ-prompt: update buffer is non-empty",
+    `buffer has ${bufResult.updates?.length || 0} entries`);
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testIntegrationProgramNodeMessage() {
+  console.log("\n▸ Integration: program node → node.message → verify response via subscription");
+
+  const c = new WsClient("integ-prog-msg");
+  await c.connect();
+  await c.request("node.register", { name: "integ-prog-msg", capabilities: ["ui"] });
+
+  // Spawn mock program node
+  const spawn = await c.request("node.spawn", {
+    adapter: "mock-program",
+    name: "integ-prog-1",
+    cwd: ROOT,
+  });
+  assert(!!spawn.nodeId, "integ-prog-msg: program node spawned");
+
+  // Wait for program to connect via WS and become idle
+  await waitForNotification(c, "node.statusChanged",
+    p => p.name === "integ-prog-1" && p.status === "idle", 5000);
+  assert(true, "integ-prog-msg: program node reached idle");
+
+  // Subscribe to the program node
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+  c.clearNotifications();
+
+  // Send a DM message to the program node
+  await c.request("node.message", { nodeId: spawn.nodeId, content: "hello-integration" });
+
+  // Wait for the mock-program to echo back via node.log
+  await sleep(1000);
+
+  // Check updates — mock-program echoes DM via node.log which triggers node.update
+  const updates = c.getNotifications("node.update");
+  const logUpdate = updates.find((n: any) =>
+    n.params?.update?.sessionUpdate === "node_log" &&
+    JSON.stringify(n.params?.update?.entries || []).includes("hello-integration")
+  );
+  assert(!!logUpdate, "integ-prog-msg: received node.log echo from program node",
+    `got ${updates.length} updates, log entries: ${JSON.stringify(updates.map((n: any) => n.params?.update?.sessionUpdate))}`);
+
+  // Cleanup
+  await c.request("node.stop", { nodeId: spawn.nodeId });
+  await waitForNotification(c, "node.stopped", p => p.nodeId === spawn.nodeId, 5000);
+  assert(true, "integ-prog-msg: program node stopped");
+
+  await c.disconnect();
+}
+
+async function testIntegrationStopCleanup() {
+  console.log("\n▸ Integration: stop node → verify full cleanup (pool, subscriptions, channels)");
+
+  const c = new WsClient("integ-cleanup");
+  await c.connect();
+  await c.request("node.register", { name: "integ-cleanup", capabilities: ["ui"] });
+
+  // Spawn ACP agent
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "integ-cleanup-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "integ-cleanup: agent spawned");
+  await sleep(3000);
+
+  // Create channel and add agent
+  const ch = await c.request("channel.create", { cwd: ROOT, name: "integ-cleanup-ch" });
+  await c.request("channel.join", { channelId: ch.channelId });
+  await c.request("channel.addNode", { channelId: ch.channelId, nodeId: spawn.nodeId, name: "integ-cleanup-agent" });
+
+  // Verify agent is in channel
+  let chList = await c.request("channel.list", {});
+  let channel = chList.channels.find((ch2: any) => ch2.id === ch.channelId);
+  assert(!!channel?.nodes?.["integ-cleanup-agent"], "integ-cleanup: agent in channel before stop");
+
+  // Subscribe to the agent
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+  c.clearNotifications();
+
+  // Stop the agent
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(1000);
+
+  // Verify node.stopped notification received
+  const stoppedNotifs = c.getNotifications("node.stopped");
+  const stoppedMatch = stoppedNotifs.find((n: any) => n.params?.nodeId === spawn.nodeId);
+  assert(!!stoppedMatch, "integ-cleanup: received node.stopped notification");
+
+  // Verify agent removed or stopped in node list
+  const list = await c.request("node.list", {});
+  const cleanupAgent = (list as any).nodes.find((n: any) => n.name === "integ-cleanup-agent");
+  assert(!cleanupAgent || cleanupAgent.status === "stopped",
+    "integ-cleanup: agent removed or stopped in node list",
+    cleanupAgent ? `status=${cleanupAgent.status}` : undefined);
+
+  // Verify agent removed from channel
+  chList = await c.request("channel.list", {});
+  channel = chList.channels.find((ch2: any) => ch2.id === ch.channelId);
+  const agentGone = !channel?.nodes?.["integ-cleanup-agent"];
+  assert(agentGone, "integ-cleanup: agent removed from channel after stop");
+
+  // Verify no more updates after stop (subscription cleaned up)
+  c.clearNotifications();
+  await sleep(500);
+  const postStopUpdates = c.getNotifications("node.update");
+  assertEq(postStopUpdates.length, 0, "integ-cleanup: no updates after node stopped");
+
+  await c.disconnect();
+}
+
+async function testIntegrationSpawnPromptSubscribeUpdate() {
+  console.log("\n▸ Integration: spawn → subscribe → prompt → verify update content matches pushUpdate");
+
+  // This test specifically verifies that node.pushUpdate writes to the buffer
+  // AND the subscription manager delivers the exact same content.
+  // A bug like missing `log` import in node.ts would cause pushUpdate to throw,
+  // preventing updates from reaching subscribers.
+
+  const sender = new WsClient("integ-sender");
+  const watcher = new WsClient("integ-watcher");
+  await sender.connect();
+  await watcher.connect();
+  await sender.request("node.register", { name: "integ-sender", capabilities: ["ui"] });
+  await watcher.request("node.register", { name: "integ-watcher", capabilities: ["ui"] });
+
+  // Spawn agent
+  const spawn = await sender.request("node.spawn", { adapter: "mock", name: "integ-verify-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "integ-verify: agent spawned");
+  await sleep(3000);
+
+  // Both subscribe
+  await sender.request("node.subscribe", { nodeId: spawn.nodeId });
+  await watcher.request("node.subscribe", { nodeId: spawn.nodeId });
+  sender.clearNotifications();
+  watcher.clearNotifications();
+
+  // Sender prompts
+  await sender.request("node.prompt", { nodeId: spawn.nodeId, content: "verify-update-chain" });
+  await sleep(1000);
+
+  // Watcher should receive user_message + agent_message_chunk
+  const watcherUpdates = watcher.getNotifications("node.update");
+  assert(watcherUpdates.length > 0, "integ-verify: watcher received updates",
+    `got ${watcherUpdates.length}`);
+
+  const hasUserMsg = watcherUpdates.some((n: any) =>
+    n.params?.update?.sessionUpdate === "user_message" &&
+    n.params?.update?.content?.text === "verify-update-chain"
+  );
+  assert(hasUserMsg, "integ-verify: watcher received user_message with correct content");
+
+  const hasAgentReply = watcherUpdates.some((n: any) =>
+    n.params?.update?.sessionUpdate === "agent_message_chunk"
+  );
+  assert(hasAgentReply, "integ-verify: watcher received agent_message_chunk");
+
+  // Verify buffer matches what was delivered
+  const buf = await sender.request("node.updates", { nodeName: "integ-verify-agent" });
+  assert(buf.updates.length > 0, "integ-verify: update buffer is non-empty");
+
+  const bufHasUserMsg = buf.updates.some((u: any) =>
+    u.update?.sessionUpdate === "user_message" &&
+    u.update?.content?.text === "verify-update-chain"
+  );
+  assert(bufHasUserMsg, "integ-verify: buffer contains user_message with correct content");
+
+  const bufHasAgentChunk = buf.updates.some((u: any) =>
+    u.update?.sessionUpdate === "agent_message_chunk"
+  );
+  assert(bufHasAgentChunk, "integ-verify: buffer contains agent_message_chunk");
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(500);
+  await sender.disconnect();
+  await watcher.disconnect();
+}
+
+// ============================================================
+// Integration: Model info in node.list
+// ============================================================
+
+async function testIntegrationModelInfoInNodeList() {
+  console.log("\n▸ Integration: Model info in node.list");
+
+  const c = new WsClient("model-info-client");
+  await c.connect();
+  await c.request("node.register", { name: "model-info-client", capabilities: ["ui"] });
+
+  // Spawn with adapter="claude" so model field should be non-empty
+  const spawn = await c.request("node.spawn", { adapter: "claude", name: "model-info-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "model-info: spawn succeeded");
+
+  // Wait for ACP handshake
+  await sleep(3000);
+
+  // node.list — verify model field exists and is non-empty
+  const list = await c.request("node.list", {});
+  const agent = (list as any).nodes.find((n: any) => n.name === "model-info-agent");
+  assert(agent !== undefined, "model-info: agent found in node.list");
+  assert("model" in agent, "model-info: NodeInfo has 'model' field");
+  assert(!!agent.model, "model-info: model field is non-empty for claude adapter",
+    `got model=${JSON.stringify(agent?.model)}`);
+
+  // Subscribe and prompt to trigger usage_update with size info
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+  c.clearNotifications();
+
+  // Record log position before prompt
+  const logStart = serverLogBuffer.length;
+
+  const promptResult = await c.request("node.prompt", { nodeId: spawn.nodeId, content: "say hello" });
+  assert(!!promptResult, "model-info: prompt returned result");
+
+  // Wait for usage_update to be processed
+  await sleep(1000);
+
+  // Check serverLogBuffer for context size warn log (if size changed)
+  const newLogs = serverLogBuffer.slice(logStart).join("\n");
+  const hasUsageLog = newLogs.includes("usage_update") || newLogs.includes("context size changed");
+  assert(hasUsageLog, "model-info: server logged usage_update or context size change",
+    `log snippet: ${newLogs.slice(0, 200)}`);
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(500);
   await c.disconnect();
 }
 
