@@ -14,6 +14,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import { filterNodes, mapNodes } from "./nerve-mcp-node-list.js";
+
 const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NERVE_NODE_NAME = process.env.NERVE_NODE_NAME || "unknown";
 const BASE_URL = `http://127.0.0.1:${NERVE_PORT}`;
@@ -160,6 +162,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object" as const,
         properties: {
           cwd: { type: "string", description: "Filter channels by working directory (optional)" },
+        },
+      },
+    },
+    {
+      name: "nerve_node_list",
+      description: "List program nodes and their commands. Returns name, status, and command signatures for each active program node.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          type: {
+            type: "string",
+            enum: ["program", "agent", "all"],
+            description: "Filter by node type (default: program)",
+          },
+          status: {
+            type: "string",
+            enum: ["idle", "busy", "error", "connecting"],
+            description: "Filter by node status",
+          },
         },
       },
     },
@@ -384,6 +405,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok(JSON.stringify({ channels: mapped }));
     } catch (err) {
       log(`nerve_channels failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_node_list") {
+    const { type: nodeType, status: statusFilter } = (args || {}) as {
+      type?: "program" | "agent" | "all";
+      status?: string;
+    };
+    try {
+      log(`nerve_node_list type=${nodeType || "program"} status=${statusFilter || "all"}`);
+      const result = await post("/node/list", { cwd: process.cwd() });
+      const nodes = (result.nodes as Array<{ id: string; name: string; status: string; commands?: Record<string, { description: string; args?: Record<string, string> }>; events?: string[]; channels: string[] }>) || [];
+
+      const filtered = filterNodes(nodes, nodeType, statusFilter);
+
+      const channelResult = await post("/channel/list", {});
+      const channelMap = new Map<string, string>();
+      for (const ch of (channelResult.channels as Array<{ id: string; name?: string }>) || []) {
+        if (ch.name) channelMap.set(ch.id, ch.name);
+      }
+
+      const mapped = mapNodes(filtered, channelMap);
+      return ok(JSON.stringify({ nodes: mapped }));
+    } catch (err) {
+      log(`nerve_node_list failed: ${err}`);
       return fail(String(err));
     }
   }
