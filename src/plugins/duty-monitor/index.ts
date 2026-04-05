@@ -30,6 +30,10 @@ const CPU_THRESHOLD = parseInt(process.env.DUTY_CPU_THRESHOLD ?? "80");
 const MEM_THRESHOLD = parseInt(process.env.DUTY_MEM_THRESHOLD ?? "85");
 const DISK_THRESHOLD = parseInt(process.env.DUTY_DISK_THRESHOLD ?? "90");
 
+// Process-level thresholds (used in runHealthCheck)
+// NERVE_HEAP_THRESHOLD (MB, default 1500) and NERVE_RSS_THRESHOLD (MB, default 2000)
+// are read inside runHealthCheck() directly
+
 // --- Types ---
 
 export interface CronJob {
@@ -153,6 +157,20 @@ export function checkHealth(
   const diskPercent = (diskUsed / diskTotal) * 100;
   if (diskPercent > thresholds.disk) {
     alerts.push({ metric: "disk", value: Math.round(diskPercent), threshold: thresholds.disk });
+  }
+  return alerts;
+}
+
+export function checkProcessHealth(
+  usage: { heapUsedMB: number; rssMB: number },
+  thresholds: { heapThreshold: number; rssThreshold: number },
+): HealthAlert[] {
+  const alerts: HealthAlert[] = [];
+  if (usage.heapUsedMB > thresholds.heapThreshold) {
+    alerts.push({ metric: "v8_heap", value: usage.heapUsedMB, threshold: thresholds.heapThreshold });
+  }
+  if (usage.rssMB > thresholds.rssThreshold) {
+    alerts.push({ metric: "rss", value: usage.rssMB, threshold: thresholds.rssThreshold });
   }
   return alerts;
 }
@@ -375,6 +393,22 @@ class DutyMonitor extends PluginBase {
         const detail = alerts.map(a => `${a.metric}: ${a.value}%>${a.threshold}%`).join(", ");
         this.log("warn", `health alerts: ${detail}`);
         this.postToChannelSafe(`@duty-agent 分析异常：${detail}`);
+      }
+
+      // V8 heap + RSS check (nerve server process)
+      const heapThreshold = parseInt(process.env.NERVE_HEAP_THRESHOLD ?? "1500");
+      const rssThreshold = parseInt(process.env.NERVE_RSS_THRESHOLD ?? "2000");
+      const procMem = process.memoryUsage();
+      const heapUsedMB = Math.round(procMem.heapUsed / 1024 / 1024);
+      const rssMB = Math.round(procMem.rss / 1024 / 1024);
+      const processAlerts = checkProcessHealth(
+        { heapUsedMB, rssMB },
+        { heapThreshold, rssThreshold },
+      );
+      if (processAlerts.length > 0) {
+        const detail = processAlerts.map(a => `${a.metric}: ${a.value}MB>${a.threshold}MB`).join(", ");
+        this.log("warn", `process health alerts: ${detail}`);
+        this.postToChannelSafe(`@duty-agent 分析异常：nerve ${detail}`);
       }
     } catch (err) {
       this.log("error", `health check failed: ${err}`);

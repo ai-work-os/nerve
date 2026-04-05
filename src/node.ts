@@ -34,6 +34,9 @@ export class NerveNode {
   // Cleanup guard — prevents duplicate node.stopped emit
   _cleaned = false;
 
+  // Track last reported context size for change detection
+  lastReportedSize?: number;
+
   // In-memory buffer of ACP updates (for client reconnect replay)
   static readonly MAX_BUFFER_SIZE = 1000;
   updateBuffer: (SessionNotification | Record<string, unknown>)[] = [];
@@ -73,24 +76,32 @@ export class NerveNode {
 
   pushUpdate(params: SessionNotification | Record<string, unknown>): void {
     log.debug(`[${this.name}] pushUpdate raw: sessionUpdate=${(params as any)?.update?.sessionUpdate} keys=${JSON.stringify(Object.keys((params as any)?.update || {}))}`);
-    this.updateBuffer.push(params);
-    if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
-      this.updateBuffer.shift();
-    }
 
-    // Extract usage_update
+    // Normalize usage_update size before pushing to buffer
     const update = (params as SessionNotification).update as (UsageUpdate & { sessionUpdate: string }) | undefined;
     if (update?.sessionUpdate === "usage_update") {
       const adapterModel = this.adapter ? getAdapter(this.adapter)?.model : undefined;
       const actualSize = getContextWindow(adapterModel);
       log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} actualSize=${actualSize} model=${adapterModel} cost=${JSON.stringify(update.cost)}`);
       const cost = update.cost as Cost | null | undefined;
+      const newSize = actualSize ?? update.size ?? 0;
+      // Overwrite size in update so buffer contains normalized value
+      (update as any).size = newSize;
+      if (this.lastReportedSize !== undefined && this.lastReportedSize !== newSize) {
+        log.warn(`[${this.name}] context size changed: ${this.lastReportedSize} → ${newSize}`);
+      }
+      this.lastReportedSize = newSize;
       this.usage = {
         tokenUsed: update.used || 0,
-        tokenSize: actualSize ?? update.size ?? 0,
+        tokenSize: newSize,
         cost: cost?.amount || 0,
         lastUpdated: Date.now(),
       };
+    }
+
+    this.updateBuffer.push(params);
+    if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
+      this.updateBuffer.shift();
     }
   }
 
@@ -99,6 +110,7 @@ export class NerveNode {
   }
 
   toInfo(): NodeInfo {
+    const adapterConfig = this.adapter ? getAdapter(this.adapter) : undefined;
     return {
       id: this.id,
       name: this.name,
@@ -106,7 +118,9 @@ export class NerveNode {
       capabilities: this.capabilities,
       permissions: this.permissions,
       transport: this.transport.type,
+      pid: this.transport.type === "stdio" ? (this.transport as any).pid : undefined,
       adapter: this.adapter,
+      model: adapterConfig?.model,
       activity: this.activity,
       channels: [...this.channels],
       cwd: this.cwd,

@@ -38,6 +38,7 @@ const adapters: Record<string, AdapterConfig> = {
     },
     capabilities: ["code", "terminal", "analysis"],
     terminal: true,
+    model: "opus[1m]",
   },
   c2: {
     cmd: "claude-agent-acp",
@@ -49,6 +50,7 @@ const adapters: Record<string, AdapterConfig> = {
     },
     capabilities: ["code", "terminal", "analysis"],
     terminal: true,
+    model: "opus[1m]",
   },
   gemini: {
     cmd: "gemini",
@@ -64,6 +66,13 @@ const adapters: Record<string, AdapterConfig> = {
     terminal: false,
   },
   mock: {
+    cmd: "npx",
+    args: ["tsx", "test/mock-agent.ts"],
+    capabilities: ["code"],
+    terminal: false,
+    model: "mock-model-v1",
+  },
+  "mock-no-model": {
     cmd: "npx",
     args: ["tsx", "test/mock-agent.ts"],
     capabilities: ["code"],

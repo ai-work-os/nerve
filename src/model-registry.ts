@@ -9,6 +9,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "sonnet": 200_000,
   "sonnet[1m]": 1_000_000,
   "haiku": 200_000,
+  "mock-model-v1": 999_999,
 };
 
 /**

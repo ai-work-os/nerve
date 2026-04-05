@@ -16,6 +16,7 @@ import http from "node:http";
 import WebSocket from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { checkProcessHealth } from "../src/plugins/duty-monitor/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -4889,8 +4890,31 @@ async function main() {
     await testIntegrationStopCleanup();
     await testIntegrationSpawnPromptSubscribeUpdate();
 
-    // Model info in node.list
+    // node.list model field + context size warn
+    await testNodeListModelField();
+    await testContextSizeChangeWarnLog();
+    await testUpdateBufferSizeNormalized();
+
+    // Model info in node.list (integration with real adapter)
     await testIntegrationModelInfoInNodeList();
+
+    // Memory monitor log
+    await testMemoryLogFormat();
+    await testMemoryLogValues();
+
+    // /metrics endpoint + pid field
+    await testNodeInfoPid();
+    await testMetricsEndpoint();
+    await testMetricsNodePid();
+
+    // Process health check (pure function, no server needed)
+    await testCheckProcessHealthNoAlert();
+    await testCheckProcessHealthHeapAlert();
+    await testCheckProcessHealthRssAlert();
+    await testCheckProcessHealthBothAlert();
+
+    // Bug fix: nerve-spawned plugin should not reconnect on disconnect
+    await testPluginSpawnedNoReconnect();
 
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
@@ -5333,6 +5357,115 @@ async function testIntegrationSpawnPromptSubscribeUpdate() {
 }
 
 // ============================================================
+// node.list model field + context size change warn log
+// ============================================================
+
+async function testNodeListModelField() {
+  console.log("\n▸ node.list returns model field");
+
+  const c = new WsClient("model-field-client");
+  await c.connect();
+  await c.request("node.register", { name: "model-field-client", capabilities: ["ui"] });
+
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "model-field-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "model-field: spawn succeeded");
+
+  // Wait for ACP handshake
+  await sleep(1500);
+
+  const list = await c.request("node.list", {});
+  const agent = (list as any).nodes.find((n: any) => n.name === "model-field-agent");
+  assert(agent !== undefined, "model-field: agent found in node.list");
+  assert("model" in agent, "model-field: NodeInfo has 'model' key");
+  assertEq(agent.model, "mock-model-v1", "model-field: model matches adapter config");
+
+  // Also verify a node without adapter (ws client) has no model
+  const self = (list as any).nodes.find((n: any) => n.name === "model-field-client");
+  assert(self !== undefined, "model-field: ws client found in node.list");
+  assert(!self.model, "model-field: ws client has no model");
+
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(300);
+  await c.disconnect();
+}
+
+async function testContextSizeChangeWarnLog() {
+  console.log("\n▸ context size change triggers warn log");
+
+  const c = new WsClient("size-warn-client");
+  await c.connect();
+  await c.request("node.register", { name: "size-warn-client", capabilities: ["ui"] });
+
+  // Use mock-no-model adapter so getContextWindow returns undefined,
+  // allowing raw sizes 50000 → 80000 to trigger the size change warn
+  const spawn = await c.request("node.spawn", { adapter: "mock-no-model", name: "size-warn-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "size-warn: spawn succeeded");
+
+  await sleep(1500);
+
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+
+  // Record log position before prompt
+  const logStart = serverLogBuffer.length;
+
+  // "send-usage" triggers mock-agent to emit two usage_updates with sizes 50000 → 80000
+  const result = await c.request("node.prompt", { nodeId: spawn.nodeId, content: "send-usage" });
+  assert(!!result, "size-warn: prompt returned result");
+
+  await sleep(500);
+
+  const newLogs = serverLogBuffer.slice(logStart).join("\n");
+  const hasWarn = newLogs.includes("context size changed");
+  assert(hasWarn, "size-warn: server logged 'context size changed' warn",
+    `log snippet: ${newLogs.slice(0, 300)}`);
+
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(300);
+  await c.disconnect();
+}
+
+// updateBuffer should contain normalized size (not raw ACP value)
+// ============================================================
+
+async function testUpdateBufferSizeNormalized() {
+  console.log("\n▸ updateBuffer usage_update has normalized size");
+
+  const c = new WsClient("buf-size-client");
+  await c.connect();
+  await c.request("node.register", { name: "buf-size-client", capabilities: ["ui"] });
+
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "buf-size-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "buf-size: spawn succeeded");
+
+  await sleep(1500);
+
+  await c.request("node.subscribe", { nodeId: spawn.nodeId });
+
+  // "send-usage" emits usage_updates with raw sizes 50000 and 80000
+  // mock adapter model is "mock-model-v1" → getContextWindow returns 999999
+  // So buffer should have size=999999, not the raw values
+  const result = await c.request("node.prompt", { nodeId: spawn.nodeId, content: "send-usage" });
+  assert(!!result, "buf-size: prompt returned result");
+
+  await sleep(500);
+
+  const bufResult = await c.request("node.updates", { nodeName: "buf-size-agent" });
+  const usageUpdates = (bufResult.updates || []).filter(
+    (u: any) => u.update?.sessionUpdate === "usage_update",
+  );
+  assert(usageUpdates.length >= 2, "buf-size: at least 2 usage_updates in buffer",
+    `got ${usageUpdates.length}`);
+
+  for (const u of usageUpdates) {
+    assert(u.update.size === 999999,
+      `buf-size: usage_update size should be 999999 (normalized), got ${u.update.size}`);
+  }
+
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(300);
+  await c.disconnect();
+}
+
 // Integration: Model info in node.list
 // ============================================================
 
@@ -5381,6 +5514,279 @@ async function testIntegrationModelInfoInNodeList() {
   await httpPost("/node/stop", { nodeId: spawn.nodeId });
   await sleep(500);
   await c.disconnect();
+}
+
+// ============================================================
+// Memory monitor: [mem] log format and values
+// ============================================================
+
+async function testMemoryLogFormat() {
+  console.log("\n▸ Memory monitor: memory log format");
+
+  // Server should emit [mem] log at startup (immediate first log)
+  // Give a small window for the log to appear
+  await sleep(500);
+
+  const memLines = serverLogBuffer.filter(line => line.includes("[mem]"));
+  assert(memLines.length > 0, "mem-log-format: at least one [mem] log line found",
+    `serverLogBuffer has ${serverLogBuffer.length} lines, none contain [mem]`);
+
+  if (memLines.length > 0) {
+    const line = memLines[0];
+    // Expected format: [mem] rss=XXmb heap=XXmb/XXmb ext=XXmb buf=XXmb
+    const formatRe = /\[mem\]\s+rss=\d+mb\s+heap=\d+mb\/\d+mb\s+ext=\d+mb\s+buf=\d+mb/;
+    assert(formatRe.test(line), "mem-log-format: matches expected pattern",
+      `got: ${line}`);
+  }
+}
+
+async function testMemoryLogValues() {
+  console.log("\n▸ Memory monitor: memory log values");
+
+  const memLines = serverLogBuffer.filter(line => line.includes("[mem]"));
+  assert(memLines.length > 0, "mem-log-values: [mem] log line exists");
+
+  if (memLines.length > 0) {
+    const line = memLines[0];
+    // Parse rss and heap used values
+    const rssMatch = line.match(/rss=(\d+)mb/);
+    const heapMatch = line.match(/heap=(\d+)mb\/(\d+)mb/);
+
+    assert(!!rssMatch, "mem-log-values: rss value parsed");
+    assert(!!heapMatch, "mem-log-values: heap value parsed");
+
+    if (rssMatch && heapMatch) {
+      const rss = parseInt(rssMatch[1], 10);
+      const heapUsed = parseInt(heapMatch[1], 10);
+      const heapTotal = parseInt(heapMatch[2], 10);
+
+      assert(rss > 0, "mem-log-values: rss is positive", `rss=${rss}`);
+      assert(heapUsed > 0, "mem-log-values: heap used is positive", `heapUsed=${heapUsed}`);
+      assert(heapTotal > 0, "mem-log-values: heap total is positive", `heapTotal=${heapTotal}`);
+      assert(heapUsed <= heapTotal, "mem-log-values: heap used <= heap total",
+        `heapUsed=${heapUsed}, heapTotal=${heapTotal}`);
+      assert(rss >= heapUsed, "mem-log-values: rss >= heap used (RSS includes non-heap)",
+        `rss=${rss}, heapUsed=${heapUsed}`);
+    }
+  }
+}
+
+// ============================================================
+// Memory monitor: /metrics endpoint + pid field
+// ============================================================
+
+async function testNodeInfoPid() {
+  console.log("\n▸ Memory monitor: node.list pid field");
+
+  const c = new WsClient("pid-test-client");
+  await c.connect();
+  await c.request("node.register", { name: "pid-test-client", capabilities: ["ui"] });
+
+  // Spawn a mock-program (stdio) node
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "pid-test-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "pid-field: mock agent spawned");
+  await sleep(3000);
+
+  // node.list and check pid
+  const list = await httpPost("/node/list", {});
+  const nodes = (list as any).nodes;
+
+  const stdioNode = nodes.find((n: any) => n.name === "pid-test-agent");
+  assert(!!stdioNode, "pid-field: stdio node found in list");
+  if (stdioNode) {
+    assert(typeof stdioNode.pid === "number", "pid-field: stdio node has numeric pid",
+      `got pid=${JSON.stringify(stdioNode.pid)}`);
+    assert(stdioNode.pid > 0, "pid-field: stdio node pid is positive",
+      `pid=${stdioNode.pid}`);
+  }
+
+  // WS node should NOT have pid
+  const wsNode = nodes.find((n: any) => n.name === "pid-test-client");
+  assert(!!wsNode, "pid-field: WS node found in list");
+  if (wsNode) {
+    assert(wsNode.pid === undefined || wsNode.pid === null, "pid-field: WS node pid is undefined/null",
+      `got pid=${JSON.stringify(wsNode.pid)}`);
+  }
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testMetricsEndpoint() {
+  console.log("\n▸ Memory monitor: /metrics endpoint");
+
+  const metrics = await httpGet("/metrics") as any;
+
+  // server object
+  assert(!!metrics.server, "metrics: has server object");
+  if (metrics.server) {
+    assert(typeof metrics.server.uptime === "number" && metrics.server.uptime > 0,
+      "metrics: server.uptime is positive number", `got ${metrics.server.uptime}`);
+    assert(typeof metrics.server.rss === "number" && metrics.server.rss > 0,
+      "metrics: server.rss is positive number", `got ${metrics.server.rss}`);
+    assert(typeof metrics.server.heapUsed === "number" && metrics.server.heapUsed > 0,
+      "metrics: server.heapUsed is positive number", `got ${metrics.server.heapUsed}`);
+    assert(typeof metrics.server.heapTotal === "number" && metrics.server.heapTotal > 0,
+      "metrics: server.heapTotal is positive number", `got ${metrics.server.heapTotal}`);
+    assert(typeof metrics.server.external === "number",
+      "metrics: server.external is number", `got ${typeof metrics.server.external}`);
+    assert(typeof metrics.server.arrayBuffers === "number",
+      "metrics: server.arrayBuffers is number", `got ${typeof metrics.server.arrayBuffers}`);
+  }
+
+  // nodes array
+  assert(Array.isArray(metrics.nodes), "metrics: has nodes array");
+
+  // timestamp
+  assert(typeof metrics.timestamp === "number", "metrics: has timestamp");
+  if (typeof metrics.timestamp === "number") {
+    const now = Date.now();
+    assert(metrics.timestamp > now - 60000 && metrics.timestamp <= now + 1000,
+      "metrics: timestamp is recent", `got ${metrics.timestamp}, now=${now}`);
+  }
+}
+
+async function testMetricsNodePid() {
+  console.log("\n▸ Memory monitor: /metrics node pid");
+
+  const c = new WsClient("metrics-pid-client");
+  await c.connect();
+  await c.request("node.register", { name: "metrics-pid-client", capabilities: ["ui"] });
+
+  // Spawn a mock-program node
+  const spawn = await httpPost("/node/spawn", { adapter: "mock", name: "metrics-pid-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "metrics-pid: mock agent spawned");
+  await sleep(3000);
+
+  const metrics = await httpGet("/metrics") as any;
+  assert(Array.isArray(metrics.nodes), "metrics-pid: nodes is array");
+
+  const agentMetric = metrics.nodes.find((n: any) => n.name === "metrics-pid-agent");
+  assert(!!agentMetric, "metrics-pid: agent found in metrics nodes");
+  if (agentMetric) {
+    assert(typeof agentMetric.pid === "number" && agentMetric.pid > 0,
+      "metrics-pid: agent pid is positive integer", `got pid=${agentMetric.pid}`);
+    // rss may be null if ps fails, but if present should be positive
+    if (agentMetric.rss !== null && agentMetric.rss !== undefined) {
+      assert(typeof agentMetric.rss === "number" && agentMetric.rss > 0,
+        "metrics-pid: agent rss is positive when available", `got rss=${agentMetric.rss}`);
+    }
+    assert(typeof agentMetric.status === "string", "metrics-pid: agent has status string",
+      `got status=${JSON.stringify(agentMetric.status)}`);
+  }
+
+  // Cleanup
+  await httpPost("/node/stop", { nodeId: spawn.nodeId });
+  await sleep(500);
+  await c.disconnect();
+}
+
+// ============================================================
+// Memory monitor: process health check (pure function)
+// ============================================================
+
+async function testCheckProcessHealthNoAlert() {
+  console.log("\n▸ Memory monitor: process health check");
+
+  const alerts = checkProcessHealth(
+    { heapUsedMB: 500, rssMB: 800 },
+    { heapThreshold: 1500, rssThreshold: 2000 }
+  );
+  assertEq(alerts.length, 0, "process-health: no alert when below thresholds");
+}
+
+async function testCheckProcessHealthHeapAlert() {
+  const alerts = checkProcessHealth(
+    { heapUsedMB: 1800, rssMB: 800 },
+    { heapThreshold: 1500, rssThreshold: 2000 }
+  );
+  assertEq(alerts.length, 1, "process-health: 1 alert when heap exceeds threshold");
+  assertEq(alerts[0].metric, "v8_heap", "process-health: alert metric is v8_heap");
+  assertEq(alerts[0].value, 1800, "process-health: alert value is 1800");
+  assertEq(alerts[0].threshold, 1500, "process-health: alert threshold is 1500");
+}
+
+async function testCheckProcessHealthRssAlert() {
+  const alerts = checkProcessHealth(
+    { heapUsedMB: 500, rssMB: 2500 },
+    { heapThreshold: 1500, rssThreshold: 2000 }
+  );
+  assertEq(alerts.length, 1, "process-health: 1 alert when rss exceeds threshold");
+  assertEq(alerts[0].metric, "rss", "process-health: alert metric is rss");
+}
+
+async function testCheckProcessHealthBothAlert() {
+  const alerts = checkProcessHealth(
+    { heapUsedMB: 1800, rssMB: 2500 },
+    { heapThreshold: 1500, rssThreshold: 2000 }
+  );
+  assertEq(alerts.length, 2, "process-health: 2 alerts when both exceed thresholds");
+  const metrics = alerts.map((a: any) => a.metric).sort();
+  assertEq(metrics, ["rss", "v8_heap"], "process-health: both metrics reported");
+}
+
+// ============================================================
+// Bug fix: nerve-spawned plugin should not reconnect on disconnect
+// ============================================================
+
+async function testPluginSpawnedNoReconnect() {
+  console.log("\n▸ plugin-base: nerve-spawned plugin does not reconnect on disconnect");
+
+  const { PluginBase } = await import("../src/plugins/plugin-base.js");
+
+  const testName = `test-spawned-noreconn-${Date.now()}`;
+
+  // Save and override env: set NERVE_SPAWNED=1, clear PORT/NAME so they don't override test params
+  const origSpawned = process.env.NERVE_SPAWNED;
+  const origPort = process.env.NERVE_PORT;
+  const origNodeName = process.env.NERVE_NODE_NAME;
+  process.env.NERVE_SPAWNED = "1";
+  delete process.env.NERVE_PORT;
+  delete process.env.NERVE_NODE_NAME;
+
+  // Expose internal ws so we can simulate server-side disconnect
+  class TestSpawnedPlugin extends PluginBase {
+    getWs(): WebSocket { return this.ws; }
+  }
+
+  const plugin = new TestSpawnedPlugin({ port: TEST_PORT, name: testName, reconnectDelay: 200 });
+
+  try {
+    await plugin.start();
+    await sleep(300);
+
+    // Verify registered
+    const c = new WsClient("spawned-checker");
+    await c.connect();
+    await c.request("node.register", { name: "spawned-checker", capabilities: ["ui"] });
+
+    let nodes = await c.request("node.list");
+    let found = nodes.nodes.some((n: any) => n.name === testName);
+    assert(found, "spawned-noreconn: plugin registered initially");
+
+    // Simulate server-side disconnect by closing the ws directly (NOT plugin.stop()).
+    // This triggers the 'close' handler without setting stopped=true, which is the real bug path.
+    plugin.getWs().close();
+    await sleep(600); // Wait past reconnectDelay (200ms)
+
+    // Verify it did NOT re-register — with NERVE_SPAWNED=1, it should stay disconnected
+    nodes = await c.request("node.list");
+    found = nodes.nodes.some((n: any) => n.name === testName);
+    assert(!found, "spawned-noreconn: plugin did NOT reconnect after server disconnect");
+
+    await c.disconnect();
+  } finally {
+    plugin.stop(); // Cleanup
+    // Restore env
+    if (origSpawned !== undefined) process.env.NERVE_SPAWNED = origSpawned;
+    else delete process.env.NERVE_SPAWNED;
+    if (origPort !== undefined) process.env.NERVE_PORT = origPort;
+    else delete process.env.NERVE_PORT;
+    if (origNodeName !== undefined) process.env.NERVE_NODE_NAME = origNodeName;
+    else delete process.env.NERVE_NODE_NAME;
+  }
 }
 
 main();

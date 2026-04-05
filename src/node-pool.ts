@@ -10,7 +10,7 @@ import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientp
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
 import type { Store } from "./store.js";
-import type { PermissionLevel } from "./protocol.js";
+import type { NodeStatus, PermissionLevel } from "./protocol.js";
 import type { WebSocket } from "ws";
 
 export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
@@ -34,6 +34,27 @@ export class NodePool {
   /** Emit a node event (for use by server when mutating node state externally) */
   emitEvent(event: string, node: NerveNode, detail?: Record<string, unknown>): void {
     this.onEvent(event, node, detail);
+  }
+
+  /** Unified status change — all status mutations converge here.
+   *  Guarantees: store sync + idempotent emit + activity reset on idle. */
+  private _setNodeStatus(node: NerveNode, status: NodeStatus): void {
+    const changed = node.status !== status;
+    node.status = status;
+    node.touch();
+
+    // Activity auto-clear when transitioning to idle
+    if (status === "idle") {
+      node.activity = undefined;
+    }
+
+    // Always sync to store
+    this.store.updateNodeStatus(node.id, status);
+
+    // Only emit when status actually changed
+    if (changed) {
+      this.onEvent("node.statusChanged", node);
+    }
   }
 
   /** Unified node cleanup — all cleanup paths converge here */
@@ -419,29 +440,21 @@ export class NodePool {
     }
 
     log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
-    node.status = "busy";
-    node.touch();
+    this._setNodeStatus(node, "busy");
     const userMsgParams: Record<string, unknown> = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
     node.pushUpdate(userMsgParams);
     this.onEvent("node.update", node, excludeWs ? { ...userMsgParams, _excludeWs: excludeWs } : userMsgParams);
-    this.onEvent("node.statusChanged", node);
 
     let result: { stopReason?: string; error?: string };
     try {
       result = await client.prompt(text);
     } catch (err: any) {
       log.error(`promptNode: ${node.name} rejected: ${err.message}`);
-      node.status = "idle";
-      node.activity = undefined;
-      node.touch();
-      this.onEvent("node.statusChanged", node);
+      this._setNodeStatus(node, "idle");
       return { error: err.message };
     }
 
-    node.status = "idle";
-    node.activity = undefined;
-    node.touch();
-    this.onEvent("node.statusChanged", node);
+    this._setNodeStatus(node, "idle");
     log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
 
     return result;
@@ -456,9 +469,7 @@ export class NodePool {
     const result = await client.cancel();
 
     // Reset to idle (promptNode will also set idle when promise resolves/rejects)
-    node.status = "idle";
-    node.touch();
-    this.onEvent("node.statusChanged", node);
+    this._setNodeStatus(node, "idle");
 
     return result;
   }
