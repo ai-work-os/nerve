@@ -17,6 +17,11 @@ import {
   cleanContent,
   type DialogEntry,
 } from "../src/plugins/dialog-recorder/scanner.js";
+import {
+  aggregateDailyStats,
+  formatDailyReport,
+  type DailyStats,
+} from "../src/plugins/dialog-recorder/reporter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -308,10 +313,168 @@ async function testExtractEmptyContent(): Promise<void> {
   }
 }
 
+// --- Reporter tests ---
+
+/** Helper: write a dialogs JSONL file for a given date */
+function makeDialogsFile(dialogsDir: string, date: string, entries: DialogEntry[]): string {
+  mkdirSync(dialogsDir, { recursive: true });
+  const filePath = resolve(dialogsDir, `${date}.jsonl`);
+  const content = entries.map(e => JSON.stringify(e)).join("\n") + "\n";
+  writeFileSync(filePath, content);
+  return filePath;
+}
+
+function dialogEntry(overrides: Partial<DialogEntry> = {}): DialogEntry {
+  return {
+    ts: "2026-04-05T10:30:00Z",
+    sessionId: "sess-001",
+    project: "-Users-test-project-a",
+    cwd: "/Users/test/project-a",
+    content: "test message",
+    contentLength: 12,
+    ...overrides,
+  };
+}
+
+async function testAggregateDailyStats(): Promise<void> {
+  console.log("\n## aggregateDailyStats — basic stats");
+
+  const dir = tmpDir();
+  const dialogsDir = resolve(dir, "dialogs");
+  try {
+    const entries: DialogEntry[] = [
+      dialogEntry({ ts: "2026-04-05T10:00:00Z", sessionId: "sess-001", project: "-Users-test-project-a", content: "msg1", contentLength: 4 }),
+      dialogEntry({ ts: "2026-04-05T11:00:00Z", sessionId: "sess-001", project: "-Users-test-project-a", content: "msg2", contentLength: 4 }),
+      dialogEntry({ ts: "2026-04-05T14:00:00Z", sessionId: "sess-002", project: "-Users-test-project-b", content: "msg3", contentLength: 4 }),
+      dialogEntry({ ts: "2026-04-05T14:30:00Z", sessionId: "sess-002", project: "-Users-test-project-b", content: "msg4", contentLength: 4 }),
+      dialogEntry({ ts: "2026-04-05T16:00:00Z", sessionId: "sess-003", project: "-Users-test-project-a", content: "msg5", contentLength: 4 }),
+    ];
+    makeDialogsFile(dialogsDir, "2026-04-05", entries);
+
+    const stats = await aggregateDailyStats(dialogsDir, "2026-04-05");
+    assertEq(stats.date, "2026-04-05", "date correct");
+    assertEq(stats.totalMessages, 5, "totalMessages = 5");
+    assertEq(stats.totalSessions, 3, "totalSessions = 3 (sess-001, sess-002, sess-003)");
+    assertEq(stats.projects["-Users-test-project-a"]?.messages, 3, "project-a has 3 messages");
+    assertEq(stats.projects["-Users-test-project-b"]?.messages, 2, "project-b has 2 messages");
+    assertEq(stats.entries.length, 5, "entries preserved");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testAggregateDailyStatsHourDistribution(): Promise<void> {
+  console.log("\n## aggregateDailyStats — hour distribution");
+
+  const dir = tmpDir();
+  const dialogsDir = resolve(dir, "dialogs");
+  try {
+    const entries: DialogEntry[] = [
+      dialogEntry({ ts: "2026-04-05T08:10:00Z" }),
+      dialogEntry({ ts: "2026-04-05T08:45:00Z" }),
+      dialogEntry({ ts: "2026-04-05T14:00:00Z" }),
+      dialogEntry({ ts: "2026-04-05T23:59:59Z" }),
+    ];
+    makeDialogsFile(dialogsDir, "2026-04-05", entries);
+
+    const stats = await aggregateDailyStats(dialogsDir, "2026-04-05");
+    assertEq(stats.hourDistribution.length, 24, "hourDistribution has 24 slots");
+    assertEq(stats.hourDistribution[8], 2, "hour 8 has 2 messages");
+    assertEq(stats.hourDistribution[14], 1, "hour 14 has 1 message");
+    assertEq(stats.hourDistribution[23], 1, "hour 23 has 1 message");
+    assertEq(stats.hourDistribution[0], 0, "hour 0 has 0 messages");
+    assertEq(stats.hourDistribution[12], 0, "hour 12 has 0 messages");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testAggregateDailyStatsNoData(): Promise<void> {
+  console.log("\n## aggregateDailyStats — no data for date");
+
+  const dir = tmpDir();
+  const dialogsDir = resolve(dir, "dialogs");
+  mkdirSync(dialogsDir, { recursive: true });
+  try {
+    // Dialogs dir exists but no file for this date
+    const stats = await aggregateDailyStats(dialogsDir, "2026-01-01");
+    assertEq(stats.totalMessages, 0, "no data → totalMessages = 0");
+    assertEq(stats.totalSessions, 0, "no data → totalSessions = 0");
+    assertEq(Object.keys(stats.projects).length, 0, "no data → empty projects");
+    assertEq(stats.entries.length, 0, "no data → empty entries");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testAggregateDailyStatsFileNotExist(): Promise<void> {
+  console.log("\n## aggregateDailyStats — dialogsDir does not exist");
+
+  const nonexistent = "/tmp/dialog-recorder-nonexist-" + randomBytes(8).toString("hex");
+  const stats = await aggregateDailyStats(nonexistent, "2026-04-05");
+  assertEq(stats.totalMessages, 0, "nonexistent dir → totalMessages = 0");
+  assertEq(stats.totalSessions, 0, "nonexistent dir → totalSessions = 0");
+  assertEq(stats.entries.length, 0, "nonexistent dir → empty entries");
+}
+
+async function testFormatDailyReport(): Promise<void> {
+  console.log("\n## formatDailyReport — content check");
+
+  const stats: DailyStats = {
+    date: "2026-04-05",
+    totalMessages: 5,
+    totalSessions: 2,
+    projects: {
+      "-Users-test-project-a": { messages: 3, sessions: new Set(["sess-001", "sess-003"]) },
+      "-Users-test-project-b": { messages: 2, sessions: new Set(["sess-002"]) },
+    },
+    hourDistribution: Array(24).fill(0),
+    entries: [
+      dialogEntry({ ts: "2026-04-05T10:00:00Z", project: "-Users-test-project-a", content: "first msg" }),
+      dialogEntry({ ts: "2026-04-05T11:00:00Z", project: "-Users-test-project-a", content: "second msg" }),
+      dialogEntry({ ts: "2026-04-05T14:00:00Z", project: "-Users-test-project-b", content: "third msg" }),
+    ],
+  };
+
+  const report = formatDailyReport(stats);
+  assert(report.includes("2026-04-05"), "report contains date");
+  assert(report.includes("5"), "report contains total message count");
+  assert(report.includes("-Users-test-project-a"), "report contains project-a name");
+  assert(report.includes("-Users-test-project-b"), "report contains project-b name");
+}
+
+async function testFormatDailyReportTimeline(): Promise<void> {
+  console.log("\n## formatDailyReport — timeline");
+
+  const stats: DailyStats = {
+    date: "2026-04-05",
+    totalMessages: 3,
+    totalSessions: 1,
+    projects: {
+      "project-x": { messages: 3, sessions: new Set(["s1"]) },
+    },
+    hourDistribution: Array(24).fill(0),
+    entries: [
+      dialogEntry({ ts: "2026-04-05T14:00:00Z", project: "project-x", content: "later message" }),
+      dialogEntry({ ts: "2026-04-05T09:00:00Z", project: "project-x", content: "early message" }),
+      dialogEntry({ ts: "2026-04-05T12:00:00Z", project: "project-x", content: "mid message" }),
+    ],
+  };
+
+  const report = formatDailyReport(stats);
+  // Timeline should contain message summaries
+  assert(report.includes("early message"), "timeline includes early message");
+  assert(report.includes("later message"), "timeline includes later message");
+  // Timeline should be sorted by time: early before later
+  const earlyIdx = report.indexOf("early message");
+  const laterIdx = report.indexOf("later message");
+  assert(earlyIdx < laterIdx, "timeline sorted: early message before later message");
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
-  console.log("=== Dialog Recorder — Scanner Tests ===");
+  console.log("=== Dialog Recorder — Scanner + Reporter Tests ===");
 
   try { await testExtractUserMessages(); } catch (e) { failed++; failures.push(`extractUserMessages threw: ${e}`); console.log(`  ✗ extractUserMessages threw: ${e}`); }
   try { await testCleanContent(); } catch (e) { failed++; failures.push(`cleanContent threw: ${e}`); console.log(`  ✗ cleanContent threw: ${e}`); }
@@ -322,6 +485,12 @@ async function main(): Promise<void> {
   try { await testExtractNullContent(); } catch (e) { failed++; failures.push(`extractNullContent threw: ${e}`); console.log(`  ✗ extractNullContent threw: ${e}`); }
   try { await testScanNonexistentDir(); } catch (e) { failed++; failures.push(`scanNonexistentDir threw: ${e}`); console.log(`  ✗ scanNonexistentDir threw: ${e}`); }
   try { await testExtractEmptyContent(); } catch (e) { failed++; failures.push(`extractEmptyContent threw: ${e}`); console.log(`  ✗ extractEmptyContent threw: ${e}`); }
+  try { await testAggregateDailyStats(); } catch (e) { failed++; failures.push(`aggregateDailyStats threw: ${e}`); console.log(`  ✗ aggregateDailyStats threw: ${e}`); }
+  try { await testAggregateDailyStatsHourDistribution(); } catch (e) { failed++; failures.push(`aggregateDailyStatsHour threw: ${e}`); console.log(`  ✗ aggregateDailyStatsHour threw: ${e}`); }
+  try { await testAggregateDailyStatsNoData(); } catch (e) { failed++; failures.push(`aggregateDailyStatsNoData threw: ${e}`); console.log(`  ✗ aggregateDailyStatsNoData threw: ${e}`); }
+  try { await testAggregateDailyStatsFileNotExist(); } catch (e) { failed++; failures.push(`aggregateDailyStatsFileNotExist threw: ${e}`); console.log(`  ✗ aggregateDailyStatsFileNotExist threw: ${e}`); }
+  try { await testFormatDailyReport(); } catch (e) { failed++; failures.push(`formatDailyReport threw: ${e}`); console.log(`  ✗ formatDailyReport threw: ${e}`); }
+  try { await testFormatDailyReportTimeline(); } catch (e) { failed++; failures.push(`formatDailyReportTimeline threw: ${e}`); console.log(`  ✗ formatDailyReportTimeline threw: ${e}`); }
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
   if (failures.length > 0) {
