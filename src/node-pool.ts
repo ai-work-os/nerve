@@ -294,6 +294,13 @@ export class NodePool {
           }
         }
 
+        // DM capture: accumulate agent_message_chunk text for dm.response
+        const chunkKind = (params as any)?.update?.sessionUpdate;
+        if (chunkKind === "agent_message_chunk" && node._dmResponseBuffer !== undefined) {
+          const chunkText = (params as any)?.update?.content?.text;
+          if (chunkText) node._dmResponseBuffer += chunkText;
+        }
+
         this.onEvent("node.update", node, params);
       },
       onReady: (sessionId) => {
@@ -464,6 +471,19 @@ export class NodePool {
 
     log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
     this._setNodeStatus(node, "busy");
+
+    // DM capture: init buffer + emit dm.prompt
+    const startTs = Date.now();
+    node._dmResponseBuffer = "";
+    this.onEvent("dm.prompt", node, {
+      text,
+      from: from ?? undefined,
+      targetNodeId: nodeId,
+      targetNodeName: node.name,
+      ts: new Date().toISOString(),
+    });
+    log.debug(`dm.prompt emitted: ${node.name}, text="${text.slice(0, 50)}"`);
+
     const userMsgParams: Record<string, unknown> = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
     node.pushUpdate(userMsgParams);
     this.onEvent("node.update", node, excludeWs ? { ...userMsgParams, _excludeWs: excludeWs } : userMsgParams);
@@ -473,9 +493,37 @@ export class NodePool {
       result = await client.prompt(text);
     } catch (err: any) {
       log.error(`promptNode: ${node.name} rejected: ${err.message}`);
+      // DM capture: emit dm.response with error
+      const responseText = node._dmResponseBuffer ?? "";
+      node._dmResponseBuffer = undefined;
+      this.onEvent("dm.response", node, {
+        text: responseText,
+        error: err.message,
+        from: from ?? undefined,
+        targetNodeId: nodeId,
+        targetNodeName: node.name,
+        durationMs: Date.now() - startTs,
+        ts: new Date().toISOString(),
+      });
+      log.debug(`dm.response emitted (error): ${node.name}, error=${err.message}`);
       this._setNodeStatus(node, "idle");
       return { error: err.message };
     }
+
+    // DM capture: emit dm.response with accumulated text
+    const responseText = node._dmResponseBuffer ?? "";
+    node._dmResponseBuffer = undefined;
+    this.onEvent("dm.response", node, {
+      text: responseText,
+      stopReason: result.stopReason,
+      error: result.error,
+      from: from ?? undefined,
+      targetNodeId: nodeId,
+      targetNodeName: node.name,
+      durationMs: Date.now() - startTs,
+      ts: new Date().toISOString(),
+    });
+    log.debug(`dm.response emitted: ${node.name}, stopReason=${result.stopReason}, textLen=${responseText.length}`);
 
     this._setNodeStatus(node, "idle");
     log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);

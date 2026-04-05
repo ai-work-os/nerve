@@ -19,6 +19,7 @@ import { PluginBase, type CommandDef } from "../plugin-base.js";
 import {
   shouldRecord,
   formatRecord,
+  formatDmRecord,
   sessionKey,
   formatStatusReport,
   formatDateReport,
@@ -81,6 +82,14 @@ export class UserRecorder extends PluginBase {
     // DM command dispatch
     this.onNotification("node.message", (params) => {
       this.dispatchCommand(params?.content as string, params?.from as string);
+    });
+
+    // DM capture: record dm.prompt and dm.response events
+    this.onNotification("dm.prompt", (params) => {
+      this.recordDm("prompt", params);
+    });
+    this.onNotification("dm.response", (params) => {
+      this.recordDm("response", params);
     });
   }
 
@@ -152,6 +161,24 @@ export class UserRecorder extends PluginBase {
         await appendFile(filePath, line);
       } catch (err) {
         this.log("error", `failed to write record: ${err}`);
+      }
+    });
+  }
+
+  private recordDm(type: "prompt" | "response", params: any): void {
+    const record = formatDmRecord(type, params);
+    const key = `dm-${record.targetNodeName}-${localDate()}`;
+    const filePath = resolve(this.sessionsDir, `${key}.jsonl`);
+    const line = JSON.stringify(record) + "\n";
+
+    this.recordCount++;
+    this.log("info", `recording dm.${type}: target=${record.targetNodeName}`);
+
+    this.writeQueue = this.writeQueue.then(async () => {
+      try {
+        await appendFile(filePath, line);
+      } catch (err) {
+        this.log("error", `dm write failed: ${err}`);
       }
     });
   }

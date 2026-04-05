@@ -20,6 +20,35 @@ export interface SessionSummary {
   messages: UserMessage[];
 }
 
+export interface DmRecord {
+  ts: string;
+  type: "prompt" | "response";
+  targetNodeId: string;
+  targetNodeName: string;
+  from?: { nodeId: string; name: string };
+  text: string;
+  stopReason?: string;
+  error?: string;
+  durationMs?: number;
+}
+
+/**
+ * Format a DM event (dm.prompt or dm.response) into a DmRecord.
+ */
+export function formatDmRecord(type: "prompt" | "response", params: any): DmRecord {
+  return {
+    ts: params.ts || new Date().toISOString(),
+    type,
+    targetNodeId: params.targetNodeId,
+    targetNodeName: params.targetNodeName,
+    from: params.from,
+    text: params.text || "",
+    stopReason: params.stopReason,
+    error: params.error,
+    durationMs: params.durationMs,
+  };
+}
+
 /**
  * Should we record this message?
  * Only messages from client nodes (nodeType === "websocket") are recorded.

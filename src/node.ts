@@ -38,6 +38,9 @@ export class NerveNode {
   // Flag: set by stopNode() before killing program node process
   _manualStop = false;
 
+  // DM capture: accumulate AI response text during promptNode() for dm.response event
+  _dmResponseBuffer?: string;
+
   // Track last reported context size for change detection
   lastReportedSize?: number;
 

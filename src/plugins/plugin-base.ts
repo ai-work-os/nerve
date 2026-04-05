@@ -83,7 +83,20 @@ export class PluginBase {
     this.onNotification("channel.message", (params: any) => {
       this.handleChannelMessage(params);
     });
+
+    // DM capture events (override onDmPrompt/onDmResponse in subclass to handle)
+    this.onNotification("dm.prompt", (params: any) => {
+      this.onDmPrompt?.(params);
+    });
+    this.onNotification("dm.response", (params: any) => {
+      this.onDmResponse?.(params);
+    });
   }
+
+  /** Override in subclass to handle DM prompt events */
+  protected onDmPrompt?(params: any): void;
+  /** Override in subclass to handle DM response events */
+  protected onDmResponse?(params: any): void;
 
   /** Handle channel message: dispatch @mention commands.
    *  Override in subclass for custom channel message handling. */

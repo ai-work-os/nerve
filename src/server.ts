@@ -77,6 +77,25 @@ export class Server {
           params: { nodeId: node.id, name: node.name, exitCode: detail?.exitCode ?? null, reason: detail?.reason ?? null },
         });
       }
+
+      // DM capture: route dm.prompt/dm.response to observer nodes
+      if (event === "dm.prompt" || event === "dm.response") {
+        const notification = {
+          jsonrpc: "2.0",
+          method: event,
+          params: { nodeId: node.id, name: node.name, ...detail },
+        };
+        setImmediate(() => {
+          for (const obsNode of this.cm.nodePool.listAll()) {
+            if (obsNode.permissions === "observer" && obsNode.id !== node.id && obsNode.transport.alive) {
+              try {
+                obsNode.transport.send(JSON.stringify(notification));
+              } catch { /* best-effort, observer may have disconnected */ }
+            }
+          }
+          log.debug(`dm event routed: ${event} for ${node.name}`);
+        });
+      }
     };
 
     this.wss.on("connection", (ws) => {
