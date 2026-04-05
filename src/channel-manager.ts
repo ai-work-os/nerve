@@ -420,7 +420,7 @@ export class ChannelManager {
           if (ch) {
             ch.removeNode(node.name, this.store);
             // Post system message
-            this.postMessage(chId, "系统", `${node.name} 已断开 (exit: ${detail?.exitCode})`);
+            this.postMessage(chId, "系统", `${node.name} 已退出 (原因: ${detail?.reason || "unknown"}, exit: ${detail?.exitCode})`);
           }
         }
         break;

@@ -34,6 +34,9 @@ export class NerveNode {
   // Cleanup guard — prevents duplicate node.stopped emit
   _cleaned = false;
 
+  // Flag: set by stopNode() before killing program node process
+  _manualStop = false;
+
   // Track last reported context size for change detection
   lastReportedSize?: number;
 

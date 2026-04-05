@@ -74,7 +74,7 @@ export class Server {
         this.broadcastToAllWsClients({
           jsonrpc: "2.0",
           method: "node.stopped",
-          params: { nodeId: node.id, name: node.name, exitCode: detail?.exitCode ?? null },
+          params: { nodeId: node.id, name: node.name, exitCode: detail?.exitCode ?? null, reason: detail?.reason ?? null },
         });
       }
     };
