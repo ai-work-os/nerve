@@ -11,6 +11,9 @@ import { appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 
+import { CommandResult, formatCommandResponse, formatHelpText, formatUnknownCommand, formatReportError } from "../command-feedback.js";
+export type { CommandResult };
+
 export interface CommandDef {
   description: string;
   args?: Record<string, string>;
@@ -136,7 +139,7 @@ export class PluginBase {
   /** Override in subclass: handle a parsed command.
    *  Return a string to signal an error (posted back to channel if called from channel context).
    *  Return void/undefined for success (no channel reply). */
-  protected onCommand(command: string, args: Record<string, string>, from?: string): string | void {}
+  protected onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {}
 
   /** Parse message content into command + args, dispatch to onCommand or log error.
    *  When channelId is provided (called from channel context), errors are posted back to the channel. */
@@ -155,20 +158,28 @@ export class PluginBase {
 
     if (cmd === "help") {
       this.log("info", `help requested by ${from || "unknown"}`);
-      this.log("info", "可用命令：");
-      for (const [name, def] of Object.entries(commands)) {
-        const argStr = def.args ? " " + Object.keys(def.args).join(" ") : "";
-        this.log("info", `  ${name}${argStr}  — ${def.description || ""}`);
+      const msgs = formatHelpText(commands, from);
+      if (channelId && msgs.length > 0) {
+        for (const m of msgs) this.postToChannel(channelId, m);
+      } else {
+        // Fallback: log help text
+        for (const [name, def] of Object.entries(commands)) {
+          const argStr = def.args ? " " + Object.keys(def.args).join(" ") : "";
+          this.log("info", `  ${name}${argStr}  — ${def.description || ""}`);
+        }
+        this.log("info", "  help  — Show this help");
       }
-      this.log("info", "  help  — Show this help");
       return;
     }
 
     if (!commands[cmd]) {
-      const available = Object.keys(commands).join(", ");
-      const msg = `unknown command: "${cmd}". available: ${available}`;
+      const available = Object.keys(commands);
+      const msg = `unknown command: "${cmd}". available: ${available.join(", ")}`;
       this.log("error", msg);
-      if (channelId) this.postToChannel(channelId, msg);
+      if (channelId) {
+        const msgs = formatUnknownCommand(cmd, available, from);
+        for (const m of msgs) this.postToChannel(channelId, m);
+      }
       return;
     }
 
@@ -186,14 +197,24 @@ export class PluginBase {
       }
     }
 
-    const error = this.onCommand(cmd, args, from);
-    if (error && channelId) {
-      this.postToChannel(channelId, error);
+    const result = this.onCommand(cmd, args, from);
+    const msgs = formatCommandResponse(result, from);
+    if (channelId) {
+      for (const m of msgs) this.postToChannel(channelId, m);
     }
   }
 
+  /** Report error to channel (@mention) + log. For async operations. */
+  protected reportError(channelId: string | undefined, to: string | undefined, message: string): void {
+    const msg = formatReportError(to, message);
+    if (channelId && msg) {
+      this.postToChannel(channelId, msg);
+    }
+    this.log("error", message);
+  }
+
   /** Post a message to a channel (best-effort) */
-  private postToChannel(channelId: string, content: string): void {
+  protected postToChannel(channelId: string, content: string): void {
     this.request("channel.post", { channelId, content }).catch(err => {
       this.log("warn", `channel reply failed: ${err.message}`);
     });

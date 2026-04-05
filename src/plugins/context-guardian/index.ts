@@ -16,7 +16,7 @@
  *   --interval <n>   poll interval seconds (default: 10)
  */
 
-import { PluginBase, type CommandDef } from "../plugin-base.js";
+import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import { getThreshold, shouldTrigger, type ThresholdConfig, type NodeInfo } from "./logic.js";
 
 export { getThreshold, shouldTrigger, type ThresholdConfig, type NodeInfo } from "./logic.js";
@@ -61,13 +61,10 @@ class ContextGuardian extends PluginBase {
     return ["context_warning", "context_triggered"];
   }
 
-  protected override onCommand(command: string, args: Record<string, string>, from?: string): void {
+  protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     switch (command) {
-      case "status": {
-        const agents = this.triggeredSessions.size;
-        this.log("info", `status: monitoring, triggered=${agents}, large=${THRESHOLD_LARGE}, small=${THRESHOLD_SMALL}, uniform=${THRESHOLD_UNIFORM ?? "none"}`);
-        break;
-      }
+      case "status":
+        return { reply: `monitoring, triggered=${this.triggeredSessions.size}, large=${THRESHOLD_LARGE}, small=${THRESHOLD_SMALL}` };
       case "trigger":
         this.log("info", `manual trigger requested for ${args.name || "unknown"}`);
         this.poll();

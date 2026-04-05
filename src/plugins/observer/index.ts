@@ -15,7 +15,7 @@
 import { appendFile, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { PluginBase, type CommandDef } from "../plugin-base.js";
+import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import {
   formatChannelMessage,
   formatNodeRegistered,
@@ -92,11 +92,10 @@ class Observer extends PluginBase {
     return ["observer.report_generated"];
   }
 
-  protected override onCommand(command: string, args: Record<string, string>, from?: string): string | void {
+  protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     switch (command) {
       case "status":
-        this.handleStatus();
-        break;
+        return { reply: `${this.eventCount} events, ${this.channelNames.size} channels` };
       case "report":
         this.handleReport(args["0"] || "daily");
         break;

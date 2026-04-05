@@ -19,7 +19,7 @@
 
 import { appendFileSync, writeFileSync, mkdirSync, existsSync, rmSync, readdirSync } from "node:fs";
 import { resolve, basename } from "node:path";
-import { PluginBase, type CommandDef } from "../plugin-base.js";
+import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import { AudioCapture, type AudioSource } from "./audio-capture.js";
 import { AsrClient } from "./asr-client.js";
 
@@ -212,13 +212,13 @@ class McTranscriberPlugin extends PluginBase {
     return ["transcription", "status_change"];
   }
 
-  protected override onCommand(command: string, args: Record<string, string>, from?: string): void {
+  protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     this.log("info", `command: ${command} ${JSON.stringify(args)} from=${from || "unknown"}`);
 
     switch (command) {
       case "start": {
         const source = (args.source || args["0"] || AUDIO_SOURCE) as AudioSource;
-        this.startRecording(source);
+        this.startRecording(source, from, this.channelId ?? undefined);
         break;
       }
       case "stop":
@@ -232,8 +232,7 @@ class McTranscriberPlugin extends PluginBase {
         }
         break;
       case "status":
-        this.log("info", `status: recording=${this.recording}, file=${this.meetingFile || "none"}, subscribers=[${[...this.subscribers].join(",")}]`);
-        break;
+        return { reply: `recording=${this.recording}, file=${this.meetingFile || "none"}, subscribers=[${[...this.subscribers].join(",")}]` };
       case "subscribe": {
         const target = this.resolveSubscriberName(args, from);
         if (target) {
@@ -310,14 +309,14 @@ class McTranscriberPlugin extends PluginBase {
     return null;
   }
 
-  async startRecording(source: AudioSource = AUDIO_SOURCE): Promise<void> {
+  async startRecording(source: AudioSource = AUDIO_SOURCE, from?: string, channelId?: string): Promise<void> {
     if (this.recording) {
-      this.log("warn", "already recording");
+      this.reportError(channelId, from, "already recording");
       return;
     }
 
     if (!DASHSCOPE_API_KEY) {
-      this.log("error", "DASHSCOPE_API_KEY not set, cannot start ASR");
+      this.reportError(channelId, from, "DASHSCOPE_API_KEY not set");
       await this.setActivity("error: no API key");
       return;
     }
@@ -365,7 +364,7 @@ class McTranscriberPlugin extends PluginBase {
     try {
       await this.asr.connect();
     } catch (err: any) {
-      this.log("error", `ASR connect failed: ${err.message}`);
+      this.reportError(channelId, from, `ASR connect failed: ${err.message}`);
       this.recording = false;
       await this.setActivity("error: ASR connect failed");
       return;
@@ -397,7 +396,7 @@ class McTranscriberPlugin extends PluginBase {
       await this.capture.start();
       await this.setActivity(`recording (${source})`);
     } catch (err: any) {
-      this.log("error", `capture start failed: ${err.message}`);
+      this.reportError(channelId, from, `capture start failed: ${err.message}`);
       this.recording = false;
       this.asr.disconnect();
       await this.setActivity("error: capture failed");
