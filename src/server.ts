@@ -163,6 +163,7 @@ export class Server {
             if (pendingNode) {
               if (commands) pendingNode.commands = commands;
               if (events) pendingNode.events = events;
+              if (p.source) pendingNode.source = p.source as string;
             }
             this.wsNodeMap.set(ws, pendingNodeId);
             log.info(`node.register: program node ${name} claimed pending slot ${pendingNodeId}`);
@@ -186,6 +187,7 @@ export class Server {
           );
           if (commands) node.commands = commands;
           if (events) node.events = events;
+          if (p.source) node.source = p.source as string;
           this.wsNodeMap.set(ws, node.id);
           this.sendResult(ws, id, { nodeId: node.id, name: node.name });
           break;
@@ -298,10 +300,11 @@ export class Server {
           const adapter = p.adapter as string;
           const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
+          const standalone = p.standalone as boolean | undefined;
           let channelId = p.channelId as string | undefined;
 
-          // Auto-inherit caller's channel if not explicitly provided
-          if (!channelId) {
+          // Auto-inherit caller's channel if not explicitly provided and not standalone
+          if (!channelId && !standalone) {
             const callerNodeId = this.wsNodeMap.get(ws);
             if (callerNodeId) {
               const callerNode = this.cm.nodePool.get(callerNodeId);

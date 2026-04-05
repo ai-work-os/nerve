@@ -83,6 +83,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           name: { type: "string", description: "Optional agent name" },
           cwd: { type: "string", description: "Optional working directory" },
           channel_id: { type: "string", description: "Optional channel id to auto-join after spawn" },
+          standalone: { type: "boolean", description: "If true, do not auto-join any channel after spawn" },
         },
       },
     },
@@ -206,10 +207,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === "nerve_spawn") {
-    const { adapter, name: agentName, cwd, channel_id } = (args || {}) as { adapter?: string; name?: string; cwd?: string; channel_id?: string };
+    const { adapter, name: agentName, cwd, channel_id, standalone } = (args || {}) as { adapter?: string; name?: string; cwd?: string; channel_id?: string; standalone?: boolean };
     try {
       const useAdapter = adapter || "claude";
-      log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${cwd || process.cwd()}`);
+      log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${cwd || process.cwd()} standalone=${!!standalone}`);
       const result = await post("/node/spawn", {
         adapter: useAdapter,
         name: agentName,
@@ -218,8 +219,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const spawnedName = String(result.name || agentName || "agent");
       const spawnedId = String(result.nodeId || "?");
 
-      // Auto-join spawned agent to explicit channel_id or caller's current channel
-      const targetChannel = channel_id || currentChannelId;
+      // Auto-join spawned agent to explicit channel_id or caller's current channel (unless standalone)
+      const targetChannel = standalone ? undefined : (channel_id || currentChannelId);
       let joinNote = "";
       if (targetChannel && spawnedId !== "?") {
         try {
