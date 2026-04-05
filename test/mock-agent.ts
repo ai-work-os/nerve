@@ -124,6 +124,20 @@ rl.on("line", (line) => {
         break;
       }
 
+      // "send-usage" prompts: emit two usage_updates with different sizes to trigger size-change warn
+      if (text.includes("send-usage")) {
+        sendNotification("session/update", {
+          sessionId,
+          update: { sessionUpdate: "usage_update", used: 100, size: 50000, cost: null },
+        });
+        sendNotification("session/update", {
+          sessionId,
+          update: { sessionUpdate: "usage_update", used: 200, size: 80000, cost: null },
+        });
+        sendResponse(id, { stopReason: "end_turn" });
+        break;
+      }
+
       // Generate reply
       const reply = `@main mock回复: 收到 "${text.slice(0, 80)}"`;
 

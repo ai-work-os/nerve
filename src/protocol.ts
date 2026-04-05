@@ -89,7 +89,9 @@ export interface NodeInfo {
   capabilities: string[];
   permissions: PermissionLevel;
   transport: "stdio" | "websocket";
+  pid?: number;
   adapter?: string;
+  model?: string;
   activity?: string;
   cwd?: string;
   sessionId?: string;

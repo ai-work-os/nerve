@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { ChannelManager } from "./channel-manager.js";
 import type { SceneManager } from "./scene-manager.js";
@@ -60,6 +61,35 @@ export class HttpRouter {
       } catch (e: any) {
         res.writeHead(500, { "Content-Type": "text/plain" }).end(e.message);
       }
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/metrics") {
+      const mem = process.memoryUsage();
+      const nodes = this.cm.nodePool.listAll().map(n => {
+        const info = n.toInfo();
+        let rss: number | null = null;
+        if (info.pid) {
+          try {
+            const out = execSync(`ps -o rss= -p ${info.pid}`, { timeout: 3000 });
+            rss = parseInt(out.toString().trim()) * 1024; // ps rss unit is KB
+          } catch { /* process may have exited */ }
+        }
+        return { name: info.name, pid: info.pid ?? null, rss, status: info.status };
+      });
+      const result = {
+        server: {
+          uptime: process.uptime(),
+          rss: mem.rss,
+          heapUsed: mem.heapUsed,
+          heapTotal: mem.heapTotal,
+          external: mem.external,
+          arrayBuffers: mem.arrayBuffers,
+        },
+        nodes,
+        timestamp: Date.now(),
+      };
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
       return;
     }
 
@@ -280,10 +310,10 @@ export class HttpRouter {
         const nodeId = data.nodeId as string;
         const nodeName = data.nodeName as string;
         if (nodeId) {
-          this.cm.stopNode(nodeId);
+          await this.cm.stopNode(nodeId);
         } else if (nodeName) {
           const node = this.cm.nodePool.getByName(nodeName);
-          if (node) this.cm.stopNode(node.id);
+          if (node) await this.cm.stopNode(node.id);
           else throw new Error(`node "${nodeName}" not found`);
         } else {
           throw new Error("nodeId or nodeName required");

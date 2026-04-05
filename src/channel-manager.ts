@@ -80,9 +80,14 @@ export class ChannelManager {
     const ch = this.channels.get(id);
     if (!ch) return;
 
-    // Remove all nodes from channel
+    // Remove all nodes from channel (update both sides: ch.nodes + node.channels)
     for (const [nodeName] of ch.nodes) {
+      const nodeId = ch.getNodeId(nodeName);
       ch.removeNode(nodeName, this.store);
+      if (nodeId) {
+        const node = this.nodePool.get(nodeId);
+        if (node) node.channels.delete(id);
+      }
     }
 
     this.onChannelEvent?.("channel.closed", ch);
@@ -128,7 +133,7 @@ export class ChannelManager {
     return node.id;
   }
 
-  stopNode(nodeId: string): void {
+  async stopNode(nodeId: string): Promise<void> {
     // Remove from all channels first
     const node = this.nodePool.get(nodeId);
     if (node) {
@@ -144,7 +149,7 @@ export class ChannelManager {
         }
       }
     }
-    this.nodePool.stopNode(nodeId);
+    await this.nodePool.stopNode(nodeId);
   }
 
   // --- Channel-Node binding ---

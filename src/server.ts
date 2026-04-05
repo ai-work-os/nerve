@@ -16,6 +16,7 @@ export class Server {
 
   // Track which WebSocket belongs to which node
   private wsNodeMap = new Map<WebSocket, string>(); // ws → nodeId
+  private memSampler?: ReturnType<typeof setInterval>;
 
   // Direct node subscriptions (node.subscribe / node.unsubscribe)
   private subs = new SubscriptionManager();
@@ -114,6 +115,17 @@ export class Server {
 
     this.httpServer.listen(this.port, () => {
       log.info(`nerve started on port ${this.port}`);
+
+      // Memory sampling — log process memory every 30s for trend analysis
+      const mb = (bytes: number) => Math.round(bytes / 1024 / 1024);
+      const memInterval = parseInt(process.env.NERVE_MEM_INTERVAL_MS || "30000", 10);
+      const logMem = () => {
+        const mem = process.memoryUsage();
+        log.info(`[mem] rss=${mb(mem.rss)}mb heap=${mb(mem.heapUsed)}mb/${mb(mem.heapTotal)}mb ext=${mb(mem.external)}mb buf=${mb(mem.arrayBuffers)}mb`);
+      };
+      logMem(); // immediate first sample
+      this.memSampler = setInterval(logMem, memInterval);
+      this.memSampler.unref(); // don't block process exit
     });
   }
 
@@ -338,8 +350,11 @@ export class Server {
         }
 
         case "node.stop": {
-          this.cm.stopNode(p.nodeId as string);
-          this.sendResult(ws, id, { ok: true });
+          this.cm.stopNode(p.nodeId as string).then(() => {
+            this.sendResult(ws, id, { ok: true });
+          }).catch((err) => {
+            this.sendError(ws, id, -32000, String(err));
+          });
           break;
         }
 
@@ -621,6 +636,7 @@ export class Server {
   }
 
   async shutdown(): Promise<void> {
+    if (this.memSampler) clearInterval(this.memSampler);
     // Close all WS connections
     for (const ws of this.wss.clients) {
       ws.close();

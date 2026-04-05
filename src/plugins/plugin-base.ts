@@ -290,6 +290,13 @@ export class PluginBase {
       this.ws.on("close", () => {
         this.connected = false;
         this.onDisconnect();
+        // nerve-spawned 插件断连后不重连，直接退出
+        if (process.env.NERVE_SPAWNED === "1") {
+          this.stopped = true;
+          this.log("info", "nerve-spawned plugin disconnected, exiting");
+          this.exitProcess();
+          return;
+        }
         if (!this.stopped) {
           this.log("warn", `disconnected, reconnecting in ${this.options.reconnectDelay}ms`);
           setTimeout(() => {
@@ -307,5 +314,9 @@ export class PluginBase {
         if (!this.connected) reject(err);
       });
     });
+  }
+
+  protected exitProcess(): void {
+    process.exit(0);
   }
 }

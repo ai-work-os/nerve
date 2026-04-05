@@ -76,6 +76,7 @@ function transportToStream(
         // Intercept session/update notifications — handle directly to bypass SDK Zod validation
         const m = msg as any;
         if (m.method === "session/update" && !("id" in m)) {
+          log.debug(`[ACP] intercepted session/update: ${JSON.stringify(m.params).slice(0, 200)}`);
           onUpdate?.(m.params as SessionNotification);
           return;
         }
@@ -362,6 +363,33 @@ export class AcpClient {
 
     await this.connection.cancel({ sessionId: this.sessionId });
     return {};
+  }
+
+  /** Send session/close to agent if supported, with 5s timeout. Never throws. */
+  async closeSession(): Promise<void> {
+    if (!this.sessionId) {
+      log.info("closeSession: no session, skip");
+      return;
+    }
+
+    const sessionCaps = (this.agentCapabilities as any)?.sessionCapabilities;
+    if (!sessionCaps?.close) {
+      log.info("closeSession: session.close not supported, skip");
+      return;
+    }
+
+    log.info(`closeSession: sending session/close for ${this.sessionId}`);
+    try {
+      await Promise.race([
+        this.connection.unstable_closeSession({ sessionId: this.sessionId }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), 5000),
+        ),
+      ]);
+      log.info("closeSession: completed");
+    } catch (err) {
+      log.warn(`closeSession timeout or error: ${err} — continuing with cleanup`);
+    }
   }
 
   cleanup(): void {
