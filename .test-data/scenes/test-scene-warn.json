@@ -1,0 +1,1 @@
+{"name":"test-scene-warn","nodes":[{"adapter":"mock-program","name":"scene-warn-1"}],"channel":{"name":"test-warn-ch","auto_create":true},"on_ready":[{"to":"ghost-node","command":"start"}]}

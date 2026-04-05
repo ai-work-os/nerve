@@ -15,20 +15,32 @@ import type { WebSocket } from "ws";
 
 export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
 
+export interface TransportFactory {
+  createStdio(): StdioTransport;
+  createNull(): NullTransport;
+}
+
+export const defaultTransportFactory: TransportFactory = {
+  createStdio: () => new StdioTransport(),
+  createNull: () => new NullTransport(),
+};
+
 export class NodePool {
   private nodes = new Map<string, NerveNode>();
   private acpClients = new Map<string, AcpClient>();
   private nameIndex = new Map<string, string>(); // name → id
   private onEvent: NodeEventHandler;
   private store: Store;
+  private transportFactory: TransportFactory;
 
   // Program node tracking
   private pendingPrograms = new Map<string, { nodeId: string; process: ChildProcess; timer: NodeJS.Timeout }>();
   private programProcesses = new Map<string, ChildProcess>(); // nodeId → process (for stop/shutdown)
 
-  constructor(store: Store, onEvent: NodeEventHandler) {
+  constructor(store: Store, onEvent: NodeEventHandler, transportFactory?: TransportFactory) {
     this.store = store;
     this.onEvent = onEvent;
+    this.transportFactory = transportFactory || defaultTransportFactory;
   }
 
   /** Emit a node event (for use by server when mutating node state externally) */
@@ -160,7 +172,7 @@ export class NodePool {
     }
 
     const id = nanoid(12);
-    const transport = new StdioTransport();
+    const transport = this.transportFactory.createStdio();
     const node = new NerveNode({
       id,
       name,
@@ -291,7 +303,7 @@ export class NodePool {
     cwd = nerveRoot;
 
     // Create placeholder node with NullTransport (replaced when program connects via WS)
-    const transport = new NullTransport();
+    const transport = this.transportFactory.createNull();
     const node = new NerveNode({
       id,
       name,

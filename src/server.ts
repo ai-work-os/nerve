@@ -6,6 +6,7 @@ import { SubscriptionManager } from "./subscription-manager.js";
 import { HttpRouter } from "./http-router.js";
 import { SceneManager } from "./scene-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage } from "./protocol.js";
+import { handleRpcRequest } from "./request-handler.js";
 import * as log from "./logger.js";
 
 export class Server {
@@ -122,6 +123,17 @@ export class Server {
     const p = (params || {}) as Record<string, unknown>;
 
     try {
+      // Dispatch to pure request handler for WS-independent methods
+      const rpcResult = handleRpcRequest(this.cm, method, p, { callerNodeId: this.wsNodeMap.get(ws) });
+      if (rpcResult !== null) {
+        if (rpcResult.ok) {
+          this.sendResult(ws, id, rpcResult.data);
+        } else {
+          this.sendError(ws, id, rpcResult.code, rpcResult.message);
+        }
+        return;
+      }
+
       switch (method) {
         case "node.register": {
           let name = p.name as string;
@@ -167,52 +179,8 @@ export class Server {
           break;
         }
 
-        case "channel.create": {
-          const cwd = resolve((p.cwd as string) || process.cwd());
-          const ch = this.cm.createChannel(cwd, p.name as string);
-          this.sendResult(ws, id, { channelId: ch.id, name: ch.name, cwd: ch.cwd });
-          break;
-        }
-
-        case "channel.close": {
-          this.cm.closeChannel(p.channelId as string);
-          this.sendResult(ws, id, { ok: true });
-          break;
-        }
-
-        case "channel.delete": {
-          const channelId = p.channelId as string;
-          if (!channelId) { this.sendError(ws, id, -32602, "channelId required"); return; }
-          this.cm.deleteChannel(channelId);
-          this.sendResult(ws, id, { ok: true });
-          break;
-        }
-
-        case "channel.list": {
-          let channelList = this.cm.listChannels();
-          const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
-          if (cwdFilter) {
-            channelList = channelList.filter(ch => ch.cwd === cwdFilter || ch.cwd.startsWith(cwdFilter + "/"));
-          }
-          const channels = channelList.map(ch => ({
-            id: ch.id,
-            name: ch.name,
-            cwd: ch.cwd,
-            nodes: Object.fromEntries(ch.nodes),
-          }));
-          this.sendResult(ws, id, { channels });
-          break;
-        }
-
-        case "channel.history": {
-          const msgs = this.cm.getHistory(
-            p.channelId as string,
-            p.limit as number,
-            p.before as number,
-          );
-          this.sendResult(ws, id, { messages: msgs });
-          break;
-        }
+        // channel.create, channel.close, channel.delete, channel.list, channel.history
+        // handled by handleRpcRequest above
 
         case "channel.listArchived": {
           const activeIds = this.cm.listChannels().map(ch => ch.id);
@@ -346,20 +314,7 @@ export class Server {
           break;
         }
 
-        case "node.list": {
-          let nodes = this.cm.nodePool.listAll();
-          const cwdFilter = p.cwd ? resolve(p.cwd as string) : undefined;
-          if (cwdFilter) {
-            // Monitor nodes (e.g. context-guardian) are global — don't filter by cwd
-            nodes = nodes.filter(n =>
-              n.capabilities.includes("monitor") ||
-              n.cwd === cwdFilter ||
-              (n.cwd && n.cwd.startsWith(cwdFilter + "/"))
-            );
-          }
-          this.sendResult(ws, id, { nodes: nodes.map(n => n.toInfo()) });
-          break;
-        }
+        // node.list handled by handleRpcRequest above
 
         case "node.log": {
           // Program nodes push log entries to their updateBuffer for DM observability
@@ -470,25 +425,7 @@ export class Server {
           break;
         }
 
-        case "node.updates": {
-          const nodeName = p.nodeName as string;
-          if (!nodeName) { this.sendError(ws, id, -32602, "nodeName required"); return; }
-          const updates = this.cm.getNodeUpdates(nodeName);
-          this.sendResult(ws, id, { updates });
-          break;
-        }
-
-        case "blob.get": {
-          const blobId = p.blobId as string;
-          if (!blobId) { this.sendError(ws, id, -32602, "blobId required"); return; }
-          const content = this.cm.blobStore.get(blobId);
-          if (content) {
-            this.sendResult(ws, id, { content });
-          } else {
-            this.sendError(ws, id, -32602, "blob not found");
-          }
-          break;
-        }
+        // node.updates, blob.get handled by handleRpcRequest above
 
         case "session.list": {
           const nodeName = p.nodeName as string;
