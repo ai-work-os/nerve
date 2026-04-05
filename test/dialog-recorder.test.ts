@@ -22,6 +22,7 @@ import {
   formatDailyReport,
   type DailyStats,
 } from "../src/plugins/dialog-recorder/reporter.js";
+import { DialogRecorder } from "../src/plugins/dialog-recorder/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -471,10 +472,32 @@ async function testFormatDailyReportTimeline(): Promise<void> {
   assert(earlyIdx < laterIdx, "timeline sorted: early message before later message");
 }
 
+// --- DialogRecorder node tests ---
+
+async function testGetCommands(): Promise<void> {
+  console.log("\n## DialogRecorder.getCommands");
+
+  const recorder = new DialogRecorder();
+  const commands = recorder.getCommands();
+  const names = Object.keys(commands).sort();
+  assertEq(names, ["report", "scan", "status"], "getCommands returns status, scan, report");
+  assert(!!commands["status"].description, "status has description");
+  assert(!!commands["scan"].description, "scan has description");
+  assert(!!commands["report"].description, "report has description");
+}
+
+async function testGetEvents(): Promise<void> {
+  console.log("\n## DialogRecorder.getEvents");
+
+  const recorder = new DialogRecorder();
+  const events = recorder.getEvents();
+  assertEq(events, ["dialog-recorder.scan_complete"], "getEvents returns dialog-recorder.scan_complete");
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
-  console.log("=== Dialog Recorder — Scanner + Reporter Tests ===");
+  console.log("=== Dialog Recorder — Scanner + Reporter + Node Tests ===");
 
   try { await testExtractUserMessages(); } catch (e) { failed++; failures.push(`extractUserMessages threw: ${e}`); console.log(`  ✗ extractUserMessages threw: ${e}`); }
   try { await testCleanContent(); } catch (e) { failed++; failures.push(`cleanContent threw: ${e}`); console.log(`  ✗ cleanContent threw: ${e}`); }
@@ -491,6 +514,8 @@ async function main(): Promise<void> {
   try { await testAggregateDailyStatsFileNotExist(); } catch (e) { failed++; failures.push(`aggregateDailyStatsFileNotExist threw: ${e}`); console.log(`  ✗ aggregateDailyStatsFileNotExist threw: ${e}`); }
   try { await testFormatDailyReport(); } catch (e) { failed++; failures.push(`formatDailyReport threw: ${e}`); console.log(`  ✗ formatDailyReport threw: ${e}`); }
   try { await testFormatDailyReportTimeline(); } catch (e) { failed++; failures.push(`formatDailyReportTimeline threw: ${e}`); console.log(`  ✗ formatDailyReportTimeline threw: ${e}`); }
+  try { await testGetCommands(); } catch (e) { failed++; failures.push(`getCommands threw: ${e}`); console.log(`  ✗ getCommands threw: ${e}`); }
+  try { await testGetEvents(); } catch (e) { failed++; failures.push(`getEvents threw: ${e}`); console.log(`  ✗ getEvents threw: ${e}`); }
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);
   if (failures.length > 0) {
