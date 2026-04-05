@@ -1,4 +1,5 @@
 import { Channel } from "./channel.js";
+import { ChannelStore } from "./channel-store.js";
 import { NodePool } from "./node-pool.js";
 import { route } from "./router.js";
 import { Store } from "./store.js";
@@ -7,6 +8,34 @@ import { BlobStore } from "./blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification } from "./protocol.js";
 import type { WebSocket } from "ws";
 import * as log from "./logger.js";
+
+/**
+ * Build the system prompt injected into agent nodes when joining a channel.
+ */
+export function buildSystemPrompt(agentName: string, channelId: string, members: string[]): string {
+  const memberList = members.length > 0 ? members.join(", ") : "(none yet)";
+  return [
+    `你是 ${agentName}，在一个多 agent 协作频道里。`,
+    ``,
+    `可用工具：`,
+    `- nerve_post({ to: "agent名", content: "消息内容" }) 发送频道消息`,
+    `- nerve_spawn({ adapter, name?, cwd? }) 创建子 agent`,
+    `- nerve_create_channel({ name? }) 创建频道`,
+    `- nerve_join({ agent_name, channel_id }) 把 agent 加入频道`,
+    `- nerve_remove({ agent_name, channel_id }) 把 agent 移出频道`,
+    ``,
+    `发消息给其他 agent：使用 nerve_post 工具`,
+    `  nerve_post({ to: "agent名", content: "消息内容" })`,
+    ``,
+    `频道规则：`,
+    `- 频道消息 50 字以内，只写结论`,
+    `- 长内容写文件，文件放 ~/.nerve/docs/ 目录下，频道里附文件路径`,
+    `- 每个任务回复一次，然后等指令`,
+    ``,
+    `频道成员：${memberList}`,
+    `频道 ID：${channelId}`,
+  ].join("\n");
+}
 
 export interface ChannelManagerOptions {
   dataDir: string;
@@ -17,8 +46,8 @@ export class ChannelManager {
   readonly store: Store;
   readonly nodePool: NodePool;
   readonly blobStore: BlobStore;
+  readonly channelStore: ChannelStore;
   readonly dataDir: string;
-  private channels = new Map<string, Channel>();
   private port: number;
 
   // External hook for server to receive node events (for direct subscriptions)
@@ -32,6 +61,7 @@ export class ChannelManager {
     this.dataDir = opts.dataDir;
     this.store = new Store(`${opts.dataDir}/nerve.db`);
     this.blobStore = new BlobStore(opts.dataDir);
+    this.channelStore = new ChannelStore(this.store);
 
     // Mark all old nodes as stopped on startup
     this.store.markAllNodesStopped();
@@ -44,40 +74,31 @@ export class ChannelManager {
   // --- Channel operations ---
 
   createChannel(cwd: string, name?: string): Channel {
-    const ch = new Channel({ cwd, name, store: this.store });
-    this.channels.set(ch.id, ch);
+    const ch = this.channelStore.create(cwd, name);
     this.onChannelEvent?.("channel.created", ch);
     return ch;
   }
 
   getChannel(id: string): Channel | undefined {
-    return this.channels.get(id);
+    return this.channelStore.get(id);
   }
 
   listChannels(): Channel[] {
-    return [...this.channels.values()];
+    return this.channelStore.list();
   }
 
   restoreChannel(channelId: string): { channel: Channel; messages: MessageInfo[] } | null {
-    if (this.channels.has(channelId)) {
-      const ch = this.channels.get(channelId)!;
-      const messages = this.store.getMessages(channelId, 50);
-      return { channel: ch, messages };
+    const existed = this.channelStore.has(channelId);
+    const result = this.channelStore.restore(channelId);
+    if (!result) return null;
+    if (!existed) {
+      this.onChannelEvent?.("channel.created", result.channel);
     }
-    const row = this.store.getChannelForRestore(channelId);
-    if (!row) return null;
-
-    const ch = Channel.restore(row);
-    this.channels.set(ch.id, ch);
-    this.onChannelEvent?.("channel.created", ch);
-    log.info(`channel restored: ${ch.name || ch.id} (${ch.cwd})`);
-
-    const messages = this.store.getMessages(channelId, 50);
-    return { channel: ch, messages };
+    return result;
   }
 
   closeChannel(id: string): void {
-    const ch = this.channels.get(id);
+    const ch = this.channelStore.get(id);
     if (!ch) return;
 
     // Remove all nodes from channel (update both sides: ch.nodes + node.channels)
@@ -91,12 +112,11 @@ export class ChannelManager {
     }
 
     this.onChannelEvent?.("channel.closed", ch);
-    this.store.closeChannel(id);
-    this.channels.delete(id);
+    this.channelStore.close(id);
   }
 
   deleteChannel(id: string): void {
-    const ch = this.channels.get(id);
+    const ch = this.channelStore.get(id);
 
     // If channel is active, remove all nodes first
     if (ch) {
@@ -109,11 +129,9 @@ export class ChannelManager {
         }
       }
       this.onChannelEvent?.("channel.deleted", ch);
-      this.channels.delete(id);
     }
 
-    // Hard delete from DB (works for both active and archived channels)
-    this.store.deleteChannel(id);
+    this.channelStore.delete(id);
     log.info(`channel deleted: ${id}`);
   }
 
@@ -138,7 +156,7 @@ export class ChannelManager {
     const node = this.nodePool.get(nodeId);
     if (node) {
       for (const chId of node.channels) {
-        const ch = this.channels.get(chId);
+        const ch = this.channelStore.get(chId);
         if (ch) {
           ch.removeNode(node.name, this.store);
           this.broadcastToChannel(chId, {
@@ -155,7 +173,7 @@ export class ChannelManager {
   // --- Channel-Node binding ---
 
   addNodeToChannel(channelId: string, nodeId: string, nodeName?: string): void {
-    const ch = this.channels.get(channelId);
+    const ch = this.channelStore.get(channelId);
     const node = this.nodePool.get(nodeId);
     if (!ch || !node) return;
 
@@ -166,7 +184,7 @@ export class ChannelManager {
     // Inject system prompt for process nodes joining a channel
     if (node.isProcess && !node.systemPrompt) {
       const members = [...ch.nodes.keys()].filter(n => n !== name);
-      node.systemPrompt = this.buildSystemPrompt(name, channelId, members);
+      node.systemPrompt = this.buildSystemPromptForNode(name, channelId, members);
     }
 
     this.broadcastToChannel(channelId, {
@@ -177,7 +195,7 @@ export class ChannelManager {
   }
 
   removeNodeFromChannel(channelId: string, nodeName: string): void {
-    const ch = this.channels.get(channelId);
+    const ch = this.channelStore.get(channelId);
     if (!ch) return;
 
     const nodeId = ch.getNodeId(nodeName);
@@ -231,7 +249,7 @@ export class ChannelManager {
   // --- Messaging ---
 
   postMessage(channelId: string, from: string, content: string): MessageInfo | null {
-    const ch = this.channels.get(channelId);
+    const ch = this.channelStore.get(channelId);
     if (!ch) return null;
 
     // Auto-convert long content to blob
@@ -363,33 +381,13 @@ export class ChannelManager {
   /** @deprecated auto-reply removed — agents reply via nerve_post */
   // extractReplyFromUpdates removed: agents are responsible for replying via nerve_post
 
-  private buildSystemPrompt(agentName: string, channelId: string, members: string[]): string {
-    const memberList = members.length > 0 ? members.join(", ") : "(none yet)";
-    return [
-      `你是 ${agentName}，在一个多 agent 协作频道里。`,
-      ``,
-      `可用工具：`,
-      `- nerve_post({ to: "agent名", content: "消息内容" }) 发送频道消息`,
-      `- nerve_spawn({ adapter, name?, cwd? }) 创建子 agent`,
-      `- nerve_create_channel({ name? }) 创建频道`,
-      `- nerve_join({ agent_name, channel_id }) 把 agent 加入频道`,
-      `- nerve_remove({ agent_name, channel_id }) 把 agent 移出频道`,
-      ``,
-      `发消息给其他 agent：使用 nerve_post 工具`,
-      `  nerve_post({ to: "agent名", content: "消息内容" })`,
-      ``,
-      `频道规则：`,
-      `- 频道消息 50 字以内，只写结论`,
-      `- 长内容写文件，文件放 ~/.nerve/docs/ 目录下，频道里附文件路径`,
-      `- 每个任务回复一次，然后等指令`,
-      ``,
-      `频道成员：${memberList}`,
-      `频道 ID：${channelId}`,
-    ].join("\n");
+  // Delegates to the exported standalone function
+  private buildSystemPromptForNode(agentName: string, channelId: string, members: string[]): string {
+    return buildSystemPrompt(agentName, channelId, members);
   }
 
   private broadcastToChannel(channelId: string, notification: JsonRpcNotification): void {
-    const ch = this.channels.get(channelId);
+    const ch = this.channelStore.get(channelId);
     if (!ch) return;
 
     for (const [, nodeId] of ch.nodes) {
@@ -418,7 +416,7 @@ export class ChannelManager {
         log.info(`node stopped: ${node.name} (exit: ${detail?.exitCode})`);
         // Notify channels
         for (const chId of node.channels) {
-          const ch = this.channels.get(chId);
+          const ch = this.channelStore.get(chId);
           if (ch) {
             ch.removeNode(node.name, this.store);
             // Post system message
