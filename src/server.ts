@@ -298,7 +298,19 @@ export class Server {
           const adapter = p.adapter as string;
           const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
-          const channelId = p.channelId as string | undefined;
+          let channelId = p.channelId as string | undefined;
+
+          // Auto-inherit caller's channel if not explicitly provided
+          if (!channelId) {
+            const callerNodeId = this.wsNodeMap.get(ws);
+            if (callerNodeId) {
+              const callerNode = this.cm.nodePool.get(callerNodeId);
+              if (callerNode && callerNode.channels.size === 1) {
+                channelId = [...callerNode.channels][0];
+                log.info(`[node.spawn] auto-inherit channel ${channelId} from caller ${callerNode.name}`);
+              }
+            }
+          }
 
           if (this.cm.nodePool.isNameTaken(name)) {
             this.sendError(ws, id, -32602, `name "${name}" already taken`);
@@ -306,7 +318,7 @@ export class Server {
           }
 
           this.cm.spawnNode(adapter, name, cwd).then(node => {
-            // Auto-join channel if requested
+            // Auto-join channel if resolved (explicit or inherited)
             if (channelId) {
               this.cm.addNodeToChannel(channelId, node.id, node.name);
             }
