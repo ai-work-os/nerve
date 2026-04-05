@@ -258,17 +258,20 @@ export class ChannelManager {
       ? JSON.stringify(blobRef)
       : content;
 
-    // Resolve nodeType from sender name
+    // Resolve nodeType and source from sender name
     const senderNode = this.nodePool.getByName(from);
     let nodeType: string | undefined;
+    let source: string | undefined;
     if (senderNode) {
       if (this.nodePool.isProgramNode(senderNode.id)) {
         nodeType = "program";
       } else {
         nodeType = senderNode.transport.type; // "stdio" or "websocket"
       }
+      source = senderNode.source;
     }
-    const metadata = nodeType ? { nodeType } : undefined;
+    const metadata: Record<string, unknown> | undefined =
+      (nodeType || source) ? { ...(nodeType ? { nodeType } : {}), ...(source ? { source } : {}) } : undefined;
 
     const msg = ch.postMessage(from, storedContent, this.store, metadata);
 

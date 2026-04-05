@@ -4921,6 +4921,10 @@ async function main() {
     await testSpawnStandaloneWsDefaultStillInherits();
     await testSpawnStandaloneMcpSkipsAutoJoin();
 
+    // message source/client field
+    await testMessageSourceOnRegister();
+    await testMessageSourceInMetadata();
+
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
     failed++;
@@ -5900,6 +5904,63 @@ async function testSpawnStandaloneMcpSkipsAutoJoin() {
   await sleep(500);
   await mcp.close();
   await c.disconnect();
+}
+
+// ============================================================
+// message source/client field
+// ============================================================
+
+async function testMessageSourceOnRegister() {
+  console.log("\n▸ message source: source field stored on register and visible in node.list");
+  const c = new WsClient("source-reg-test");
+  await c.connect();
+  await c.request("node.register", { name: "source-tui-client", capabilities: ["ui"], source: "tui" });
+
+  const list = await c.request("node.list");
+  const node = list.nodes?.find((n: any) => n.name === "source-tui-client");
+  assert(!!node, "source-reg: node found");
+  assert(node?.source === "tui", "source-reg: source field is 'tui'",
+    `got source=${JSON.stringify(node?.source)}`);
+
+  // Also check that node without source has no source field
+  const c2 = new WsClient("source-reg-test-2");
+  await c2.connect();
+  await c2.request("node.register", { name: "source-plain-client", capabilities: ["ui"] });
+
+  const list2 = await c.request("node.list");
+  const node2 = list2.nodes?.find((n: any) => n.name === "source-plain-client");
+  assert(!node2?.source, "source-reg: no source when not provided");
+
+  await c.disconnect();
+  await c2.disconnect();
+}
+
+async function testMessageSourceInMetadata() {
+  console.log("\n▸ message source: message metadata includes sender's source");
+  const sender = new WsClient("source-sender");
+  const receiver = new WsClient("source-receiver");
+  await sender.connect();
+  await receiver.connect();
+
+  await sender.request("node.register", { name: "source-android-sender", capabilities: ["ui"], source: "android" });
+  await receiver.request("node.register", { name: "source-msg-receiver", capabilities: ["ui"] });
+
+  const ch = await sender.request("channel.create", { cwd: ROOT, name: "source-metadata-ch" });
+  await sender.request("channel.join", { channelId: ch.channelId });
+  await receiver.request("channel.join", { channelId: ch.channelId });
+  receiver.clearNotifications();
+
+  await sender.request("channel.post", { channelId: ch.channelId, content: "hello from android" });
+  await sleep(500);
+
+  const msgs = receiver.getNotifications("channel.message");
+  assert(msgs.length >= 1, "source-meta: receiver got message");
+  const msg = msgs[0]?.params?.message;
+  assert(msg?.metadata?.source === "android", "source-meta: metadata.source is 'android'",
+    `got metadata=${JSON.stringify(msg?.metadata)}`);
+
+  await sender.disconnect();
+  await receiver.disconnect();
 }
 
 main();

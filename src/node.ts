@@ -14,6 +14,7 @@ export class NerveNode {
   transport: Transport;
   adapter?: string;
   cwd?: string;
+  source?: string;  // client type identifier (e.g., "android", "tui", "web")
   sessionId?: string;
   channels = new Set<string>();
   activity?: string;
@@ -124,6 +125,7 @@ export class NerveNode {
       pid: this.transport.type === "stdio" ? (this.transport as any).pid : undefined,
       adapter: this.adapter,
       model: adapterConfig?.model,
+      source: this.source,
       activity: this.activity,
       channels: [...this.channels],
       cwd: this.cwd,
