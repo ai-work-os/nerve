@@ -284,6 +284,9 @@ export class ChannelManager {
 
     // Route @mentions
     const targets = route(ch, msg);
+    if (targets.length > 0) {
+      log.info(`route: ${msg.from} → [${targets.map(t => t.nodeName).join(", ")}] in channel ${channelId}`);
+    }
     for (const target of targets) {
       const node = this.nodePool.get(target.nodeId);
       if (!node) continue;
