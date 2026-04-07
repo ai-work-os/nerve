@@ -92,6 +92,7 @@ export interface NodeInfo {
   pid?: number;
   adapter?: string;
   model?: string;
+  source?: string;
   activity?: string;
   cwd?: string;
   sessionId?: string;

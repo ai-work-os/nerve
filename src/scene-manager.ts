@@ -17,6 +17,8 @@ import type { ChannelManager } from "./channel-manager.js";
 export interface SceneNodeDef {
   adapter: string;
   name?: string;
+  /** Role-specific system prompt, appended to channel system prompt */
+  prompt?: string;
 }
 
 export interface SceneOnReady {
@@ -292,33 +294,45 @@ export class SceneManager {
         }
       }
     }
+
+    // Inject per-node prompts from scene config
+    for (const nodeDef of config.nodes) {
+      if (!nodeDef.prompt) continue;
+      const name = nodeDef.name || nodeDef.adapter;
+      const node = this.cm.nodePool.getByName(name);
+      if (node?.systemPrompt) {
+        node.systemPrompt += "\n\n" + nodeDef.prompt;
+        log.info(`scene ${sceneName}: injected role prompt for ${name} (${nodeDef.prompt.length} chars)`);
+      }
+    }
+
     checkAborted();
 
     // Execute on_ready commands — only for ready nodes
     if (config.on_ready && config.on_ready.length > 0) {
-      const tasks = config.on_ready.map(async (cmd) => {
+      for (const cmd of config.on_ready) {
         checkAborted();
+        const t0 = Date.now();
 
         const targetNode = this.cm.nodePool.getByName(cmd.to);
         if (!targetNode) {
           const msg = `on_ready target "${cmd.to}" not found`;
           log.warn(`scene ${sceneName}: ${msg}`);
           warnings.push(msg);
-          return;
+          continue;
         }
 
         if (!readyNodeIds.has(targetNode.id)) {
           const msg = `${cmd.to} not ready, skipped on_ready`;
           log.warn(`scene ${sceneName}: ${msg}`);
           warnings.push(msg);
-          return;
+          continue;
         }
 
         const content = cmd.target
           ? `${cmd.command} ${cmd.target}`
           : cmd.command;
 
-        // AI nodes (stdio): use promptNode; program nodes (ws): use node.message
         if (cmd.prompt || targetNode.isProcess) {
           const result = await this.cm.nodePool.promptNode(targetNode.id, content);
           checkAborted();
@@ -327,7 +341,7 @@ export class SceneManager {
             log.warn(`scene ${sceneName}: ${msg}`);
             warnings.push(msg);
           } else {
-            log.info(`scene ${sceneName}: prompted ${cmd.to} with "${content.slice(0, 80)}..."`);
+            log.info(`scene ${sceneName}: prompted ${cmd.to} with "${content.slice(0, 80)}..." (${Date.now() - t0}ms)`);
           }
         } else if (targetNode.transport.alive) {
           targetNode.transport.send({
@@ -335,15 +349,13 @@ export class SceneManager {
             method: "node.message",
             params: { content, from: "scene" },
           } as any);
-          log.info(`scene ${sceneName}: sent "${content}" to ${cmd.to}`);
+          log.info(`scene ${sceneName}: sent "${content}" to ${cmd.to} (${Date.now() - t0}ms)`);
         } else {
           const msg = `${cmd.to} transport not alive, skipped "${content}"`;
           log.warn(`scene ${sceneName}: ${msg}`);
           warnings.push(msg);
         }
-      });
-
-      await Promise.all(tasks);
+      }
     }
 
     checkAborted();

@@ -4916,6 +4916,15 @@ async function main() {
     // Bug fix: nerve-spawned plugin should not reconnect on disconnect
     await testPluginSpawnedNoReconnect();
 
+    // spawn standalone parameter
+    await testSpawnStandaloneWsSkipsAutoInherit();
+    await testSpawnStandaloneWsDefaultStillInherits();
+    await testSpawnStandaloneMcpSkipsAutoJoin();
+
+    // message source/client field
+    await testMessageSourceOnRegister();
+    await testMessageSourceInMetadata();
+
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
     failed++;
@@ -5787,6 +5796,171 @@ async function testPluginSpawnedNoReconnect() {
     if (origNodeName !== undefined) process.env.NERVE_NODE_NAME = origNodeName;
     else delete process.env.NERVE_NODE_NAME;
   }
+}
+
+// ============================================================
+// spawn standalone parameter: skip auto-join channel
+// ============================================================
+
+async function testSpawnStandaloneWsSkipsAutoInherit() {
+  console.log("\n▸ spawn standalone: WS node.spawn with standalone=true skips channel auto-inherit");
+  const c = new WsClient("standalone-ws-test");
+  await c.connect();
+  await c.request("node.register", { name: "standalone-ws-caller", capabilities: ["ui"] });
+
+  // Create channel and join (caller in exactly 1 channel → normally inherits)
+  const ch = await c.request("channel.create", { cwd: ROOT, name: "standalone-ws-ch" });
+  await c.request("channel.join", { channelId: ch.channelId });
+
+  // Spawn with standalone=true → should NOT auto-inherit
+  const spawned = await c.request("node.spawn", {
+    adapter: "mock",
+    name: "standalone-child",
+    standalone: true,
+  });
+  await sleep(2000);
+
+  // Verify: child should NOT be in any channel
+  const list = await c.request("node.list");
+  const child = list.nodes?.find((n: any) => n.name === "standalone-child");
+  assert(!!child, "standalone-ws: child spawned");
+  assert(
+    !child?.channels?.length || child.channels.length === 0,
+    "standalone-ws: child NOT in any channel",
+    `expected 0 channels, got ${JSON.stringify(child?.channels)}`,
+  );
+
+  await c.request("node.stop", { nodeId: spawned.nodeId });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testSpawnStandaloneWsDefaultStillInherits() {
+  console.log("\n▸ spawn standalone: WS node.spawn without standalone still auto-inherits");
+  const c = new WsClient("standalone-default-test");
+  await c.connect();
+  await c.request("node.register", { name: "standalone-default-caller", capabilities: ["ui"] });
+
+  const ch = await c.request("channel.create", { cwd: ROOT, name: "standalone-default-ch" });
+  await c.request("channel.join", { channelId: ch.channelId });
+
+  // Spawn WITHOUT standalone → should auto-inherit
+  const spawned = await c.request("node.spawn", {
+    adapter: "mock",
+    name: "default-inherit-child",
+  });
+  await sleep(2000);
+
+  const list = await c.request("node.list");
+  const child = list.nodes?.find((n: any) => n.name === "default-inherit-child");
+  assert(!!child, "standalone-default: child spawned");
+  assert(
+    child?.channels?.includes(ch.channelId),
+    "standalone-default: child auto-inherited channel",
+    `expected [${ch.channelId}], got ${JSON.stringify(child?.channels)}`,
+  );
+
+  await c.request("node.stop", { nodeId: spawned.nodeId });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testSpawnStandaloneMcpSkipsAutoJoin() {
+  console.log("\n▸ spawn standalone: MCP nerve_spawn with standalone=true skips auto-join");
+  const c = new WsClient("standalone-mcp-test");
+  await c.connect();
+  await c.request("node.register", { name: "standalone-mcp-test", capabilities: ["ui"] });
+
+  const mcp = new McpToolClient("standalone-mcp-test");
+  await mcp.connect();
+
+  // Create channel → sets currentChannelId in MCP
+  const createRes = await mcp.callTool("nerve_create_channel", { name: "standalone-mcp-ch" });
+  assert(!createRes.isError, "standalone-mcp: create channel");
+
+  const channels = await c.request("channel.list", {});
+  const ch = channels.channels.find((c: any) => c.name === "standalone-mcp-ch");
+  assert(!!ch, "standalone-mcp: channel found");
+  if (!ch) { await mcp.close(); await c.disconnect(); return; }
+
+  // Spawn with standalone=true via MCP → should NOT auto-join
+  const spawnRes = await mcp.callTool("nerve_spawn", {
+    adapter: "mock",
+    name: "standalone-mcp-child",
+    standalone: true,
+  });
+  assert(!spawnRes.isError, "standalone-mcp: spawn succeeds");
+  await sleep(3000);
+
+  // Verify: child should NOT be in the channel
+  const channelsAfter = await c.request("channel.list", {});
+  const chAfter = channelsAfter.channels.find((c: any) => c.id === ch.id);
+  assert(!chAfter?.nodes?.["standalone-mcp-child"], "standalone-mcp: child NOT in channel");
+
+  // Cleanup
+  const nodes = await httpPost("/node/list", {});
+  const agent = (nodes as any).nodes.find((n: any) => n.name === "standalone-mcp-child");
+  if (agent) await httpPost("/node/stop", { nodeId: agent.id });
+  await sleep(500);
+  await mcp.close();
+  await c.disconnect();
+}
+
+// ============================================================
+// message source/client field
+// ============================================================
+
+async function testMessageSourceOnRegister() {
+  console.log("\n▸ message source: source field stored on register and visible in node.list");
+  const c = new WsClient("source-reg-test");
+  await c.connect();
+  await c.request("node.register", { name: "source-tui-client", capabilities: ["ui"], source: "tui" });
+
+  const list = await c.request("node.list");
+  const node = list.nodes?.find((n: any) => n.name === "source-tui-client");
+  assert(!!node, "source-reg: node found");
+  assert(node?.source === "tui", "source-reg: source field is 'tui'",
+    `got source=${JSON.stringify(node?.source)}`);
+
+  // Also check that node without source has no source field
+  const c2 = new WsClient("source-reg-test-2");
+  await c2.connect();
+  await c2.request("node.register", { name: "source-plain-client", capabilities: ["ui"] });
+
+  const list2 = await c.request("node.list");
+  const node2 = list2.nodes?.find((n: any) => n.name === "source-plain-client");
+  assert(!node2?.source, "source-reg: no source when not provided");
+
+  await c.disconnect();
+  await c2.disconnect();
+}
+
+async function testMessageSourceInMetadata() {
+  console.log("\n▸ message source: message metadata includes sender's source");
+  const sender = new WsClient("source-sender");
+  const receiver = new WsClient("source-receiver");
+  await sender.connect();
+  await receiver.connect();
+
+  await sender.request("node.register", { name: "source-android-sender", capabilities: ["ui"], source: "android" });
+  await receiver.request("node.register", { name: "source-msg-receiver", capabilities: ["ui"] });
+
+  const ch = await sender.request("channel.create", { cwd: ROOT, name: "source-metadata-ch" });
+  await sender.request("channel.join", { channelId: ch.channelId });
+  await receiver.request("channel.join", { channelId: ch.channelId });
+  receiver.clearNotifications();
+
+  await sender.request("channel.post", { channelId: ch.channelId, content: "hello from android" });
+  await sleep(500);
+
+  const msgs = receiver.getNotifications("channel.message");
+  assert(msgs.length >= 1, "source-meta: receiver got message");
+  const msg = msgs[0]?.params?.message;
+  assert(msg?.metadata?.source === "android", "source-meta: metadata.source is 'android'",
+    `got metadata=${JSON.stringify(msg?.metadata)}`);
+
+  await sender.disconnect();
+  await receiver.disconnect();
 }
 
 main();

@@ -13,6 +13,9 @@ import { rmSync, existsSync } from "node:fs";
 import http from "node:http";
 import WebSocket from "ws";
 
+// Import pure logic from logic.ts (no side effects — no plugin startup)
+import { getThreshold, shouldTrigger, type ThresholdConfig, type NodeInfo } from "../src/plugins/context-guardian/logic.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
 const TEST_PORT = 14802;
@@ -48,33 +51,6 @@ async function sleep(ms: number): Promise<void> {
 // ============================================================
 // UNIT TESTS — pure logic, no server needed
 // ============================================================
-
-// Import the shouldTrigger logic directly (we'll define it inline here
-// to test before the actual module exists, matching the design spec)
-
-interface NodeInfo {
-  name: string;
-  status: string;
-  transport: string;
-  usage?: { tokenUsed: number; tokenSize: number };
-  sessionId?: string;
-  channels: string[];
-}
-
-// Replicate the guardian's shouldTrigger logic for unit testing
-function shouldTrigger(
-  node: NodeInfo,
-  threshold: number,
-  triggeredSessions: Map<string, string>,
-): boolean {
-  if (!node.usage || node.transport !== "stdio") return false;
-  if (node.status !== "idle") return false;
-  if (node.usage.tokenSize === 0) return false;
-  if (node.usage.tokenUsed / node.usage.tokenSize < threshold) return false;
-  // Same session already triggered
-  if (triggeredSessions.get(node.name) === node.sessionId) return false;
-  return true;
-}
 
 function testShouldTriggerAboveThreshold() {
   console.log("\n▸ shouldTrigger: above threshold + idle → trigger");
@@ -202,6 +178,97 @@ function testShouldTriggerWebsocketNode() {
     channels: ["ch-1"],
   };
   assert(!shouldTrigger(node, 0.5, triggered), "websocket node does not trigger");
+}
+
+// ============================================================
+// UNIT TESTS — getThreshold dynamic threshold (Task 1)
+// ============================================================
+
+const DEFAULT_CONFIG: ThresholdConfig = { large: 0.5, small: 0.8, boundary: 500_000 };
+
+function testGetThresholdLargeModel() {
+  console.log("\n▸ getThreshold: 1M model (no uniform) → 0.5");
+  assertEq(getThreshold(1_000_000, DEFAULT_CONFIG), 0.5, "1M model returns large threshold 0.5");
+}
+
+function testGetThresholdSmallModel() {
+  console.log("\n▸ getThreshold: 200K model (no uniform) → 0.8");
+  assertEq(getThreshold(200_000, DEFAULT_CONFIG), 0.8, "200K model returns small threshold 0.8");
+}
+
+function testGetThresholdUniformOverride() {
+  console.log("\n▸ getThreshold: uniform=0.6 → ignores size, returns 0.6");
+  assertEq(getThreshold(1_000_000, { ...DEFAULT_CONFIG, uniform: 0.6 }), 0.6, "uniform overrides large model");
+  assertEq(getThreshold(200_000, { ...DEFAULT_CONFIG, uniform: 0.6 }), 0.6, "uniform overrides small model");
+}
+
+function testGetThresholdAtBoundary() {
+  console.log("\n▸ getThreshold: tokenSize exactly at boundary → large threshold");
+  assertEq(getThreshold(500_000, DEFAULT_CONFIG), 0.5, "tokenSize == boundary returns large threshold");
+}
+
+function testShouldTriggerDynamic1MLargeAt60() {
+  console.log("\n▸ shouldTrigger dynamic: 1M model 60% → trigger (>50%)");
+  const triggered = new Map<string, string>();
+  const node: NodeInfo = {
+    name: "agent-1m",
+    status: "idle",
+    transport: "stdio",
+    usage: { tokenUsed: 600_000, tokenSize: 1_000_000 },
+    sessionId: "sess-1m",
+    channels: ["ch-1"],
+  };
+  // With dynamic threshold, 1M model → threshold 0.5, 60% > 50% → should trigger
+  const threshold = getThreshold(node.usage!.tokenSize, DEFAULT_CONFIG);
+  assert(shouldTrigger(node, threshold, triggered), "1M model at 60% triggers with dynamic threshold 0.5");
+}
+
+function testShouldTriggerDynamic200KAt60() {
+  console.log("\n▸ shouldTrigger dynamic: 200K model 60% → no trigger (<80%)");
+  const triggered = new Map<string, string>();
+  const node: NodeInfo = {
+    name: "agent-200k",
+    status: "idle",
+    transport: "stdio",
+    usage: { tokenUsed: 120_000, tokenSize: 200_000 },
+    sessionId: "sess-200k",
+    channels: ["ch-1"],
+  };
+  // With dynamic threshold, 200K model → threshold 0.8, 60% < 80% → should NOT trigger
+  const threshold = getThreshold(node.usage!.tokenSize, DEFAULT_CONFIG);
+  assert(!shouldTrigger(node, threshold, triggered), "200K model at 60% does not trigger with dynamic threshold 0.8");
+}
+
+function testShouldTriggerDynamic200KAt85() {
+  console.log("\n▸ shouldTrigger dynamic: 200K model 85% → trigger (>80%)");
+  const triggered = new Map<string, string>();
+  const node: NodeInfo = {
+    name: "agent-200k-high",
+    status: "idle",
+    transport: "stdio",
+    usage: { tokenUsed: 170_000, tokenSize: 200_000 },
+    sessionId: "sess-200k-high",
+    channels: ["ch-1"],
+  };
+  // With dynamic threshold, 200K model → threshold 0.8, 85% > 80% → should trigger
+  const threshold = getThreshold(node.usage!.tokenSize, DEFAULT_CONFIG);
+  assert(shouldTrigger(node, threshold, triggered), "200K model at 85% triggers with dynamic threshold 0.8");
+}
+
+function testShouldTriggerDynamic1MAt40() {
+  console.log("\n▸ shouldTrigger dynamic: 1M model 40% → no trigger (<50%)");
+  const triggered = new Map<string, string>();
+  const node: NodeInfo = {
+    name: "agent-1m-low",
+    status: "idle",
+    transport: "stdio",
+    usage: { tokenUsed: 400_000, tokenSize: 1_000_000 },
+    sessionId: "sess-1m-low",
+    channels: ["ch-1"],
+  };
+  // With dynamic threshold, 1M model → threshold 0.5, 40% < 50% → should NOT trigger
+  const threshold = getThreshold(node.usage!.tokenSize, DEFAULT_CONFIG);
+  assert(!shouldTrigger(node, threshold, triggered), "1M model at 40% does not trigger with dynamic threshold 0.5");
 }
 
 // ============================================================
@@ -413,6 +480,16 @@ async function main() {
   testShouldTriggerMultipleAgents();
   testShouldTriggerNoUsage();
   testShouldTriggerWebsocketNode();
+
+  // Dynamic threshold tests (Task 1 — getThreshold)
+  testGetThresholdLargeModel();
+  testGetThresholdSmallModel();
+  testGetThresholdUniformOverride();
+  testGetThresholdAtBoundary();
+  testShouldTriggerDynamic1MLargeAt60();
+  testShouldTriggerDynamic200KAt60();
+  testShouldTriggerDynamic200KAt85();
+  testShouldTriggerDynamic1MAt40();
 
   // Integration tests (need server)
   try {

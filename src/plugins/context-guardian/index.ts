@@ -16,7 +16,10 @@
  *   --interval <n>   poll interval seconds (default: 10)
  */
 
-import { PluginBase, type CommandDef } from "../plugin-base.js";
+import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
+import { getThreshold, shouldTrigger, type ThresholdConfig, type NodeInfo } from "./logic.js";
+
+export { getThreshold, shouldTrigger, type ThresholdConfig, type NodeInfo } from "./logic.js";
 
 // --- CLI args ---
 
@@ -26,37 +29,11 @@ function getArg(flag: string, defaultVal: string): string {
 }
 
 const PORT = parseInt(getArg("--port", "4800"));
-const THRESHOLD = parseFloat(getArg("--threshold", "0.5"));
+const THRESHOLD_UNIFORM = process.argv.includes("--threshold") ? parseFloat(getArg("--threshold", "0.5")) : undefined;
+const THRESHOLD_LARGE = parseFloat(getArg("--threshold-large", "0.5"));
+const THRESHOLD_SMALL = parseFloat(getArg("--threshold-small", "0.8"));
 const COOLDOWN_MS = parseInt(getArg("--cooldown", "60")) * 1000;
 const INTERVAL_MS = parseInt(getArg("--interval", "10")) * 1000;
-
-// --- Types ---
-
-interface NodeInfo {
-  name: string;
-  status: string;
-  transport: string;
-  usage?: { tokenUsed: number; tokenSize: number };
-  sessionId?: string;
-  channels: string[];
-}
-
-// --- Guardian logic ---
-
-/** Determine if an agent should be triggered for context handoff */
-export function shouldTrigger(
-  node: NodeInfo,
-  threshold: number,
-  triggeredSessions: Map<string, string>,
-): boolean {
-  if (!node.usage || node.transport !== "stdio") return false;
-  if (node.status !== "idle") return false;
-  if (node.usage.tokenSize === 0) return false;
-  if (node.usage.tokenUsed / node.usage.tokenSize < threshold) return false;
-  // Same session already triggered — don't repeat
-  if (triggeredSessions.get(node.name) === node.sessionId) return false;
-  return true;
-}
 
 class ContextGuardian extends PluginBase {
   private triggeredSessions = new Map<string, string>();  // nodeName → lastTriggeredSessionId
@@ -84,13 +61,10 @@ class ContextGuardian extends PluginBase {
     return ["context_warning", "context_triggered"];
   }
 
-  protected override onCommand(command: string, args: Record<string, string>, from?: string): void {
+  protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     switch (command) {
-      case "status": {
-        const agents = this.triggeredSessions.size;
-        this.log("info", `status: monitoring, triggered=${agents}, threshold=${THRESHOLD}`);
-        break;
-      }
+      case "status":
+        return { reply: `monitoring, triggered=${this.triggeredSessions.size}, large=${THRESHOLD_LARGE}, small=${THRESHOLD_SMALL}` };
       case "trigger":
         this.log("info", `manual trigger requested for ${args.name || "unknown"}`);
         this.poll();
@@ -99,7 +73,7 @@ class ContextGuardian extends PluginBase {
   }
 
   protected async onReady(): Promise<void> {
-    this.log("info", `config: threshold=${THRESHOLD}, cooldown=${COOLDOWN_MS}ms, interval=${INTERVAL_MS}ms`);
+    this.log("info", `config: threshold-large=${THRESHOLD_LARGE}, threshold-small=${THRESHOLD_SMALL}, uniform=${THRESHOLD_UNIFORM ?? "none"}, cooldown=${COOLDOWN_MS}ms, interval=${INTERVAL_MS}ms`);
     await this.setActivity("starting");
 
     // Start polling
@@ -153,7 +127,10 @@ class ContextGuardian extends PluginBase {
     for (const node of nodes) {
       if (node.name === this.options.name) continue;  // Skip self
 
-      if (!shouldTrigger(node, THRESHOLD, this.triggeredSessions)) continue;
+      const dynamicThreshold = node.usage?.tokenSize
+        ? getThreshold(node.usage.tokenSize, { uniform: THRESHOLD_UNIFORM, large: THRESHOLD_LARGE, small: THRESHOLD_SMALL, boundary: 500_000 })
+        : THRESHOLD_LARGE;
+      if (!shouldTrigger(node, dynamicThreshold, this.triggeredSessions)) continue;
 
       // Cooldown check
       const lastTime = this.lastTriggerTime.get(node.name) || 0;
@@ -167,7 +144,7 @@ class ContextGuardian extends PluginBase {
       const ratio = node.usage!.tokenUsed / node.usage!.tokenSize;
       const used = node.usage!.tokenUsed;
       const size = node.usage!.tokenSize;
-      this.log("info", `${node.name}: triggering reset — usage=${used}/${size} (${(ratio * 100).toFixed(0)}%), threshold=${(THRESHOLD * 100).toFixed(0)}%, status=${node.status}, session=${node.sessionId}, channels=${node.channels.join(",") || "none"}`);
+      this.log("info", `${node.name}: triggering reset — usage=${used}/${size} (${(ratio * 100).toFixed(0)}%), threshold=${(dynamicThreshold * 100).toFixed(0)}%, status=${node.status}, session=${node.sessionId}, channels=${node.channels.join(",") || "none"}`);
       this.triggerSummary(node, ratio);
       this.lastActivity = `triggered ${node.name}`;
 

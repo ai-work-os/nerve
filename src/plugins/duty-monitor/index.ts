@@ -13,7 +13,7 @@
 
 import * as os from "node:os";
 import { statfs } from "node:fs/promises";
-import { PluginBase, type CommandDef } from "../plugin-base.js";
+import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 
 // --- CLI args ---
 
@@ -258,7 +258,7 @@ class DutyMonitor extends PluginBase {
     }
   }
 
-  protected override onCommand(command: string, args: Record<string, string>, from?: string): string | void {
+  protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     switch (command) {
       case "status": {
         const jobs = this.scheduler.jobs.map(j => {
@@ -277,11 +277,7 @@ class DutyMonitor extends PluginBase {
             : "never";
           return `${j.name}: ${schedule} (last: ${lastRun})`;
         });
-        this.log("info", `status: channel=${this.channelId || "none"}`);
-        for (const line of jobs) {
-          this.log("info", `  ${line}`);
-        }
-        break;
+        return { reply: `channel=${this.channelId || "none"}\n${jobs.join("\n")}` };
       }
       case "trigger": {
         const task = args["0"] || args.task;

@@ -14,6 +14,7 @@ export class NerveNode {
   transport: Transport;
   adapter?: string;
   cwd?: string;
+  source?: string;  // client type identifier (e.g., "android", "tui", "web")
   sessionId?: string;
   channels = new Set<string>();
   activity?: string;
@@ -33,6 +34,12 @@ export class NerveNode {
 
   // Cleanup guard — prevents duplicate node.stopped emit
   _cleaned = false;
+
+  // Flag: set by stopNode() before killing program node process
+  _manualStop = false;
+
+  // DM capture: accumulate AI response text during promptNode() for dm.response event
+  _dmResponseBuffer?: string;
 
   // Track last reported context size for change detection
   lastReportedSize?: number;
@@ -121,6 +128,7 @@ export class NerveNode {
       pid: this.transport.type === "stdio" ? (this.transport as any).pid : undefined,
       adapter: this.adapter,
       model: adapterConfig?.model,
+      source: this.source,
       activity: this.activity,
       channels: [...this.channels],
       cwd: this.cwd,

@@ -273,6 +273,7 @@ export class HttpRouter {
         const cwd = resolve((data.cwd as string) || process.cwd());
         const name = (data.name as string) || this.generateNodeName(adapter, cwd);
         const channelId = data.channelId as string | undefined;
+        const standalone = data.standalone as boolean | undefined;
 
         if (this.cm.nodePool.isNameTaken(name)) {
           throw new Error(this.cm.nodePool.getNameConflictInfo(name));
@@ -280,8 +281,8 @@ export class HttpRouter {
 
         const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
 
-        // Auto-join channel if requested
-        if (channelId) {
+        // Auto-join channel if requested and not standalone
+        if (channelId && !standalone) {
           this.cm.addNodeToChannel(channelId, nodeId, name);
         }
 

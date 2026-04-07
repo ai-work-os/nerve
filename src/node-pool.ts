@@ -74,6 +74,7 @@ export class NodePool {
     newStatus?: "stopped" | "error";
     removeFromPool?: boolean;
     exitCode?: number | null;
+    reason?: string;
   }): void {
     const node = this.nodes.get(nodeId);
     if (!node) return;
@@ -110,12 +111,13 @@ export class NodePool {
     // Program-related cleanup
     this.programProcesses.delete(nodeId);
     this.pendingPrograms.delete(node.name);
+    node._manualStop = false;
 
     // Update buffer
     node.clearUpdateBuffer();
 
     // Event notification
-    this.onEvent("node.stopped", node, { exitCode: opts?.exitCode });
+    this.onEvent("node.stopped", node, { exitCode: opts?.exitCode, reason: opts?.reason || "unknown" });
 
     // Optional: remove from pool
     if (opts?.removeFromPool) {
@@ -248,7 +250,8 @@ export class NodePool {
     this.store.updateNodeStatus(id, "connecting", undefined, transport.pid);
 
     transport.onClose((code) => {
-      this._cleanupNode(id, { newStatus: "stopped", exitCode: code });
+      const reason = this._computeExitReason(code, node);
+      this._cleanupNode(id, { newStatus: "stopped", exitCode: code, reason });
     });
 
     // Build MCP server config for nerve tools injection
@@ -289,6 +292,13 @@ export class NodePool {
               this.onEvent("node.statusChanged", node);
             }
           }
+        }
+
+        // DM capture: accumulate agent_message_chunk text for dm.response
+        const chunkKind = (params as any)?.update?.sessionUpdate;
+        if (chunkKind === "agent_message_chunk" && node._dmResponseBuffer !== undefined) {
+          const chunkText = (params as any)?.update?.content?.text;
+          if (chunkText) node._dmResponseBuffer += chunkText;
         }
 
         this.onEvent("node.update", node, params);
@@ -384,7 +394,8 @@ export class NodePool {
     // Process exit handler
     proc.on("exit", (code) => {
       clearTimeout(timer);
-      this._cleanupNode(id, { newStatus: "stopped", removeFromPool: true, exitCode: code });
+      const reason = this._computeExitReason(code, node);
+      this._cleanupNode(id, { newStatus: "stopped", removeFromPool: true, exitCode: code, reason });
     });
 
     // Spawn error handler (e.g. cmd not found)
@@ -433,6 +444,13 @@ export class NodePool {
     this.onEvent("node.statusChanged", node);
   }
 
+  private _computeExitReason(exitCode: number | null | undefined, node: NerveNode): string {
+    if (node._manualStop) return "manual";
+    if (exitCode === 0 || exitCode === null || exitCode === undefined) return "normal";
+    if (node.usage && node.usage.tokenSize > 0 && node.usage.tokenUsed / node.usage.tokenSize > 0.9) return "context_exhausted";
+    return "error";
+  }
+
   private extractActivity(update: SessionUpdate | Record<string, unknown>): string | null | undefined {
     const kind = (update as any).sessionUpdate as string;
     switch (kind) {
@@ -453,6 +471,19 @@ export class NodePool {
 
     log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
     this._setNodeStatus(node, "busy");
+
+    // DM capture: init buffer + emit dm.prompt
+    const startTs = Date.now();
+    node._dmResponseBuffer = "";
+    this.onEvent("dm.prompt", node, {
+      text,
+      from: from ?? undefined,
+      targetNodeId: nodeId,
+      targetNodeName: node.name,
+      ts: new Date().toISOString(),
+    });
+    log.debug(`dm.prompt emitted: ${node.name}, text="${text.slice(0, 50)}"`);
+
     const userMsgParams: Record<string, unknown> = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
     node.pushUpdate(userMsgParams);
     this.onEvent("node.update", node, excludeWs ? { ...userMsgParams, _excludeWs: excludeWs } : userMsgParams);
@@ -462,9 +493,37 @@ export class NodePool {
       result = await client.prompt(text);
     } catch (err: any) {
       log.error(`promptNode: ${node.name} rejected: ${err.message}`);
+      // DM capture: emit dm.response with error
+      const responseText = node._dmResponseBuffer ?? "";
+      node._dmResponseBuffer = undefined;
+      this.onEvent("dm.response", node, {
+        text: responseText,
+        error: err.message,
+        from: from ?? undefined,
+        targetNodeId: nodeId,
+        targetNodeName: node.name,
+        durationMs: Date.now() - startTs,
+        ts: new Date().toISOString(),
+      });
+      log.debug(`dm.response emitted (error): ${node.name}, error=${err.message}`);
       this._setNodeStatus(node, "idle");
       return { error: err.message };
     }
+
+    // DM capture: emit dm.response with accumulated text
+    const responseText = node._dmResponseBuffer ?? "";
+    node._dmResponseBuffer = undefined;
+    this.onEvent("dm.response", node, {
+      text: responseText,
+      stopReason: result.stopReason,
+      error: result.error,
+      from: from ?? undefined,
+      targetNodeId: nodeId,
+      targetNodeName: node.name,
+      durationMs: Date.now() - startTs,
+      ts: new Date().toISOString(),
+    });
+    log.debug(`dm.response emitted: ${node.name}, stopReason=${result.stopReason}, textLen=${responseText.length}`);
 
     this._setNodeStatus(node, "idle");
     log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
@@ -604,7 +663,8 @@ export class NodePool {
     // Check if this is a program node (has a tracked process)
     const proc = this.programProcesses.get(nodeId);
     if (proc) {
-      // Program node: kill process, emit stopped event
+      // Program node: mark manual stop so exit handler knows the reason
+      node._manualStop = true;
       // Also close WS transport if connected
       if (node.transport.alive) node.transport.close();
       proc.kill("SIGTERM");
@@ -623,7 +683,7 @@ export class NodePool {
       await client.closeSession();
     }
 
-    this._cleanupNode(nodeId, { newStatus: "stopped" });
+    this._cleanupNode(nodeId, { newStatus: "stopped", reason: "manual" });
     node.transport.close();
   }
 

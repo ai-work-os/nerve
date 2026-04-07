@@ -65,6 +65,12 @@ const adapters: Record<string, AdapterConfig> = {
     capabilities: ["code"],
     terminal: false,
   },
+  kimi: {
+    cmd: "kimi-cli",
+    args: ["acp"],
+    capabilities: ["code", "analysis"],
+    terminal: false,
+  },
   mock: {
     cmd: "npx",
     args: ["tsx", "test/mock-agent.ts"],

@@ -74,7 +74,26 @@ export class Server {
         this.broadcastToAllWsClients({
           jsonrpc: "2.0",
           method: "node.stopped",
-          params: { nodeId: node.id, name: node.name, exitCode: detail?.exitCode ?? null },
+          params: { nodeId: node.id, name: node.name, exitCode: detail?.exitCode ?? null, reason: detail?.reason ?? null },
+        });
+      }
+
+      // DM capture: route dm.prompt/dm.response to observer nodes
+      if (event === "dm.prompt" || event === "dm.response") {
+        const notification = {
+          jsonrpc: "2.0",
+          method: event,
+          params: { nodeId: node.id, name: node.name, ...detail },
+        };
+        setImmediate(() => {
+          for (const obsNode of this.cm.nodePool.listAll()) {
+            if (obsNode.permissions === "observer" && obsNode.id !== node.id && obsNode.transport.alive) {
+              try {
+                obsNode.transport.send(JSON.stringify(notification));
+              } catch { /* best-effort, observer may have disconnected */ }
+            }
+          }
+          log.debug(`dm event routed: ${event} for ${node.name}`);
         });
       }
     };
@@ -163,6 +182,7 @@ export class Server {
             if (pendingNode) {
               if (commands) pendingNode.commands = commands;
               if (events) pendingNode.events = events;
+              if (p.source) pendingNode.source = p.source as string;
             }
             this.wsNodeMap.set(ws, pendingNodeId);
             log.info(`node.register: program node ${name} claimed pending slot ${pendingNodeId}`);
@@ -186,6 +206,7 @@ export class Server {
           );
           if (commands) node.commands = commands;
           if (events) node.events = events;
+          if (p.source) node.source = p.source as string;
           this.wsNodeMap.set(ws, node.id);
           this.sendResult(ws, id, { nodeId: node.id, name: node.name });
           break;
@@ -298,7 +319,20 @@ export class Server {
           const adapter = p.adapter as string;
           const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
-          const channelId = p.channelId as string | undefined;
+          const standalone = p.standalone as boolean | undefined;
+          let channelId = p.channelId as string | undefined;
+
+          // Auto-inherit caller's channel if not explicitly provided and not standalone
+          if (!channelId && !standalone) {
+            const callerNodeId = this.wsNodeMap.get(ws);
+            if (callerNodeId) {
+              const callerNode = this.cm.nodePool.get(callerNodeId);
+              if (callerNode && callerNode.channels.size === 1) {
+                channelId = [...callerNode.channels][0];
+                log.info(`[node.spawn] auto-inherit channel ${channelId} from caller ${callerNode.name}`);
+              }
+            }
+          }
 
           if (this.cm.nodePool.isNameTaken(name)) {
             this.sendError(ws, id, -32602, `name "${name}" already taken`);
@@ -306,7 +340,7 @@ export class Server {
           }
 
           this.cm.spawnNode(adapter, name, cwd).then(node => {
-            // Auto-join channel if requested
+            // Auto-join channel if resolved (explicit or inherited)
             if (channelId) {
               this.cm.addNodeToChannel(channelId, node.id, node.name);
             }

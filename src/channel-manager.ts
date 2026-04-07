@@ -258,17 +258,20 @@ export class ChannelManager {
       ? JSON.stringify(blobRef)
       : content;
 
-    // Resolve nodeType from sender name
+    // Resolve nodeType and source from sender name
     const senderNode = this.nodePool.getByName(from);
     let nodeType: string | undefined;
+    let source: string | undefined;
     if (senderNode) {
       if (this.nodePool.isProgramNode(senderNode.id)) {
         nodeType = "program";
       } else {
         nodeType = senderNode.transport.type; // "stdio" or "websocket"
       }
+      source = senderNode.source;
     }
-    const metadata = nodeType ? { nodeType } : undefined;
+    const metadata: Record<string, unknown> | undefined =
+      (nodeType || source) ? { ...(nodeType ? { nodeType } : {}), ...(source ? { source } : {}) } : undefined;
 
     const msg = ch.postMessage(from, storedContent, this.store, metadata);
 
@@ -281,6 +284,9 @@ export class ChannelManager {
 
     // Route @mentions
     const targets = route(ch, msg);
+    if (targets.length > 0) {
+      log.info(`route: ${msg.from} → [${targets.map(t => t.nodeName).join(", ")}] in channel ${channelId}`);
+    }
     for (const target of targets) {
       const node = this.nodePool.get(target.nodeId);
       if (!node) continue;
@@ -420,7 +426,7 @@ export class ChannelManager {
           if (ch) {
             ch.removeNode(node.name, this.store);
             // Post system message
-            this.postMessage(chId, "系统", `${node.name} 已断开 (exit: ${detail?.exitCode})`);
+            this.postMessage(chId, "系统", `${node.name} 已退出 (原因: ${detail?.reason || "unknown"}, exit: ${detail?.exitCode})`);
           }
         }
         break;
