@@ -81,7 +81,7 @@ export class Server {
       // DM capture: route dm.prompt/dm.response to observer nodes
       if (event === "dm.prompt" || event === "dm.response") {
         const notification = {
-          jsonrpc: "2.0",
+          jsonrpc: "2.0" as const,
           method: event,
           params: { nodeId: node.id, name: node.name, ...detail },
         };
@@ -89,7 +89,7 @@ export class Server {
           for (const obsNode of this.cm.nodePool.listAll()) {
             if (obsNode.permissions === "observer" && obsNode.id !== node.id && obsNode.transport.alive) {
               try {
-                obsNode.transport.send(JSON.stringify(notification));
+                obsNode.transport.send(notification);
               } catch { /* best-effort, observer may have disconnected */ }
             }
           }
