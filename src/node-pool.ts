@@ -172,6 +172,7 @@ export class NodePool {
     });
 
     this.onEvent("node.registered", node);
+    this.onEvent("node.statusChanged", node);
     return node;
   }
 
@@ -321,6 +322,7 @@ export class NodePool {
     client.handshake(); // Don't await - let it run async
 
     this.onEvent("node.registered", node);
+    this.onEvent("node.statusChanged", node);
     return node;
   }
 
@@ -408,6 +410,7 @@ export class NodePool {
     });
 
     this.onEvent("node.registered", node);
+    this.onEvent("node.statusChanged", node);
     return node;
   }
 

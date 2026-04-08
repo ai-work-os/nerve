@@ -84,12 +84,9 @@ export class UserRecorder extends PluginBase {
       this.dispatchCommand(params?.content as string, params?.from as string);
     });
 
-    // DM capture: record dm.prompt and dm.response events
+    // DM capture: record dm.prompt events
     this.onNotification("dm.prompt", (params) => {
       this.recordDm("prompt", params);
-    });
-    this.onNotification("dm.response", (params) => {
-      this.recordDm("response", params);
     });
   }
 

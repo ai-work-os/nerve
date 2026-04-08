@@ -128,6 +128,13 @@ const adapters: Record<string, AdapterConfig> = {
     capabilities: ["monitor"],
     terminal: false,
   },
+  "user-recorder": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/user-recorder/index.ts"],
+    capabilities: ["monitor"],
+    terminal: false,
+  },
   "mock-program": {
     type: "program",
     cmd: "npx",

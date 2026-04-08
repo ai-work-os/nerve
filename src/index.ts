@@ -9,6 +9,7 @@ import { Server } from "./server.js";
 const args = process.argv.slice(2);
 let port = 4800;
 let dataDir = resolve(homedir(), ".nerve");
+let eventLogPath: string | undefined;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--port" && args[i + 1]) {
@@ -17,10 +18,13 @@ for (let i = 0; i < args.length; i++) {
   } else if (args[i] === "--data" && args[i + 1]) {
     dataDir = resolve(args[i + 1]);
     i++;
+  } else if (args[i] === "--event-log" && args[i + 1]) {
+    eventLogPath = resolve(args[i + 1]);
+    i++;
   }
 }
 
-const nerve = new ChannelManager({ dataDir, port });
+const nerve = new ChannelManager({ dataDir, port, eventLogPath });
 const server = new Server(nerve, port);
 
 server.start();

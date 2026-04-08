@@ -7,6 +7,7 @@ import { NerveNode } from "./node.js";
 import { BlobStore } from "./blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification } from "./protocol.js";
 import type { WebSocket } from "ws";
+import { EventLogger } from "./event-logger.js";
 import * as log from "./logger.js";
 
 /**
@@ -40,6 +41,7 @@ export function buildSystemPrompt(agentName: string, channelId: string, members:
 export interface ChannelManagerOptions {
   dataDir: string;
   port: number;
+  eventLogPath?: string;
 }
 
 export class ChannelManager {
@@ -47,6 +49,7 @@ export class ChannelManager {
   readonly nodePool: NodePool;
   readonly blobStore: BlobStore;
   readonly channelStore: ChannelStore;
+  readonly eventLogger: EventLogger;
   readonly dataDir: string;
   private port: number;
 
@@ -62,6 +65,7 @@ export class ChannelManager {
     this.store = new Store(`${opts.dataDir}/nerve.db`);
     this.blobStore = new BlobStore(opts.dataDir);
     this.channelStore = new ChannelStore(this.store);
+    this.eventLogger = new EventLogger(opts.eventLogPath);
 
     // Mark all old nodes as stopped on startup
     this.store.markAllNodesStopped();
@@ -75,6 +79,7 @@ export class ChannelManager {
 
   createChannel(cwd: string, name?: string): Channel {
     const ch = this.channelStore.create(cwd, name);
+    this.eventLogger.log("channel.created", { channelId: ch.id, name: ch.name, cwd: ch.cwd });
     this.onChannelEvent?.("channel.created", ch);
     return ch;
   }
@@ -155,16 +160,8 @@ export class ChannelManager {
     // Remove from all channels first
     const node = this.nodePool.get(nodeId);
     if (node) {
-      for (const chId of node.channels) {
-        const ch = this.channelStore.get(chId);
-        if (ch) {
-          ch.removeNode(node.name, this.store);
-          this.broadcastToChannel(chId, {
-            jsonrpc: "2.0",
-            method: "channel.nodeLeft",
-            params: { channelId: chId, nodeId: node.id, nodeName: node.name },
-          });
-        }
+      for (const chId of [...node.channels]) {
+        this.removeNodeFromChannel(chId, node.name);
       }
     }
     await this.nodePool.stopNode(nodeId);
@@ -192,6 +189,7 @@ export class ChannelManager {
       method: "channel.nodeJoined",
       params: { channelId, nodeId, nodeName: name },
     });
+    this.eventLogger.log("channel.nodeJoined", { channelId, nodeId, nodeName: name });
   }
 
   removeNodeFromChannel(channelId: string, nodeName: string): void {
@@ -211,6 +209,7 @@ export class ChannelManager {
       method: "channel.nodeLeft",
       params: { channelId, nodeId, nodeName },
     });
+    this.eventLogger.log("channel.nodeLeft", { channelId, nodeId, nodeName });
   }
 
   /**
@@ -281,6 +280,13 @@ export class ChannelManager {
       method: "channel.message",
       params: { channelId, message: msg },
     });
+    this.eventLogger.log("channel.message", {
+      channelId,
+      messageId: msg.id,
+      from: msg.from,
+      content: msg.content,
+      metadata: msg.metadata,
+    });
 
     // Route @mentions
     const targets = route(ch, msg);
@@ -292,6 +298,15 @@ export class ChannelManager {
       if (!node) continue;
 
       if (node.isProcess) {
+        this.eventLogger.log("channel.mention", {
+          channelId,
+          messageId: msg.id,
+          from: msg.from,
+          content: msg.content,
+          targetNodeId: target.nodeId,
+          targetNodeName: target.nodeName,
+          delivery: "direct_prompt",
+        });
         this.dispatchDirect(target.nodeId, node, msg.content, channelId, msg.from);
       } else {
         // Direct mention notification for WS nodes
@@ -300,6 +315,15 @@ export class ChannelManager {
           method: "channel.mention",
           params: { channelId, message: msg },
         } as any);
+        this.eventLogger.log("channel.mention", {
+          channelId,
+          messageId: msg.id,
+          from: msg.from,
+          content: msg.content,
+          targetNodeId: target.nodeId,
+          targetNodeName: target.nodeName,
+          delivery: "ws_notification",
+        });
       }
     }
 
@@ -408,6 +432,7 @@ export class ChannelManager {
   private handleNodeEvent(event: string, node: NerveNode, detail?: Record<string, unknown>): void {
     // Notify external hook (server's direct subscribers)
     this.onNodeEvent?.(event, node, detail);
+    this.eventLogger.logNode(event, node, detail);
 
     switch (event) {
       case "node.registered":
@@ -465,6 +490,7 @@ export class ChannelManager {
 
   async shutdown(): Promise<void> {
     await this.nodePool.shutdown();
+    this.eventLogger.close();
     this.store.close();
   }
 }

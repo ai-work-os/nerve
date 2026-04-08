@@ -106,6 +106,13 @@ export class NerveNode {
       };
     }
 
+    // Skip buffer storage for streaming chunks — they are ephemeral,
+    // only needed for real-time WS push, not reconnect replay.
+    if (update?.sessionUpdate === "agent_message_chunk") {
+      log.debug(`[${this.name}] pushUpdate: skipping buffer for agent_message_chunk`);
+      return;
+    }
+
     this.updateBuffer.push(params);
     if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
       this.updateBuffer.shift();

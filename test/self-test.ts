@@ -17,6 +17,7 @@ import WebSocket from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { checkProcessHealth } from "../src/plugins/duty-monitor/index.js";
+import { EventLogger } from "../src/event-logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -49,6 +50,15 @@ function assertEq(actual: unknown, expected: unknown, name: string): void {
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+function assertNoThrow(fn: () => void, name: string): void {
+  try {
+    fn();
+    assert(true, name);
+  } catch (err: any) {
+    assert(false, name, err?.message || String(err));
+  }
 }
 
 // --- HTTP helper ---
@@ -617,6 +627,139 @@ async function testNodeEvents() {
 
   await c1.disconnect();
   await c2.disconnect();
+}
+
+function testEventLoggerFailOpen() {
+  console.log("\n▸ EventLogger fail-open");
+
+  const badPath = resolve(TEST_DATA, "event-log-dir");
+  if (existsSync(badPath)) rmSync(badPath, { recursive: true, force: true });
+  mkdirSync(badPath, { recursive: true });
+
+  let logger: EventLogger | null = null;
+  assertNoThrow(() => {
+    logger = new EventLogger(badPath);
+  }, "event logger constructor does not throw on invalid path");
+
+  assertNoThrow(() => {
+    logger?.log("channel.created", { channelId: "ch-test" });
+  }, "event logger log() does not throw on invalid path");
+
+  rmSync(badPath, { recursive: true, force: true });
+}
+
+async function testHarnessPhase1EventLogScript() {
+  console.log("\n▸ Harness phase1 event log script");
+
+  const proc = spawn("npx", ["tsx", "test/harness-phase1-event-log.test.ts"], {
+    cwd: ROOT,
+    stdio: "pipe",
+  });
+
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => out += d.toString());
+  proc.stderr.on("data", (d: Buffer) => out += d.toString());
+
+  const code = await new Promise<number | null>(resolve => proc.on("close", resolve));
+  assertEq(code, 0, "self-test runs harness phase1 event log script");
+  if (code !== 0 && out) {
+    console.log(out);
+  }
+}
+
+async function testHarnessPhase2P0S1Script() {
+  console.log("\n▸ Harness phase2 P0-S1 script");
+
+  const proc = spawn("npx", ["tsx", "test/harness-phase2-p0-s1.test.ts"], {
+    cwd: ROOT,
+    stdio: "pipe",
+  });
+
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => out += d.toString());
+  proc.stderr.on("data", (d: Buffer) => out += d.toString());
+
+  const code = await new Promise<number | null>(resolve => proc.on("close", resolve));
+  assertEq(code, 0, "self-test runs harness phase2 P0-S1 script");
+  if (code !== 0 && out) {
+    console.log(out);
+  }
+}
+
+async function testHarnessPhase2P0S2Script() {
+  console.log("\n▸ Harness phase2 P0-S2 script");
+
+  const proc = spawn("npx", ["tsx", "test/harness-phase2-p0-s2.test.ts"], {
+    cwd: ROOT,
+    stdio: "pipe",
+  });
+
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => out += d.toString());
+  proc.stderr.on("data", (d: Buffer) => out += d.toString());
+
+  const code = await new Promise<number | null>(resolve => proc.on("close", resolve));
+  assertEq(code, 0, "self-test runs harness phase2 P0-S2 script");
+  if (code !== 0 && out) {
+    console.log(out);
+  }
+}
+
+async function testHarnessPhase3ChannelScript() {
+  console.log("\n▸ Harness phase3 channel script");
+
+  const proc = spawn("npx", ["tsx", "test/harness-phase3-channel.test.ts"], {
+    cwd: ROOT,
+    stdio: "pipe",
+  });
+
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => out += d.toString());
+  proc.stderr.on("data", (d: Buffer) => out += d.toString());
+
+  const code = await new Promise<number | null>(resolve => proc.on("close", resolve));
+  assertEq(code, 0, "self-test runs harness phase3 channel script");
+  if (code !== 0 && out) {
+    console.log(out);
+  }
+}
+
+async function testHarnessPhase3MessagingScript() {
+  console.log("\n▸ Harness phase3 messaging script");
+
+  const proc = spawn("npx", ["tsx", "test/harness-phase3-messaging.test.ts"], {
+    cwd: ROOT,
+    stdio: "pipe",
+  });
+
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => out += d.toString());
+  proc.stderr.on("data", (d: Buffer) => out += d.toString());
+
+  const code = await new Promise<number | null>(resolve => proc.on("close", resolve));
+  assertEq(code, 0, "self-test runs harness phase3 messaging script");
+  if (code !== 0 && out) {
+    console.log(out);
+  }
+}
+
+async function testHarnessPhase3PromptScript() {
+  console.log("\n▸ Harness phase3 prompt script");
+
+  const proc = spawn("npx", ["tsx", "test/harness-phase3-prompt.test.ts"], {
+    cwd: ROOT,
+    stdio: "pipe",
+  });
+
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => out += d.toString());
+  proc.stderr.on("data", (d: Buffer) => out += d.toString());
+
+  const code = await new Promise<number | null>(resolve => proc.on("close", resolve));
+  assertEq(code, 0, "self-test runs harness phase3 prompt script");
+  if (code !== 0 && out) {
+    console.log(out);
+  }
 }
 
 async function testPersistence() {
@@ -4727,6 +4870,20 @@ async function main() {
   console.log("╚══════════════════════════════════════╝");
 
   try {
+    // Type-check first — catch compile errors that tests can't
+    console.log("\n⟳ Type checking (tsc --noEmit)...");
+    const tsc = spawn("npx", ["tsc", "--noEmit"], { cwd: ROOT, stdio: "pipe" });
+    let tscOut = "";
+    tsc.stdout.on("data", (d: Buffer) => tscOut += d);
+    tsc.stderr.on("data", (d: Buffer) => tscOut += d);
+    const tscCode = await new Promise<number>(r => tsc.on("close", r));
+    if (tscCode !== 0) {
+      console.log(tscOut);
+      console.error("  ✗ tsc --noEmit failed");
+      process.exit(1);
+    }
+    console.log("  ✓ Type check passed");
+
     console.log("\n⟳ Starting server...");
     await startServer();
     console.log("  Server started on port", TEST_PORT);
@@ -4738,6 +4895,13 @@ async function main() {
     await testRouting();
     await testMultiClient();
     await testNodeEvents();
+    testEventLoggerFailOpen();
+    await testHarnessPhase1EventLogScript();
+    await testHarnessPhase2P0S1Script();
+    await testHarnessPhase2P0S2Script();
+    await testHarnessPhase3ChannelScript();
+    await testHarnessPhase3MessagingScript();
+    await testHarnessPhase3PromptScript();
     await testPersistence();
     await testEdgeCases();
     await testSpawnCwd();
@@ -4913,17 +5077,21 @@ async function main() {
     await testCheckProcessHealthRssAlert();
     await testCheckProcessHealthBothAlert();
 
+    // user-recorder plugin
+    await testUserRecorderSpawnConnect();
+
+    // message source/client field
+    await testMessageSourceOnRegister();
+    await testMessageSourceInMetadata();
+
     // Bug fix: nerve-spawned plugin should not reconnect on disconnect
+    // NOTE: must be LAST — exitProcess() kills the test runner
     await testPluginSpawnedNoReconnect();
 
     // spawn standalone parameter
     await testSpawnStandaloneWsSkipsAutoInherit();
     await testSpawnStandaloneWsDefaultStillInherits();
     await testSpawnStandaloneMcpSkipsAutoJoin();
-
-    // message source/client field
-    await testMessageSourceOnRegister();
-    await testMessageSourceInMetadata();
 
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
@@ -5961,6 +6129,47 @@ async function testMessageSourceInMetadata() {
 
   await sender.disconnect();
   await receiver.disconnect();
+}
+
+// ============================================================
+// user-recorder plugin: spawn → idle → verify no dm.response
+// listener → stop
+// ============================================================
+
+async function testUserRecorderSpawnConnect() {
+  console.log("\n▸ user-recorder: spawn → idle → verify no dm.response listener → stop");
+  const c = new WsClient("ur-test-client");
+  await c.connect();
+  await c.request("node.register", { name: "ur-test-client", capabilities: ["ui"] });
+
+  // Spawn user-recorder program node
+  const spawn = await c.request("node.spawn", {
+    adapter: "user-recorder",
+    name: "ur-test-recorder",
+    cwd: ROOT,
+  });
+  assert(!!spawn.nodeId, "ur: user-recorder spawned");
+
+  await waitForNotification(c, "node.statusChanged",
+    p => p.name === "ur-test-recorder" && p.status === "idle", 10000);
+  assert(true, "ur: reached idle");
+
+  // Verify user-recorder source code does NOT contain dm.response listener
+  const srcPath = resolve(ROOT, "src/plugins/user-recorder/index.ts");
+  const src = readFileSync(srcPath, "utf-8");
+  assert(!src.includes('"dm.response"'), "ur: source has no dm.response listener");
+  assert(src.includes('"dm.prompt"'), "ur: source still has dm.prompt listener");
+
+  // Verify server log shows user-recorder connected and registered
+  const logHasRecorder = serverLogBuffer.some(l => l.includes("ur-test-recorder"));
+  assert(logHasRecorder, "ur: server log mentions ur-test-recorder");
+
+  // Cleanup
+  await c.request("node.stop", { nodeId: spawn.nodeId });
+  await waitForNotification(c, "node.stopped", p => p.nodeId === spawn.nodeId, 5000);
+  assert(true, "ur: stopped cleanly");
+
+  await c.disconnect();
 }
 
 main();

@@ -129,6 +129,32 @@ function testTouch() {
   assert(node.lastActiveAt >= before, "lastActiveAt updated");
 }
 
+function testChunkSkipsBuffer() {
+  console.log("\n▸ pushUpdate with agent_message_chunk → skips buffer");
+  const node = makeNode();
+  node.pushUpdate({ update: { sessionUpdate: "agent_message_chunk", text: "hi" } } as any);
+  assertEq(node.updateBuffer.length, 0, "chunk not stored in buffer");
+}
+
+function testNonChunkStillBuffered() {
+  console.log("\n▸ pushUpdate with agent_message_end → stored in buffer");
+  const node = makeNode();
+  node.pushUpdate({ update: { sessionUpdate: "agent_message_end", text: "done" } } as any);
+  assertEq(node.updateBuffer.length, 1, "non-chunk stored in buffer");
+}
+
+function testChunkDoesNotAffectUsage() {
+  console.log("\n▸ pushUpdate chunk after usage_update → usage unchanged");
+  const node = makeNode({ adapter: "mock" });
+  node.pushUpdate({
+    update: { sessionUpdate: "usage_update", used: 5000, size: 200000, cost: { amount: 0.1 } },
+  } as any);
+  const usageBefore = { ...node.usage };
+  node.pushUpdate({ update: { sessionUpdate: "agent_message_chunk", text: "x" } } as any);
+  assertEq(node.usage!.tokenUsed, usageBefore.tokenUsed, "usage not affected by chunk");
+  assertEq(node.updateBuffer.length, 1, "only usage_update in buffer, not chunk");
+}
+
 function testIsProcessIsWebSocket() {
   console.log("\n▸ stdio transport → isProcess=true, isWebSocket=false");
   const node = makeNode();
@@ -153,6 +179,9 @@ function main() {
   testUsageExtraction();
   testNoUsageWithoutUsageUpdate();
   testTouch();
+  testChunkSkipsBuffer();
+  testNonChunkStillBuffered();
+  testChunkDoesNotAffectUsage();
   testIsProcessIsWebSocket();
 
   console.log("\n══════════════════════════════════════");

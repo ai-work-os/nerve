@@ -3,7 +3,7 @@
  * Nerve Channel CLI — unified entry point for server and management commands.
  *
  * Usage:
- *   nerve serve [--port 4800] [--data DIR]
+ *   nerve serve [--port 4800] [--data DIR] [--event-log FILE]
  *   nerve status
  *   nerve channel list|create|close|history|post
  *   nerve node list|spawn|stop
@@ -66,11 +66,13 @@ function out(data: unknown): void {
 async function cmdServe(args: string[]) {
   let port = DEFAULT_PORT;
   let dataDir = resolve(homedir(), ".nerve");
+  let eventLogPath: string | undefined;
   let noGuardian = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
     else if (args[i] === "--data" && args[i + 1]) { dataDir = resolve(args[i + 1]); i++; }
+    else if (args[i] === "--event-log" && args[i + 1]) { eventLogPath = resolve(args[i + 1]); i++; }
     else if (args[i] === "--no-guardian") { noGuardian = true; }
   }
 
@@ -82,7 +84,7 @@ async function cmdServe(args: string[]) {
   const { ChannelManager } = await import("./channel-manager.js");
   const { Server } = await import("./server.js");
 
-  const nerve = new ChannelManager({ dataDir, port });
+  const nerve = new ChannelManager({ dataDir, port, eventLogPath });
   const server = new Server(nerve, port);
   server.start();
 
