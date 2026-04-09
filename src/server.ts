@@ -45,6 +45,15 @@ export class Server {
       });
     };
 
+    // Hook into member events for global broadcast (so TUI not in channel sees join/leave)
+    this.cm.onMemberEvent = (event, channelId, nodeId, nodeName) => {
+      this.broadcastToAllWsClients({
+        jsonrpc: "2.0",
+        method: event,
+        params: { channelId, nodeId, nodeName },
+      });
+    };
+
     // Hook into node events for direct subscriber push
     this.cm.onNodeEvent = (event, node, detail) => {
       if (event === "node.update" || event === "node.statusChanged") {

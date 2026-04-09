@@ -59,6 +59,9 @@ export class ChannelManager {
   // External hook for channel lifecycle events (create/close)
   onChannelEvent?: (event: string, channel: Channel) => void;
 
+  // External hook for channel member changes (join/leave) — broadcast globally
+  onMemberEvent?: (event: string, channelId: string, nodeId: string, nodeName: string) => void;
+
   constructor(opts: ChannelManagerOptions) {
     this.port = opts.port;
     this.dataDir = opts.dataDir;
@@ -189,6 +192,8 @@ export class ChannelManager {
       method: "channel.nodeJoined",
       params: { channelId, nodeId, nodeName: name },
     });
+    // Broadcast globally so all WS clients (including TUI not in channel) see member changes
+    this.onMemberEvent?.("channel.nodeJoined", channelId, nodeId, name);
     this.eventLogger.log("channel.nodeJoined", { channelId, nodeId, nodeName: name });
   }
 
@@ -209,6 +214,8 @@ export class ChannelManager {
       method: "channel.nodeLeft",
       params: { channelId, nodeId, nodeName },
     });
+    // Broadcast globally so all WS clients (including TUI not in channel) see member changes
+    this.onMemberEvent?.("channel.nodeLeft", channelId, nodeId || "", nodeName);
     this.eventLogger.log("channel.nodeLeft", { channelId, nodeId, nodeName });
   }
 
@@ -308,6 +315,29 @@ export class ChannelManager {
           delivery: "direct_prompt",
         });
         this.dispatchDirect(target.nodeId, node, msg.content, channelId, msg.from);
+      } else if (this.nodePool.isProgramNode(target.nodeId)) {
+        // Program nodes handle commands via node.message — strip @mention prefix
+        const mentionPrefix = `@${target.nodeName}`;
+        const cmdContent = msg.content.startsWith(mentionPrefix)
+          ? msg.content.slice(mentionPrefix.length).trim()
+          : msg.content;
+        if (node.transport.alive) {
+          node.transport.send({
+            jsonrpc: "2.0",
+            method: "node.message",
+            params: { content: cmdContent, from: msg.from },
+          } as any);
+        }
+        this.eventLogger.log("channel.mention", {
+          channelId,
+          messageId: msg.id,
+          from: msg.from,
+          content: msg.content,
+          targetNodeId: target.nodeId,
+          targetNodeName: target.nodeName,
+          delivery: "program_node_message",
+        });
+        log.info(`mention routed to program node ${target.nodeName} via node.message: "${cmdContent.slice(0, 50)}"`);
       } else {
         // Direct mention notification for WS nodes
         node.transport.send({
@@ -422,7 +452,8 @@ export class ChannelManager {
 
     for (const [, nodeId] of ch.nodes) {
       const node = this.nodePool.get(nodeId);
-      if (node && node.isProcess) continue; // process nodes only speak ACP, skip channel broadcasts
+      if (node && node.isProcess) continue; // ACP process nodes only speak ACP, skip channel broadcasts
+      if (node && this.nodePool.isProgramNode(nodeId)) continue; // program nodes handle messages via node.message, skip channel broadcasts
       if (node && node.transport.alive) {
         node.transport.send(notification as any);
       }
