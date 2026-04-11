@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Nerve MCP Server — injected into each agent via session/new mcpServers.
- * Exposes orchestration tools for agent-to-agent communication and coordination.
+ * Nerve MCP Server — injected into each node via session/new mcpServers.
+ * Exposes orchestration tools for node-to-node communication and coordination.
  * Communicates with nerve server via HTTP.
  *
  * Env: NERVE_PORT, NERVE_NODE_NAME
@@ -64,11 +64,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "nerve_post",
-      description: "Send a message to another agent in the channel. The message will be routed via @mention.",
+      description: "Send a message to another node in the channel. The message will be routed via @mention.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          to: { type: "string", description: "Target agent name" },
+          to: { type: "string", description: "Target node name" },
           content: { type: "string", description: "Message content" },
           channel_id: { type: "string", description: "Target channel id (auto-detected if omitted)" },
         },
@@ -77,12 +77,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "nerve_spawn",
-      description: "Spawn a worker agent process managed by nerve.",
+      description: "Spawn a worker node process managed by nerve.",
       inputSchema: {
         type: "object" as const,
         properties: {
           adapter: { type: "string", description: "Adapter name", default: "claude" },
-          name: { type: "string", description: "Optional agent name" },
+          name: { type: "string", description: "Optional node name" },
           cwd: { type: "string", description: "Optional working directory" },
           channel_id: { type: "string", description: "Optional channel id to auto-join after spawn" },
           standalone: { type: "boolean", description: "If true, do not auto-join any channel after spawn" },
@@ -91,7 +91,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "nerve_create_channel",
-      description: "Create a new collaboration channel and auto-join the calling agent.",
+      description: "Create a new collaboration channel and auto-join the calling node.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -112,37 +112,37 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "nerve_join",
-      description: "Add an existing agent into a channel by agent name.",
+      description: "Add an existing node into a channel by node name.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          agent_name: { type: "string", description: "Agent name to join" },
+          node_name: { type: "string", description: "Node name to join" },
           channel_id: { type: "string", description: "Target channel id" },
         },
-        required: ["agent_name", "channel_id"],
+        required: ["node_name", "channel_id"],
       },
     },
     {
       name: "nerve_remove",
-      description: "Remove an agent from a channel by agent name.",
+      description: "Remove a node from a channel by node name.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          agent_name: { type: "string", description: "Agent name to remove" },
+          node_name: { type: "string", description: "Node name to remove" },
           channel_id: { type: "string", description: "Target channel id" },
         },
-        required: ["agent_name", "channel_id"],
+        required: ["node_name", "channel_id"],
       },
     },
     {
       name: "nerve_stop",
-      description: "Stop/shutdown an agent process by name. Removes it from all channels and terminates the process.",
+      description: "Stop/shutdown a node process by name. Removes it from all channels and terminates the process.",
       inputSchema: {
         type: "object" as const,
         properties: {
-          agent_name: { type: "string", description: "Agent name to stop" },
+          node_name: { type: "string", description: "Node name to stop" },
         },
-        required: ["agent_name"],
+        required: ["node_name"],
       },
     },
     {
@@ -307,24 +307,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === "nerve_join") {
-    const { agent_name, channel_id } = args as { agent_name: string; channel_id: string };
-    if (!agent_name || !channel_id) {
-      return fail("agent_name and channel_id are required");
+    const { node_name, channel_id } = args as { node_name: string; channel_id: string };
+    if (!node_name || !channel_id) {
+      return fail("node_name and channel_id are required");
     }
 
     try {
-      log(`nerve_join agent=${agent_name} channel=${channel_id}`);
-      const node = await findNodeByName(agent_name);
+      log(`nerve_join node=${node_name} channel=${channel_id}`);
+      const node = await findNodeByName(node_name);
       await post("/channel/addNode", {
         channelId: channel_id,
         nodeId: node.id,
-        nodeName: agent_name,
+        nodeName: node_name,
       });
       // If joining self, track the channel
-      if (agent_name === NERVE_NODE_NAME) {
+      if (node_name === NERVE_NODE_NAME) {
         currentChannelId = channel_id;
       }
-      return ok(`joined ${agent_name} to ${channel_id}`);
+      return ok(`joined ${node_name} to ${channel_id}`);
     } catch (err) {
       log(`nerve_join failed: ${err}`);
       return fail(String(err));
@@ -332,24 +332,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === "nerve_remove") {
-    const { agent_name, channel_id } = args as { agent_name: string; channel_id: string };
-    if (!agent_name || !channel_id) {
-      return fail("agent_name and channel_id are required");
+    const { node_name, channel_id } = args as { node_name: string; channel_id: string };
+    if (!node_name || !channel_id) {
+      return fail("node_name and channel_id are required");
     }
 
     try {
-      log(`nerve_remove agent=${agent_name} channel=${channel_id}`);
-      await findNodeByName(agent_name);
+      log(`nerve_remove node=${node_name} channel=${channel_id}`);
+      await findNodeByName(node_name);
       await post("/channel/removeNode", {
         channelId: channel_id,
-        nodeName: agent_name,
+        nodeName: node_name,
       });
       // If removing self from tracked channel, clear it
-      if (agent_name === NERVE_NODE_NAME && channel_id === currentChannelId) {
+      if (node_name === NERVE_NODE_NAME && channel_id === currentChannelId) {
         currentChannelId = undefined;
         log(`nerve_remove: cleared currentChannelId (removed self)`);
       }
-      return ok(`removed ${agent_name} from ${channel_id}`);
+      return ok(`removed ${node_name} from ${channel_id}`);
     } catch (err) {
       log(`nerve_remove failed: ${err}`);
       return fail(String(err));
@@ -357,15 +357,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
 
   if (name === "nerve_stop") {
-    const { agent_name } = args as { agent_name: string };
-    if (!agent_name) {
-      return fail("agent_name is required");
+    const { node_name } = args as { node_name: string };
+    if (!node_name) {
+      return fail("node_name is required");
     }
 
     try {
-      log(`nerve_stop agent=${agent_name}`);
-      await post("/node/stop", { nodeName: agent_name });
-      return ok(`stopped ${agent_name}`);
+      log(`nerve_stop node=${node_name}`);
+      await post("/node/stop", { nodeName: node_name });
+      return ok(`stopped ${node_name}`);
     } catch (err) {
       log(`nerve_stop failed: ${err}`);
       return fail(String(err));

@@ -1630,14 +1630,14 @@ async function testMcpOrchestrationTools() {
     return;
   }
 
-  const joinResult = await mcp.callTool("nerve_join", { agent_name: "orch-worker", channel_id: channel.id });
+  const joinResult = await mcp.callTool("nerve_join", { node_name: "orch-worker", channel_id: channel.id });
   assert(!joinResult.isError, "mcp-tools: join succeeds");
 
   const channelsAfterJoin = await c.request("channel.list", {});
   const joined = channelsAfterJoin.channels.find((ch: any) => ch.id === channel.id);
   assert(joined?.nodes?.["orch-worker"] === worker.id, "mcp-tools: worker joined channel");
 
-  const removeResult = await mcp.callTool("nerve_remove", { agent_name: "orch-worker", channel_id: channel.id });
+  const removeResult = await mcp.callTool("nerve_remove", { node_name: "orch-worker", channel_id: channel.id });
   assert(!removeResult.isError, "mcp-tools: remove succeeds");
 
   const channelsAfterRemove = await c.request("channel.list", {});
@@ -1834,7 +1834,7 @@ async function testNerveRemoveClearsChannelId() {
   await httpPost("/channel/addNode", { channelId: chId, nodeId: spawn2.nodeId, nodeName: "rm-target" });
 
   // Remove self from channel
-  const rmRes = await mcp.callTool("nerve_remove", { agent_name: "rm-self-agent", channel_id: chId });
+  const rmRes = await mcp.callTool("nerve_remove", { node_name: "rm-self-agent", channel_id: chId });
   assert(!rmRes.isError, "rm-self: remove self succeeds");
 
   // Now nerve_post without channel_id should fail (currentChannelId cleared)
