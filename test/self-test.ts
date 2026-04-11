@@ -954,19 +954,15 @@ async function testUpdateBuffer() {
     );
   }
 
-  // Verify replay order: user_message comes before agent output
-  const replayedUserIdx = replayed.findIndex(
-    (n: any) => n.params.update?.sessionUpdate === "user_message",
+  const bufHasChunk = bufResult.updates.some(
+    (u: any) => u.update?.sessionUpdate === "agent_message_chunk",
   );
-  const replayedAgentIdx = replayed.findIndex(
+  assertEq(bufHasChunk, false, "buffer test: node.updates excludes agent_message_chunk");
+
+  const replayHasChunk = replayed.some(
     (n: any) => n.params.update?.sessionUpdate === "agent_message_chunk",
   );
-  if (replayedUserIdx >= 0 && replayedAgentIdx >= 0) {
-    assert(
-      replayedUserIdx < replayedAgentIdx,
-      "buffer test: replay order user → agent",
-    );
-  }
+  assertEq(replayHasChunk, false, "buffer test: replay excludes agent_message_chunk");
 
   // Cleanup
   if (agentNode) {
@@ -5453,6 +5449,17 @@ async function testIntegrationStopCleanup() {
   await c.request("node.subscribe", { nodeId: spawn.nodeId });
   c.clearNotifications();
 
+  // Seed buffer before stop so respawn can prove there is no stale replay
+  await c.request("node.prompt", { nodeId: spawn.nodeId, content: "before stop buffer seed" });
+  await sleep(1000);
+  const beforeStopBuf = await c.request("node.updates", { nodeName: "integ-cleanup-agent" });
+  assert(
+    (beforeStopBuf.updates || []).length > 0,
+    "integ-cleanup: buffer seeded before stop",
+    `got ${beforeStopBuf.updates?.length || 0} updates`,
+  );
+  c.clearNotifications();
+
   // Stop the agent
   await httpPost("/node/stop", { nodeId: spawn.nodeId });
   await sleep(1000);
@@ -5481,6 +5488,32 @@ async function testIntegrationStopCleanup() {
   const postStopUpdates = c.getNotifications("node.update");
   assertEq(postStopUpdates.length, 0, "integ-cleanup: no updates after node stopped");
 
+  // Respawn same name — new node should not inherit old buffer or subscriptions
+  const respawn = await c.request("node.spawn", { adapter: "mock", name: "integ-cleanup-agent", cwd: ROOT });
+  assert(!!respawn.nodeId, "integ-cleanup: respawn with same name succeeds");
+  assert(respawn.nodeId !== spawn.nodeId, "integ-cleanup: respawn gets new nodeId");
+  await sleep(3000);
+
+  const fresh = new WsClient("integ-cleanup-fresh");
+  await fresh.connect();
+  await fresh.request("node.register", { name: "integ-cleanup-fresh", capabilities: ["ui"] });
+  fresh.clearNotifications();
+  await fresh.request("node.subscribe", { nodeId: respawn.nodeId });
+  await sleep(300);
+  const replayAfterRespawn = fresh.getNotifications("node.update");
+  assertEq(replayAfterRespawn.length, 0, "integ-cleanup: respawn has no stale replay buffer");
+
+  c.clearNotifications();
+  await c.request("node.prompt", { nodeId: respawn.nodeId, content: "after stop no resubscribe" });
+  await sleep(1000);
+  const carriedUpdates = c.getNotifications("node.update").filter(
+    (n: any) => n.params?.nodeId === respawn.nodeId,
+  );
+  assertEq(carriedUpdates.length, 0, "integ-cleanup: old subscription does not carry to respawn");
+
+  await httpPost("/node/stop", { nodeId: respawn.nodeId });
+  await sleep(500);
+  await fresh.disconnect();
   await c.disconnect();
 }
 
@@ -5543,7 +5576,7 @@ async function testIntegrationSpawnPromptSubscribeUpdate() {
   const bufHasAgentChunk = buf.updates.some((u: any) =>
     u.update?.sessionUpdate === "agent_message_chunk"
   );
-  assert(bufHasAgentChunk, "integ-verify: buffer contains agent_message_chunk");
+  assertEq(bufHasAgentChunk, false, "integ-verify: buffer excludes agent_message_chunk");
 
   // Cleanup
   await httpPost("/node/stop", { nodeId: spawn.nodeId });

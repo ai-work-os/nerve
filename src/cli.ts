@@ -68,12 +68,14 @@ async function cmdServe(args: string[]) {
   let dataDir = resolve(homedir(), ".nerve");
   let eventLogPath: string | undefined;
   let noGuardian = false;
+  let noRecorder = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
     else if (args[i] === "--data" && args[i + 1]) { dataDir = resolve(args[i + 1]); i++; }
     else if (args[i] === "--event-log" && args[i + 1]) { eventLogPath = resolve(args[i + 1]); i++; }
     else if (args[i] === "--no-guardian") { noGuardian = true; }
+    else if (args[i] === "--no-recorder") { noRecorder = true; }
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
@@ -111,14 +113,45 @@ async function cmdServe(args: string[]) {
     startGuardian();
   }
 
+  // Auto-start user-recorder plugin via program node path
+  let recorderNodeId: string | undefined;
+
+  if (!noRecorder) {
+    const startRecorder = () => {
+      const result = nerve.cleanupStaleGuardian("user-recorder");
+      if (result === "alive") {
+        info("user-recorder already running, skipping spawn");
+        return;
+      }
+
+      try {
+        const node = nerve.nodePool.spawnProcessSync("user-recorder", "user-recorder", resolve(dataDir), port);
+        recorderNodeId = node.id;
+        info(`user-recorder spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`user-recorder spawn failed: ${err.message}`);
+      }
+    };
+
+    startRecorder();
+  }
+
   const shutdown = async () => {
-    info("shutting down...");
-    if (guardianNodeId) {
-      nerve.nodePool.stopNode(guardianNodeId);
-      info("guardian stopped");
+    try {
+      info("shutting down...");
+      if (guardianNodeId) {
+        try { await nerve.nodePool.stopNode(guardianNodeId); } catch {}
+        info("guardian stopped");
+      }
+      if (recorderNodeId) {
+        try { await nerve.nodePool.stopNode(recorderNodeId); } catch {}
+        info("user-recorder stopped");
+      }
+      await server.shutdown();
+      closeLog();
+    } catch (err: any) {
+      info(`shutdown error: ${err.message}`);
     }
-    await server.shutdown();
-    closeLog();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);
