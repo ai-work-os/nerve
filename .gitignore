@@ -14,3 +14,5 @@ notes/acp-bus/
 *.o
 *.dia
 *.dSYM/
+.test-data/
+AGENTS.md

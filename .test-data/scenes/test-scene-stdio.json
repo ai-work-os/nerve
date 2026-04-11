@@ -1,1 +1,0 @@
-{"name":"test-scene-stdio","nodes":[{"adapter":"mock","name":"scene-ai-1"}],"channel":{"name":"test-stdio-ch","auto_create":true},"on_ready":[{"to":"scene-ai-1","command":"hello from scene","prompt":true}]}
