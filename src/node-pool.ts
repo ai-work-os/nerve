@@ -252,7 +252,7 @@ export class NodePool {
 
     transport.onClose((code) => {
       const reason = this._computeExitReason(code, node);
-      this._cleanupNode(id, { newStatus: "stopped", exitCode: code, reason });
+      this._cleanupNode(id, { newStatus: "stopped", removeFromPool: true, exitCode: code, reason });
     });
 
     // Build MCP server config for nerve tools injection
@@ -686,7 +686,7 @@ export class NodePool {
       await client.closeSession();
     }
 
-    this._cleanupNode(nodeId, { newStatus: "stopped", reason: "manual" });
+    this._cleanupNode(nodeId, { newStatus: "stopped", removeFromPool: true, reason: "manual" });
     node.transport.close();
   }
 

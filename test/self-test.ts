@@ -5048,6 +5048,8 @@ async function main() {
     await testIntegrationSpawnPromptUpdate();
     await testIntegrationProgramNodeMessage();
     await testIntegrationStopCleanup();
+    await testStopNodeRemovesFromPool();
+    await testTransportCloseRemovesFromPool();
     await testIntegrationSpawnPromptSubscribeUpdate();
 
     // node.list model field + context size warn
@@ -5514,6 +5516,98 @@ async function testIntegrationStopCleanup() {
   await httpPost("/node/stop", { nodeId: respawn.nodeId });
   await sleep(500);
   await fresh.disconnect();
+  await c.disconnect();
+}
+
+// ============================================================
+// Bug: stopNode should remove ACP stdio node from pool
+// ============================================================
+
+async function testStopNodeRemovesFromPool() {
+  console.log("\n▸ stopNode pool removal: stop → node.list should NOT contain stopped node");
+
+  const c = new WsClient("stop-pool-test");
+  await c.connect();
+  await c.request("node.register", { name: "stop-pool-test", capabilities: ["ui"] });
+
+  // Spawn a mock ACP agent
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "stop-pool-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "stop-pool: agent spawned");
+  await sleep(2000);
+
+  // Verify node exists in list before stop
+  let list = await c.request("node.list", {});
+  let found = (list as any).nodes.find((n: any) => n.id === spawn.nodeId);
+  assert(!!found, "stop-pool: node exists in list before stop");
+
+  // Stop the node
+  await c.request("node.stop", { nodeId: spawn.nodeId });
+  await sleep(1000);
+
+  // After stop, node.list should NOT contain this node at all
+  list = await c.request("node.list", {});
+  found = (list as any).nodes.find((n: any) => n.id === spawn.nodeId);
+  assert(!found, "stop-pool: node removed from node.list after stop",
+    found ? `still present with status=${found.status}` : undefined);
+
+  // After stop, node.list by name should also not find it
+  const byName = (list as any).nodes.find((n: any) => n.name === "stop-pool-agent");
+  assert(!byName, "stop-pool: node not findable by name after stop",
+    byName ? `still present with status=${byName.status}` : undefined);
+
+  // Respawn with same name should succeed (proves name index was cleaned)
+  const respawn = await c.request("node.spawn", { adapter: "mock", name: "stop-pool-agent", cwd: ROOT });
+  assert(!!respawn.nodeId, "stop-pool: respawn with same name succeeds after stop");
+  assert(respawn.nodeId !== spawn.nodeId, "stop-pool: respawn gets new nodeId");
+
+  // Cleanup
+  await c.request("node.stop", { nodeId: respawn.nodeId });
+  await sleep(500);
+  await c.disconnect();
+}
+
+async function testTransportCloseRemovesFromPool() {
+  console.log("\n▸ transport.onClose pool removal: kill process → node should be removed from pool");
+
+  const c = new WsClient("transport-close-test");
+  await c.connect();
+  await c.request("node.register", { name: "transport-close-test", capabilities: ["ui"] });
+
+  // Spawn a mock ACP stdio agent
+  const spawn = await c.request("node.spawn", { adapter: "mock", name: "transport-close-agent", cwd: ROOT });
+  assert(!!spawn.nodeId, "transport-close: agent spawned");
+  await sleep(2000);
+
+  // Get the PID from node.list
+  let list = await c.request("node.list", {});
+  let node = (list as any).nodes.find((n: any) => n.id === spawn.nodeId);
+  assert(!!node, "transport-close: node in list before kill");
+  assert(typeof node.pid === "number" && node.pid > 0, "transport-close: node has valid pid",
+    `pid=${node?.pid}`);
+
+  // Kill the process to trigger transport.onClose
+  if (node?.pid) {
+    process.kill(node.pid, "SIGKILL");
+  }
+  await sleep(2000);
+
+  // After transport.onClose, node should be removed from pool
+  list = await c.request("node.list", {});
+  const found = (list as any).nodes.find((n: any) => n.id === spawn.nodeId);
+  assert(!found, "transport-close: node removed from node.list after process kill",
+    found ? `still present with status=${found.status}` : undefined);
+
+  const byName = (list as any).nodes.find((n: any) => n.name === "transport-close-agent");
+  assert(!byName, "transport-close: node not findable by name after process kill",
+    byName ? `still present with status=${byName.status}` : undefined);
+
+  // Respawn with same name should succeed
+  const respawn = await c.request("node.spawn", { adapter: "mock", name: "transport-close-agent", cwd: ROOT });
+  assert(!!respawn.nodeId, "transport-close: respawn with same name succeeds");
+
+  // Cleanup
+  await c.request("node.stop", { nodeId: respawn.nodeId });
+  await sleep(500);
   await c.disconnect();
 }
 
