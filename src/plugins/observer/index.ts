@@ -97,7 +97,7 @@ class Observer extends PluginBase {
       case "status":
         return { reply: `${this.eventCount} events, ${this.channelNames.size} channels` };
       case "report":
-        this.handleReport(args["0"] || "daily");
+        void this.handleReport(args["0"] || "daily");
         break;
       default:
         return `unknown command: ${command}`;
@@ -188,7 +188,7 @@ class Observer extends PluginBase {
       const { channelId, name } = params;
       this.log("info", `channel.created: ${name || channelId}, auto-joining`);
       if (name) this.channelNames.set(channelId, name);
-      this.autoJoin(channelId);
+      void this.autoJoin(channelId);
     });
 
     // node lifecycle broadcasts
@@ -284,5 +284,5 @@ async function shutdown() {
   await observer.flush();
   process.exit(0);
 }
-process.on("SIGTERM", () => { shutdown(); });
-process.on("SIGINT", () => { shutdown(); });
+process.on("SIGTERM", () => { void shutdown(); });
+process.on("SIGINT", () => { void shutdown(); });

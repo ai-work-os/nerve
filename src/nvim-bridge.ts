@@ -222,7 +222,7 @@ export async function main(argv?: string[]) {
   });
 
   const shutdown = () => {
-    bridge.stop();
+    void bridge.stop();
     process.exit(0);
   };
   process.on("SIGTERM", shutdown);

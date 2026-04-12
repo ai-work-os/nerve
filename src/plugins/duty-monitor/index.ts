@@ -80,7 +80,7 @@ export class CronScheduler {
         if (job.lastRun === undefined) {
           // First run
           job.lastRun = minuteKey;
-          job.action();
+          void job.action();
           fired.push(job.name);
           continue;
         }
@@ -88,7 +88,7 @@ export class CronScheduler {
         if (elapsed < 0) elapsed += 24 * 60; // wrapped midnight
         if (elapsed >= s.intervalMinutes) {
           job.lastRun = minuteKey;
-          job.action();
+          void job.action();
           fired.push(job.name);
         }
         continue;
@@ -100,7 +100,7 @@ export class CronScheduler {
       if (s.dayOfWeek !== undefined && s.dayOfWeek !== dayOfWeek) continue;
 
       job.lastRun = minuteKey;
-      job.action();
+      void job.action();
       fired.push(job.name);
     }
 
@@ -218,7 +218,7 @@ class DutyMonitor extends PluginBase {
     this.log("info", `tick interval: ${TICK_INTERVAL_MS}ms`);
 
     // Discover channel: poll channel.list until found (scene may not have joined us yet)
-    this.discoverChannel();
+    void this.discoverChannel();
 
     // Register cron jobs
     this.scheduler.addJob({
@@ -283,9 +283,9 @@ class DutyMonitor extends PluginBase {
         const task = args["0"] || args.task;
         this.log("info", `manual trigger: ${task} by ${from || "unknown"}`);
         switch (task) {
-          case "daily": this.triggerDaily(); break;
-          case "worklog": this.triggerWorklog(); break;
-          case "health": this.runHealthCheck(); break;
+          case "daily": void this.triggerDaily(); break;
+          case "worklog": void this.triggerWorklog(); break;
+          case "health": void this.runHealthCheck(); break;
           default:
             return `unknown task: "${task}". available: daily, worklog, health`;
         }
@@ -293,7 +293,7 @@ class DutyMonitor extends PluginBase {
       }
       case "check":
         this.log("info", `manual health check by ${from || "unknown"}`);
-        this.runHealthCheck();
+        void this.runHealthCheck();
         break;
     }
   }
@@ -327,7 +327,7 @@ class DutyMonitor extends PluginBase {
           this.channelId = channels[0].id || channels[0].channelId;
           this.log("info", `channel discovered lazily: ${this.channelId}`);
         }
-      } catch {}
+      } catch (e) { this.log("warn", `channel.list failed: ${e}`); }
     }
     if (!this.channelId) {
       this.log("warn", `no channel, cannot post: ${content}`);
@@ -343,12 +343,12 @@ class DutyMonitor extends PluginBase {
 
   private triggerDaily(): void {
     this.log("info", "triggering daily report");
-    this.postToChannelSafe("@duty-agent 写日报");
+    void this.postToChannelSafe("@duty-agent 写日报");
   }
 
   private triggerWorklog(): void {
     this.log("info", "triggering worklog");
-    this.postToChannelSafe("@duty-agent 整理 worklog");
+    void this.postToChannelSafe("@duty-agent 整理 worklog");
   }
 
   private async runHealthCheck(): Promise<void> {
@@ -388,7 +388,7 @@ class DutyMonitor extends PluginBase {
       if (alerts.length > 0) {
         const detail = alerts.map(a => `${a.metric}: ${a.value}%>${a.threshold}%`).join(", ");
         this.log("warn", `health alerts: ${detail}`);
-        this.postToChannelSafe(`@duty-agent 分析异常：${detail}`);
+        void this.postToChannelSafe(`@duty-agent 分析异常：${detail}`);
       }
 
       // V8 heap + RSS check (nerve server process)
@@ -404,7 +404,7 @@ class DutyMonitor extends PluginBase {
       if (processAlerts.length > 0) {
         const detail = processAlerts.map(a => `${a.metric}: ${a.value}MB>${a.threshold}MB`).join(", ");
         this.log("warn", `process health alerts: ${detail}`);
-        this.postToChannelSafe(`@duty-agent 分析异常：nerve ${detail}`);
+        void this.postToChannelSafe(`@duty-agent 分析异常：nerve ${detail}`);
       }
     } catch (err) {
       this.log("error", `health check failed: ${err}`);

@@ -121,7 +121,7 @@ export class UserRecorder extends PluginBase {
     // Auto-join new channels
     this.onNotification("channel.created", (params) => {
       this.log("info", `channel.created: ${params.name || params.channelId}, auto-joining`);
-      this.autoJoin(params.channelId);
+      void this.autoJoin(params.channelId);
     });
 
     await this.setActivity("recording");
@@ -214,6 +214,6 @@ if (isDirectRun) {
     await recorder.flush();
     process.exit(0);
   }
-  process.on("SIGTERM", () => { shutdown(); });
-  process.on("SIGINT", () => { shutdown(); });
+  process.on("SIGTERM", () => { void shutdown(); });
+  process.on("SIGINT", () => { void shutdown(); });
 }

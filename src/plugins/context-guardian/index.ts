@@ -67,7 +67,7 @@ class ContextGuardian extends PluginBase {
         return { reply: `monitoring, triggered=${this.triggeredSessions.size}, large=${THRESHOLD_LARGE}, small=${THRESHOLD_SMALL}` };
       case "trigger":
         this.log("info", `manual trigger requested for ${args.name || "unknown"}`);
-        this.poll();
+        void this.poll();
         break;
     }
   }
@@ -79,7 +79,7 @@ class ContextGuardian extends PluginBase {
     // Start polling
     this.pollTimer = setInterval(() => this.poll(), INTERVAL_MS);
     // Run immediately
-    this.poll();
+    void this.poll();
   }
 
   protected onDisconnect(): void {
@@ -145,7 +145,7 @@ class ContextGuardian extends PluginBase {
       const used = node.usage!.tokenUsed;
       const size = node.usage!.tokenSize;
       this.log("info", `${node.name}: triggering reset — usage=${used}/${size} (${(ratio * 100).toFixed(0)}%), threshold=${(dynamicThreshold * 100).toFixed(0)}%, status=${node.status}, session=${node.sessionId}, channels=${node.channels.join(",") || "none"}`);
-      this.triggerSummary(node, ratio);
+      void this.triggerSummary(node, ratio);
       this.lastActivity = `triggered ${node.name}`;
 
       // Mark as triggered

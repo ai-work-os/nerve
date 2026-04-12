@@ -178,7 +178,7 @@ export class SceneManager {
 
     const rollbackNodes = () => {
       for (const id of nodeIds) {
-        try { this.cm.stopNode(id); } catch {}
+        try { void this.cm.stopNode(id); } catch (e) { log.warn(`rollback stopNode ${id} failed: ${e}`); }
       }
     };
 
@@ -386,7 +386,7 @@ export class SceneManager {
     // Stop all nodes
     for (const nodeId of scene.nodeIds) {
       try {
-        this.cm.stopNode(nodeId);
+        void this.cm.stopNode(nodeId);
       } catch (err: any) {
         log.warn(`scene ${sceneName}: failed to stop node ${nodeId}: ${err.message}`);
       }

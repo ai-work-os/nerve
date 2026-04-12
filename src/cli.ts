@@ -140,11 +140,11 @@ async function cmdServe(args: string[]) {
     try {
       info("shutting down...");
       if (guardianNodeId) {
-        try { await nerve.nodePool.stopNode(guardianNodeId); } catch {}
+        try { await nerve.nodePool.stopNode(guardianNodeId); } catch (e) { info(`guardian stop failed: ${e}`); }
         info("guardian stopped");
       }
       if (recorderNodeId) {
-        try { await nerve.nodePool.stopNode(recorderNodeId); } catch {}
+        try { await nerve.nodePool.stopNode(recorderNodeId); } catch (e) { info(`user-recorder stop failed: ${e}`); }
         info("user-recorder stopped");
       }
       await server.shutdown();
@@ -420,31 +420,31 @@ const cmd = argv[0];
 if (!cmd || cmd === "--help" || cmd === "-h") {
   showHelp();
 } else if (cmd === "serve" || cmd === "server") {
-  cmdServe(argv.slice(1));
+  void cmdServe(argv.slice(1));
 } else if (cmd === "status" || cmd === "st") {
-  cmdStatus();
+  void cmdStatus();
 } else if (cmd === "channel" || cmd === "ch") {
   const sub = argv[1];
   if (!sub) die("Usage: nerve channel <list|create|close|history|post>");
-  cmdChannel(sub, argv.slice(2));
+  void cmdChannel(sub, argv.slice(2));
 } else if (cmd === "node" || cmd === "n") {
   const sub = argv[1];
   if (!sub) die("Usage: nerve node <list|spawn|stop>");
-  cmdNode(sub, argv.slice(2));
+  void cmdNode(sub, argv.slice(2));
 } else if (cmd === "post") {
   // Shortcut: nerve post <channelId> <message> [--from X]
-  cmdChannel("post", argv.slice(1));
+  void cmdChannel("post", argv.slice(1));
 } else if (cmd === "log") {
-  cmdLog(argv.slice(1));
+  void cmdLog(argv.slice(1));
 } else if (cmd === "bridge" || cmd === "br") {
   import("./nvim-bridge.js").then(m => m.main(argv.slice(1))).catch(err => die(`bridge error: ${err.message}`));
 } else if (cmd === "scene" || cmd === "sc") {
   const sub = argv[1];
   if (!sub) die("Usage: nerve scene <list|start|stop> [name]");
-  cmdScene(sub, argv.slice(2));
+  void cmdScene(sub, argv.slice(2));
 } else if (cmd === "--port") {
   // Legacy: nerve --port 4800 → treat as serve
-  cmdServe(argv);
+  void cmdServe(argv);
 } else {
   die(`Unknown command: ${cmd}\nRun 'nerve --help' for usage.`);
 }

@@ -275,10 +275,6 @@ export class HttpRouter {
         const channelId = data.channelId as string | undefined;
         const standalone = data.standalone as boolean | undefined;
 
-        if (this.cm.nodePool.isNameTaken(name)) {
-          throw new Error(this.cm.nodePool.getNameConflictInfo(name));
-        }
-
         const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
 
         // Auto-join channel if requested and not standalone
@@ -339,7 +335,7 @@ export class HttpRouter {
 
         // kill on spawned program nodes
         if (content.trim().toLowerCase() === "kill" && this.cm.nodePool.isProgramNode(targetNode.id)) {
-          this.cm.stopNode(targetNode.id);
+          void this.cm.stopNode(targetNode.id);
           return { ok: true, action: "killed" };
         }
 

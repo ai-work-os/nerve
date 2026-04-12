@@ -190,7 +190,7 @@ class McTranscriberPlugin extends PluginBase {
 
   protected onDisconnect(): void {
     if (this.recording) {
-      this.stopRecording().catch(() => {});
+      this.stopRecording().catch((e) => this.log("warn", `stopRecording on disconnect failed: ${e}`));
     }
   }
 
@@ -218,15 +218,15 @@ class McTranscriberPlugin extends PluginBase {
     switch (command) {
       case "start": {
         const source = (args.source || args["0"] || AUDIO_SOURCE) as AudioSource;
-        this.startRecording(source, from, this.channelId ?? undefined);
+        void this.startRecording(source, from, this.channelId ?? undefined);
         break;
       }
       case "stop":
-        this.stopRecording();
+        void this.stopRecording();
         break;
       case "continue":
         if (!this.recording) {
-          this.startRecording();
+          void this.startRecording();
         } else {
           this.log("info", "already recording, continue is no-op");
         }
@@ -388,7 +388,7 @@ class McTranscriberPlugin extends PluginBase {
     this.capture.on("exit", (code: number | null) => {
       this.log("info", `capture exited: code=${code}`);
       if (this.recording) {
-        this.stopRecording().catch(() => {});
+        this.stopRecording().catch((e) => this.log("warn", `stopRecording on capture exit failed: ${e}`));
       }
     });
 
@@ -471,7 +471,7 @@ class McTranscriberPlugin extends PluginBase {
         this.log("info", `flush triggered by stop, ${lines.length} lines`);
         break;
     }
-    this.pushToChannel(lines);
+    void this.pushToChannel(lines);
   }
 
   private async pushToChannel(lines: string[]): Promise<void> {
