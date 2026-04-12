@@ -120,3 +120,16 @@ export interface MessageInfo {
   timestamp: number;
   metadata?: Record<string, unknown>;
 }
+
+// In-memory DM message (per-node) — assembled from streaming events,
+// replayed via message_snapshot on subscribe.
+export type MessageRole = "user" | "agent" | "system";
+
+export interface Message {
+  id: string;        // nerve-generated, stable within one nerve process lifetime
+  nodeId: string;
+  role: MessageRole;
+  sender: string;    // display name (e.g., "claude", "renjinxi")
+  text: string;      // full assembled text
+  ts: number;        // unix ms
+}

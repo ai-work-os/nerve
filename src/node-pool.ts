@@ -10,7 +10,7 @@ import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientp
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
 import type { Store } from "./store.js";
-import type { NodeStatus, PermissionLevel } from "./protocol.js";
+import type { NodeStatus, PermissionLevel, Message } from "./protocol.js";
 import type { WebSocket } from "ws";
 
 export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
@@ -113,8 +113,8 @@ export class NodePool {
     this.pendingPrograms.delete(node.name);
     node._manualStop = false;
 
-    // Update buffer
-    node.clearUpdateBuffer();
+    // Message store
+    node.clearMessageStore();
 
     // Event notification
     this.onEvent("node.stopped", node, { exitCode: opts?.exitCode, reason: opts?.reason || "unknown" });
@@ -157,6 +157,9 @@ export class NodePool {
 
   /** Register a WebSocket node (nvim, browser, CLI tool) */
   registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {
+    if (this.isNameTaken(name)) {
+      throw new Error(this.getNameConflictInfo(name));
+    }
     const id = nanoid(12);
     const transport = new WebSocketTransport(ws);
     const node = new NerveNode({ id, name, transport, capabilities, permissions });
@@ -187,6 +190,9 @@ export class NodePool {
   }
 
   private _spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
+    if (this.isNameTaken(name)) {
+      throw new Error(this.getNameConflictInfo(name));
+    }
     const adapter = getAdapter(adapterName);
     if (!adapter) throw new Error(`unknown adapter: ${adapterName}`);
 
@@ -231,7 +237,7 @@ export class NodePool {
             existing.model = adapter.model;
             writeFileSync(settingsFile, JSON.stringify(existing, null, 2));
           }
-        } catch { /* ignore parse errors */ }
+        } catch (e) { log.warn(`settings.local.json parse error for ${name}: ${e}`); }
       }
     }
 
@@ -279,7 +285,7 @@ export class NodePool {
       cwd,
       mcpServers,
       onUpdate: (params: SessionNotification) => {
-        node.pushUpdate(params);
+        node.observeUpdate(params);
 
         // 从 session/update 自动提取 activity，推送 statusChanged
         const update = params.update;
@@ -295,11 +301,21 @@ export class NodePool {
           }
         }
 
-        // DM capture: accumulate agent_message_chunk text for dm.response
-        const chunkKind = (params as any)?.update?.sessionUpdate;
-        if (chunkKind === "agent_message_chunk" && node._dmResponseBuffer !== undefined) {
+        // Assembler: accumulate agent_message_chunk text into in-flight Message.
+        // Lazy-init the in-flight message on first chunk (ACP agents may or may not send agent_message_start).
+        const kind = (params as any)?.update?.sessionUpdate;
+        if (kind === "agent_message_start") {
+          node.inFlightAgent = { id: nanoid(16), text: "" };
+        } else if (kind === "agent_message_chunk") {
+          if (!node.inFlightAgent) {
+            node.inFlightAgent = { id: nanoid(16), text: "" };
+          }
           const chunkText = (params as any)?.update?.content?.text;
-          if (chunkText) node._dmResponseBuffer += chunkText;
+          if (typeof chunkText === "string") node.inFlightAgent.text += chunkText;
+          // DM capture (legacy): keep populating _dmResponseBuffer for dm.response event compatibility
+          if (chunkText && node._dmResponseBuffer !== undefined) {
+            node._dmResponseBuffer += chunkText;
+          }
         }
 
         this.onEvent("node.update", node, params);
@@ -319,7 +335,7 @@ export class NodePool {
     });
 
     this.acpClients.set(id, client);
-    client.handshake(); // Don't await - let it run async
+    void client.handshake(); // Don't await - let it run async
 
     this.onEvent("node.registered", node);
     this.onEvent("node.statusChanged", node);
@@ -488,7 +504,16 @@ export class NodePool {
     log.debug(`dm.prompt emitted: ${node.name}, text="${text.slice(0, 50)}"`);
 
     const userMsgParams: Record<string, unknown> = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
-    node.pushUpdate(userMsgParams);
+    node.observeUpdate(userMsgParams);
+    const userMessage: Message = {
+      id: nanoid(16),
+      nodeId,
+      role: "user",
+      sender: from?.name ?? "user",
+      text,
+      ts: Date.now(),
+    };
+    node.appendMessage(userMessage);
     this.onEvent("node.update", node, excludeWs ? { ...userMsgParams, _excludeWs: excludeWs } : userMsgParams);
 
     let result: { stopReason?: string; error?: string };
@@ -499,6 +524,19 @@ export class NodePool {
       // DM capture: emit dm.response with error
       const responseText = node._dmResponseBuffer ?? "";
       node._dmResponseBuffer = undefined;
+      // Finalize any partial in-flight assembler text so replay keeps it.
+      const partial = node.inFlightAgent;
+      node.inFlightAgent = null;
+      if (partial?.text) {
+        node.appendMessage({
+          id: partial.id,
+          nodeId,
+          role: "agent",
+          sender: node.name,
+          text: partial.text,
+          ts: Date.now(),
+        });
+      }
       this.onEvent("dm.response", node, {
         text: responseText,
         error: err.message,
@@ -527,6 +565,25 @@ export class NodePool {
       ts: new Date().toISOString(),
     });
     log.debug(`dm.response emitted: ${node.name}, stopReason=${result.stopReason}, textLen=${responseText.length}`);
+
+    // Finalize in-flight assembler → append to messageStore for replay.
+    // Prefer assembler text (built from chunks); fall back to _dmResponseBuffer
+    // if assembler was never initialized (shouldn't happen but be safe).
+    const inFlight = node.inFlightAgent;
+    node.inFlightAgent = null;
+    const assembledText = inFlight?.text ?? responseText;
+    if (assembledText) {
+      const agentMsg: Message = {
+        id: inFlight?.id ?? nanoid(16),
+        nodeId,
+        role: "agent",
+        sender: node.name,
+        text: assembledText,
+        ts: Date.now(),
+      };
+      node.appendMessage(agentMsg);
+      log.debug(`agent message finalized: ${node.name}, id=${agentMsg.id} len=${assembledText.length}`);
+    }
 
     this._setNodeStatus(node, "idle");
     log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
@@ -576,7 +633,7 @@ export class NodePool {
     const result = await client.sessionClear();
     if (!result.error && result.sessionId) {
       node.sessionId = result.sessionId;
-      node.clearUpdateBuffer();
+      node.clearMessageStore();
       node.usage = undefined;
       node.status = "idle";
       this.store.updateNodeStatus(nodeId, "idle", result.sessionId);
@@ -629,7 +686,7 @@ export class NodePool {
 
       // Update node state
       node.sessionId = result.sessionId;
-      node.clearUpdateBuffer();
+      node.clearMessageStore();
       node.usage = undefined;
       node.prompted = false;
       node.status = "idle";
@@ -649,7 +706,7 @@ export class NodePool {
       log.info(`session reset: ${node.name} ${previousSessionId} → ${result.sessionId}, source=${source}, summary=${summaryPath}`);
       log.info(`recovery prompt: sending to ${node.name}, channel=${channelId}, summaryPath=${summaryPath}`);
       // Send recovery prompt (don't await — let agent process async)
-      this.promptNode(nodeId, resetPrompt);
+      void this.promptNode(nodeId, resetPrompt);
 
       return { sessionId: result.sessionId, previousSessionId };
     } finally {
@@ -703,7 +760,7 @@ export class NodePool {
   async shutdown(): Promise<void> {
     for (const [id, node] of this.nodes) {
       if (node.isProcess || this.programProcesses.has(id)) {
-        this.stopNode(id);
+        void this.stopNode(id);
       } else {
         node.transport.close();
       }

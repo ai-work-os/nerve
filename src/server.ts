@@ -372,7 +372,7 @@ export class Server {
         // node.list handled by handleRpcRequest above
 
         case "node.log": {
-          // Program nodes push log entries to their updateBuffer for DM observability
+          // Program nodes emit log entries — broadcast live only, not replayed on reconnect
           const callerNodeId = this.wsNodeMap.get(ws);
           if (!callerNodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
           const node = this.cm.nodePool.get(callerNodeId);
@@ -389,8 +389,10 @@ export class Server {
             if (!entry.ts) entry.ts = now;
           }
 
+          // Program logs are broadcast live to subscribers only — not stored for replay.
+          // (nerve is a live message router; program logs are stream-shaped, not conversational.
+          // If history is needed, the program should persist to its own file.)
           const updateParams = { update: { sessionUpdate: "node_log", entries } };
-          node.pushUpdate(updateParams);
           this.cm.nodePool.emitEvent("node.update", node, updateParams);
           this.sendResult(ws, id, { ok: true });
           break;
@@ -440,7 +442,7 @@ export class Server {
 
           // kill command on spawned program nodes: server-side SIGTERM
           if (content.trim().toLowerCase() === "kill" && this.cm.nodePool.isProgramNode(nodeId)) {
-            this.cm.stopNode(nodeId);
+            void this.cm.stopNode(nodeId);
             this.sendResult(ws, id, { ok: true, action: "killed" });
             break;
           }

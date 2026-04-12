@@ -236,30 +236,22 @@ async function testProgramNodeNoChannelMessageBroadcast() {
   // More directly: we spawn another WS client that is NOT in the channel
   // and compare what it receives vs what prog-node should receive.
 
-  // Direct approach: subscribe to prog-node and check for unexpected updates
+  // Subscribe to prog-node and verify no unexpected live node_log entries.
+  // Program logs are live-only (not replayed), so we must listen after subscribing.
   await tui.request("node.subscribe", { nodeId: progNodeId });
   tui.clearNotifications();
 
-  // Post another message
+  // Post another message without @mention
   await tui.request("channel.post", { channelId, content: "second message, also no mention" });
   await sleep(500);
 
-  // Check node.update notifications from prog-node
-  // If prog-node received channel.message, it would NOT produce node.update for it
-  // (mock-program only logs node.message, not channel.message)
-  // But this doesn't help us directly verify the bug.
-
-  // Better approach: check prog-node's transport wasn't sent channel.message.
-  // We can use node.updates to see what the node logged.
-  const updates = await tui.request("node.updates", { nodeName: "prog-node" });
-  const logEntries = (updates.updates || [])
-    .filter((u: any) => u.update?.sessionUpdate === "node_log")
-    .flatMap((u: any) => u.update?.entries || []);
-
-  // If prog-node received channel.message, it would NOT produce a log for it
-  // (mock-program only handles node.message). So we verify there's no unexpected
-  // "dm:" log from channel messages being misrouted as node.message.
-  const dmLogs = logEntries.filter((e: any) => e.message?.startsWith("dm:"));
+  // If prog-node had received channel.message as a DM, mock-program would emit
+  // a node_log with a "dm:" prefixed entry. Verify none arrived.
+  const progUpdates = tui.getNotifications("node.update");
+  const dmLogs = progUpdates
+    .filter((n: any) => n.params.update?.sessionUpdate === "node_log")
+    .flatMap((n: any) => n.params.update?.entries || [])
+    .filter((e: any) => e.message?.startsWith("dm:"));
   assert(dmLogs.length === 0, "program node did not receive channel messages as DM",
     `got ${dmLogs.length} DM-like log entries: ${dmLogs.map((e: any) => e.message).join("; ")}`);
 

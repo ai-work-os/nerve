@@ -903,15 +903,16 @@ async function testUpdateBuffer() {
   });
   await sleep(5000);
 
-  // Verify buffer has content via node.updates API
+  // Verify messageStore has content via node.updates API (now returns messages[])
   const bufResult = await c1.request("node.updates", { nodeName: "buf-agent" });
+  const storeMsgs = (bufResult.messages || []) as Array<any>;
   assert(
-    bufResult.updates && bufResult.updates.length > 0,
-    "buffer test: updateBuffer has content",
-    `got ${bufResult.updates?.length || 0} updates`,
+    storeMsgs.length > 0,
+    "buffer test: messageStore has content",
+    `got ${storeMsgs.length} messages`,
   );
 
-  // Client 2: new connection, subscribe to agent → should receive replay via node.subscribe
+  // Client 2: new connection, subscribe to agent → should receive message_snapshot
   const c2 = new WsClient("buf-client2");
   await c2.connect();
   await c2.request("node.register", { name: "buf-client2", capabilities: ["ui"] });
@@ -919,50 +920,36 @@ async function testUpdateBuffer() {
   await c2.request("node.subscribe", { nodeId: agentNode.id });
   await sleep(500);
 
-  // c2 should have received replayed node.update notifications via subscribe
-  const replayed = c2.getNotifications("node.update");
+  const snapshots = c2.getNotifications("message_snapshot");
   assert(
-    replayed.length > 0,
-    "buffer test: new client received replay on join",
-    `got ${replayed.length} replayed updates`,
+    snapshots.length === 1,
+    "buffer test: new client received snapshot",
+    `got ${snapshots.length}`,
+  );
+  const snapMessages = (snapshots[0]?.params?.messages || []) as Array<any>;
+  assert(
+    snapMessages.length > 0,
+    "buffer test: snapshot contains messages",
+    `got ${snapMessages.length}`,
+  );
+  assert(
+    snapshots[0]?.params?.name === "buf-agent",
+    "buffer test: snapshot has correct agent name",
   );
 
-  // Verify replay contains agent name
-  if (replayed.length > 0) {
-    assert(
-      replayed[0].params.name === "buf-agent",
-      "buffer test: replay has correct agent name",
-    );
-  }
-
-  // Verify buffer contains user_message (user prompt)
-  const userMsgs = bufResult.updates.filter(
-    (u: any) => u.update?.sessionUpdate === "user_message",
-  );
+  // Verify store contains user message
+  const userMsgs = storeMsgs.filter(m => m.role === "user");
   assert(
     userMsgs.length > 0,
-    "buffer test: contains user_message",
+    "buffer test: contains user message",
     `found ${userMsgs.length} user messages`,
   );
-
-  // Verify user_message has correct content
   if (userMsgs.length > 0) {
-    const text = userMsgs[0].update?.content?.text;
     assert(
-      typeof text === "string" && text.length > 0,
-      "buffer test: user_message has text content",
+      typeof userMsgs[0].text === "string" && userMsgs[0].text.length > 0,
+      "buffer test: user message has text content",
     );
   }
-
-  const bufHasChunk = bufResult.updates.some(
-    (u: any) => u.update?.sessionUpdate === "agent_message_chunk",
-  );
-  assertEq(bufHasChunk, false, "buffer test: node.updates excludes agent_message_chunk");
-
-  const replayHasChunk = replayed.some(
-    (n: any) => n.params.update?.sessionUpdate === "agent_message_chunk",
-  );
-  assertEq(replayHasChunk, false, "buffer test: replay excludes agent_message_chunk");
 
   // Cleanup
   if (agentNode) {
@@ -1006,43 +993,31 @@ async function testMultiTurnBuffer() {
   await c1.request("node.prompt", { nodeId: agentNode.id, content: "second question" });
   await sleep(1000);
 
-  // Check buffer
+  // Check messageStore
   const bufResult = await c1.request("node.updates", { nodeName: "mt-agent" });
-  const updates = bufResult.updates || [];
-  const userMsgs = updates.filter(
-    (u: any) => u.update?.sessionUpdate === "user_message",
-  );
+  const storeMessages = (bufResult.messages || []) as Array<any>;
+  const userMsgs = storeMessages.filter(m => m.role === "user");
   assert(
     userMsgs.length === 2,
-    "multi-turn: buffer has 2 user_messages",
+    "multi-turn: store has 2 user messages",
     `got ${userMsgs.length}`,
   );
 
   // Verify content
   if (userMsgs.length >= 2) {
-    assert(
-      userMsgs[0].update.content.text === "first question",
-      "multi-turn: first user_message correct",
-    );
-    assert(
-      userMsgs[1].update.content.text === "second question",
-      "multi-turn: second user_message correct",
-    );
+    assert(userMsgs[0].text === "first question", "multi-turn: first user message correct");
+    assert(userMsgs[1].text === "second question", "multi-turn: second user message correct");
   }
 
-  // Verify order: user1 → agent1 → user2 → agent2
-  const kinds = updates
-    .filter((u: any) => u.update?.sessionUpdate)
-    .map((u: any) => u.update.sessionUpdate);
-  const firstUser = kinds.indexOf("user_message");
-  const secondUser = kinds.indexOf("user_message", firstUser + 1);
+  // Verify ordering: user1 → agent1 → user2 → agent2 (monotonic ts)
+  const roles = storeMessages.map(m => m.role);
   assert(
-    firstUser >= 0 && secondUser > firstUser,
-    "multi-turn: both user_messages in order",
-    `positions: ${firstUser}, ${secondUser} in [${kinds.join(",")}]`,
+    roles.length >= 4 && roles[0] === "user" && roles[1] === "agent" && roles[2] === "user" && roles[3] === "agent",
+    "multi-turn: message order user→agent→user→agent",
+    `got [${roles.join(",")}]`,
   );
 
-  // Reconnect test: new client subscribes and should see all messages via node.subscribe
+  // Reconnect test: new client subscribes and should see all messages via message_snapshot
   const c2 = new WsClient("mt-client2");
   await c2.connect();
   await c2.request("node.register", { name: "mt-client2", capabilities: ["ui"] });
@@ -1050,14 +1025,14 @@ async function testMultiTurnBuffer() {
   await c2.request("node.subscribe", { nodeId: agentNode.id });
   await sleep(500);
 
-  const replayed = c2.getNotifications("node.update");
-  const replayedUserMsgs = replayed.filter(
-    (n: any) => n.params.update?.sessionUpdate === "user_message",
-  );
+  const snapshots = c2.getNotifications("message_snapshot");
+  assert(snapshots.length === 1, "multi-turn: new client received snapshot");
+  const snapMessages = (snapshots[0]?.params?.messages || []) as Array<any>;
+  const snapUserMsgs = snapMessages.filter(m => m.role === "user");
   assert(
-    replayedUserMsgs.length === 2,
-    "multi-turn: replay has 2 user_messages",
-    `got ${replayedUserMsgs.length}`,
+    snapUserMsgs.length === 2,
+    "multi-turn: snapshot has 2 user messages",
+    `got ${snapUserMsgs.length}`,
   );
 
   // Cleanup
@@ -1065,6 +1040,99 @@ async function testMultiTurnBuffer() {
   await sleep(500);
   await c1.disconnect();
   await c2.disconnect();
+}
+
+// ============================================================
+// message_snapshot: assembled DM history delivered on subscribe
+// ============================================================
+
+async function testBufferAgentResponse() {
+  console.log("\n▸ message_snapshot: assembled history delivered on subscribe");
+
+  const c1 = new WsClient("bar-client1");
+  await c1.connect();
+  await c1.request("node.register", { name: "bar-client1", capabilities: ["ui"] });
+
+  // Spawn mock agent
+  const spawn = await httpPost("/node/spawn", {
+    adapter: "mock",
+    name: "bar-agent",
+    cwd: ROOT,
+  });
+  assert(!!spawn.nodeId, "bar: agent spawned");
+  await sleep(3000);
+
+  const nodes = await httpPost("/node/list", {});
+  const agentNode = (nodes as any).nodes.find((n: any) => n.name === "bar-agent");
+  assert(!!agentNode && agentNode.status === "idle", "bar: agent ready");
+
+  if (!agentNode) {
+    await c1.disconnect();
+    return;
+  }
+
+  // Prompt via node.prompt (1v1 direct)
+  await c1.request("node.prompt", { nodeId: agentNode.id, content: "hello agent" });
+  await sleep(1000);
+
+  // node.updates RPC returns the assembled message history
+  const bufResult = await c1.request("node.updates", { nodeName: "bar-agent" });
+  const messages = (bufResult.messages || []) as Array<any>;
+  const userMsgs = messages.filter(m => m.role === "user");
+  const agentMsgs = messages.filter(m => m.role === "agent");
+  assert(userMsgs.length === 1, "bar: store has 1 user message", `got ${userMsgs.length}`);
+  assert(agentMsgs.length === 1, "bar: store has 1 agent message", `got ${agentMsgs.length}`);
+  assert(userMsgs[0].text === "hello agent", "bar: user message text", `got ${JSON.stringify(userMsgs[0].text)}`);
+  assert(
+    typeof agentMsgs[0].text === "string" && agentMsgs[0].text.length > 0,
+    "bar: agent message has text",
+    `got ${JSON.stringify(agentMsgs[0].text)}`,
+  );
+
+  // New client subscribes → receives message_snapshot with the full history
+  const c2 = new WsClient("bar-client2");
+  await c2.connect();
+  await c2.request("node.register", { name: "bar-client2", capabilities: ["ui"] });
+  c2.clearNotifications();
+  await c2.request("node.subscribe", { nodeId: agentNode.id });
+  await sleep(500);
+
+  const snapshots = c2.getNotifications("message_snapshot");
+  assert(snapshots.length === 1, "bar: exactly one snapshot on subscribe", `got ${snapshots.length}`);
+  const snapMessages = (snapshots[0]?.params?.messages || []) as Array<any>;
+  assert(snapMessages.length === 2, "bar: snapshot contains 2 messages", `got ${snapMessages.length}`);
+  assert(snapMessages[0].role === "user" && snapMessages[1].role === "agent", "bar: snapshot ordering (user, agent)");
+
+  // Multi-turn: second prompt should add another pair to the store
+  await c1.request("node.prompt", { nodeId: agentNode.id, content: "second question" });
+  await sleep(1000);
+
+  const buf2 = await c1.request("node.updates", { nodeName: "bar-agent" });
+  const messages2 = (buf2.messages || []) as Array<any>;
+  assert(
+    messages2.length === 4,
+    "bar: store has 4 messages after 2 prompts",
+    `got ${messages2.length}`,
+  );
+
+  // New client subscribing again → snapshot should reflect both turns
+  const c3 = new WsClient("bar-client3");
+  await c3.connect();
+  await c3.request("node.register", { name: "bar-client3", capabilities: ["ui"] });
+  c3.clearNotifications();
+  await c3.request("node.subscribe", { nodeId: agentNode.id });
+  await sleep(500);
+
+  const snap3 = c3.getNotifications("message_snapshot");
+  assert(snap3.length === 1, "bar: c3 snapshot", `got ${snap3.length}`);
+  assert((snap3[0]?.params?.messages || []).length === 4, "bar: c3 snapshot has 4 messages");
+
+  // Cleanup: stop node → fresh spawn should start with an empty snapshot
+  await httpPost("/node/stop", { nodeId: agentNode.id });
+  await sleep(500);
+  await c1.disconnect();
+  await c2.disconnect();
+  await c3.disconnect();
 }
 
 // ============================================================
@@ -2158,7 +2226,9 @@ async function testNodeLog() {
     assertEq(entries[1].level, "warn", "node.log batch: second level");
   }
 
-  // 5. Replay on re-subscribe — new observer should get buffered log entries
+  // 5. Replay semantics — program logs are NOT replayed (live broadcast only).
+  //    New subscribers get an empty message_snapshot. Live logs after subscribe
+  //    still arrive as node.update notifications.
   const observer2 = new WsClient("log-observer-2");
   await observer2.connect();
   await observer2.request("node.register", { name: "log-observer-2", capabilities: ["ui"] });
@@ -2166,11 +2236,18 @@ async function testNodeLog() {
   await observer2.request("node.subscribe", { nodeId: pluginNode.id });
   await sleep(200);
 
-  const replayed = observer2.getNotifications("node.update");
-  assert(replayed.length >= 2, "node.log replay: new subscriber gets buffered entries", `got ${replayed.length}`);
-  // Verify replayed entries contain node_log
-  const logReplays = replayed.filter((n: any) => n.params.update?.sessionUpdate === "node_log");
-  assert(logReplays.length >= 2, "node.log replay: replayed entries are node_log type", `got ${logReplays.length}`);
+  const snaps = observer2.getNotifications("message_snapshot");
+  assert(snaps.length === 1, "node.log: new subscriber receives snapshot envelope", `got ${snaps.length}`);
+  const snapMsgs = (snaps[0]?.params?.messages || []) as Array<any>;
+  assertEq(snapMsgs.length, 0, "node.log: snapshot is empty (logs are not replayed)");
+
+  // Live log after subscribe still delivered
+  observer2.clearNotifications();
+  await plugin.request("node.log", { entries: [{ level: "info", message: "live entry" }] });
+  await sleep(200);
+  const liveUpdates = observer2.getNotifications("node.update");
+  const liveLog = liveUpdates.find((n: any) => n.params.update?.sessionUpdate === "node_log");
+  assert(!!liveLog, "node.log: live entries still broadcast to subscribers");
 
   // 6. Error for non-registered caller
   const stranger = new WsClient("log-stranger");
@@ -4904,6 +4981,7 @@ async function main() {
     await testMockAgent();
     await testUpdateBuffer();
     await testMultiTurnBuffer();
+    await testBufferAgentResponse();
 
     // New: 1v1 agent management tests
     await testNodeSubscribe();
@@ -5366,11 +5444,11 @@ async function testIntegrationSpawnPromptUpdate() {
   assert(!!busyChange, "integ-prompt: received statusChanged busy");
   assert(!!idleChange, "integ-prompt: received statusChanged idle (after prompt completes)");
 
-  // Verify update buffer has the updates (for replay on reconnect)
+  // Verify messageStore has the assembled history (for replay on reconnect)
   const bufResult = await c.request("node.updates", { nodeName: "integ-agent-1" });
-  assert(Array.isArray(bufResult.updates), "integ-prompt: node.updates returns array");
-  assert(bufResult.updates.length > 0, "integ-prompt: update buffer is non-empty",
-    `buffer has ${bufResult.updates?.length || 0} entries`);
+  assert(Array.isArray(bufResult.messages), "integ-prompt: node.updates returns messages array");
+  assert(bufResult.messages.length > 0, "integ-prompt: message store is non-empty",
+    `store has ${bufResult.messages?.length || 0} entries`);
 
   // Cleanup
   await httpPost("/node/stop", { nodeId: spawn.nodeId });
@@ -5657,20 +5735,18 @@ async function testIntegrationSpawnPromptSubscribeUpdate() {
   );
   assert(hasAgentReply, "integ-verify: watcher received agent_message_chunk");
 
-  // Verify buffer matches what was delivered
+  // Verify messageStore matches what was delivered
   const buf = await sender.request("node.updates", { nodeName: "integ-verify-agent" });
-  assert(buf.updates.length > 0, "integ-verify: update buffer is non-empty");
+  const bufMessages = (buf.messages || []) as Array<any>;
+  assert(bufMessages.length > 0, "integ-verify: message store is non-empty");
 
-  const bufHasUserMsg = buf.updates.some((u: any) =>
-    u.update?.sessionUpdate === "user_message" &&
-    u.update?.content?.text === "verify-update-chain"
+  const storeHasUserMsg = bufMessages.some(m =>
+    m.role === "user" && m.text === "verify-update-chain"
   );
-  assert(bufHasUserMsg, "integ-verify: buffer contains user_message with correct content");
+  assert(storeHasUserMsg, "integ-verify: store contains user message with correct content");
 
-  const bufHasAgentChunk = buf.updates.some((u: any) =>
-    u.update?.sessionUpdate === "agent_message_chunk"
-  );
-  assertEq(bufHasAgentChunk, false, "integ-verify: buffer excludes agent_message_chunk");
+  const storeHasAgent = bufMessages.some(m => m.role === "agent" && m.text.length > 0);
+  assert(storeHasAgent, "integ-verify: store contains agent message with non-empty text");
 
   // Cleanup
   await httpPost("/node/stop", { nodeId: spawn.nodeId });
@@ -5772,17 +5848,13 @@ async function testUpdateBufferSizeNormalized() {
 
   await sleep(500);
 
-  const bufResult = await c.request("node.updates", { nodeName: "buf-size-agent" });
-  const usageUpdates = (bufResult.updates || []).filter(
-    (u: any) => u.update?.sessionUpdate === "usage_update",
-  );
-  assert(usageUpdates.length >= 2, "buf-size: at least 2 usage_updates in buffer",
-    `got ${usageUpdates.length}`);
-
-  for (const u of usageUpdates) {
-    assert(u.update.size === 999999,
-      `buf-size: usage_update size should be 999999 (normalized), got ${u.update.size}`);
-  }
+  // usage_update events are no longer buffered; they're applied to node.usage
+  // in observeUpdate. Verify the normalized size ended up on the node info.
+  const list = await c.request("node.list", {});
+  const agent = (list as any).nodes.find((n: any) => n.name === "buf-size-agent");
+  assert(!!agent, "buf-size: agent found in node.list");
+  assert(agent.usage?.tokenSize === 999999,
+    `buf-size: node.usage.tokenSize should be 999999 (normalized), got ${agent.usage?.tokenSize}`);
 
   await httpPost("/node/stop", { nodeId: spawn.nodeId });
   await sleep(300);

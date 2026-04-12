@@ -1,4 +1,5 @@
 import { WebSocket } from "ws";
+import type { Message } from "./protocol.js";
 
 /**
  * Manages direct node subscriptions (node.subscribe / node.unsubscribe).
@@ -8,27 +9,30 @@ export class SubscriptionManager {
   // nodeId → Set<WebSocket>
   private nodeSubscribers = new Map<string, Set<WebSocket>>();
 
-  /** Subscribe a WebSocket to a node's updates. Replays existing buffer. */
+  /** Subscribe a WebSocket to a node's updates. Sends a message_snapshot
+   *  with the node's assembled Message history as a one-shot notification. */
   subscribe(
     ws: WebSocket,
     nodeId: string,
-    node: { id: string; name: string; updateBuffer: Record<string, unknown>[] },
+    node: { id: string; name: string; messageStore: Message[] },
   ): void {
     if (!this.nodeSubscribers.has(nodeId)) {
       this.nodeSubscribers.set(nodeId, new Set());
     }
     this.nodeSubscribers.get(nodeId)!.add(ws);
 
-    // Replay existing buffer to subscriber
-    if (node.updateBuffer.length > 0) {
-      for (const update of node.updateBuffer) {
-        ws.send(JSON.stringify({
-          jsonrpc: "2.0",
-          method: "node.update",
-          params: { nodeId: node.id, name: node.name, ...update },
-        }));
-      }
-    }
+    // Send snapshot of assembled messages (replaces legacy per-event replay).
+    // Sent regardless of whether store is empty — clients rely on snapshot
+    // presence to know the authoritative history baseline.
+    ws.send(JSON.stringify({
+      jsonrpc: "2.0",
+      method: "message_snapshot",
+      params: {
+        nodeId: node.id,
+        name: node.name,
+        messages: node.messageStore,
+      },
+    }));
   }
 
   /** Unsubscribe a WebSocket from a node's updates. */

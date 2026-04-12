@@ -60,22 +60,22 @@ function makeUsageUpdate(used: number, size: number, cost?: number): any {
 }
 
 function testLastReportedSizeUpdatesOnFirstPush() {
-  console.log("\n▸ pushUpdate: first usage_update sets lastReportedSize");
+  console.log("\n▸ observeUpdate: first usage_update sets lastReportedSize");
   const node = makeNode("mock");
   // mock adapter model "mock-model-v1" → getContextWindow returns 999999
-  node.pushUpdate(makeUsageUpdate(10_000, 200_000));
-  assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize set to normalized value after first push");
+  node.observeUpdate(makeUsageUpdate(10_000, 200_000));
+  assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize set to normalized value after first observe");
 }
 
 function testLastReportedSizeUpdatesOnSizeChange() {
-  console.log("\n▸ pushUpdate: two different sizes → lastReportedSize tracks latest (normalized)");
+  console.log("\n▸ observeUpdate: two different sizes → lastReportedSize tracks latest (normalized)");
   const node = makeNode("mock");
   // mock adapter model "mock-model-v1" → getContextWindow returns 999999
-  // Both pushes normalize to 999999 regardless of raw size
-  node.pushUpdate(makeUsageUpdate(10_000, 200_000));
-  assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize normalized after first push");
-  node.pushUpdate(makeUsageUpdate(50_000, 300_000));
-  assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize stays normalized after second push");
+  // Both observes normalize to 999999 regardless of raw size
+  node.observeUpdate(makeUsageUpdate(10_000, 200_000));
+  assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize normalized after first observe");
+  node.observeUpdate(makeUsageUpdate(50_000, 300_000));
+  assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize stays normalized after second observe");
 }
 
 // ============================================================

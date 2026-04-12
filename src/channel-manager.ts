@@ -5,7 +5,7 @@ import { route } from "./router.js";
 import { Store } from "./store.js";
 import { NerveNode } from "./node.js";
 import { BlobStore } from "./blob-store.js";
-import type { MessageInfo, PermissionLevel, JsonRpcNotification } from "./protocol.js";
+import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "./protocol.js";
 import type { WebSocket } from "ws";
 import { EventLogger } from "./event-logger.js";
 import * as log from "./logger.js";
@@ -383,9 +383,11 @@ export class ChannelManager {
     return this.store.getMessages(channelId, limit, before);
   }
 
-  getNodeUpdates(nodeName: string): Record<string, unknown>[] {
+  /** Returns the node's assembled message history (user + agent messages).
+   *  Used by the node.updates RPC for tests and programmatic inspection. */
+  getNodeUpdates(nodeName: string): Message[] {
     const node = this.nodePool.getByName(nodeName);
-    return node ? [...node.updateBuffer] : [];
+    return node ? [...node.messageStore] : [];
   }
 
   // --- Internal ---
@@ -404,9 +406,9 @@ export class ChannelManager {
     }
 
     const doPrompt = () => {
-      // Record buffer position before prompting
-      const bufferStart = node.updateBuffer.length;
-      log.info(`dispatch: prompting ${node.name} (buffer@${bufferStart}, channel=${channelId || "none"})`);
+      // Record store position before prompting (for diff logging only)
+      const storeStart = node.messageStore.length;
+      log.info(`dispatch: prompting ${node.name} (store@${storeStart}, channel=${channelId || "none"})`);
 
       this.nodePool.promptNode(nodeId, prompt).then((result) => {
         if (!channelId) return;
@@ -417,8 +419,8 @@ export class ChannelManager {
           return;
         }
 
-        const newEntries = node.updateBuffer.length - bufferStart;
-        log.info(`dispatch: ${node.name} done, ${newEntries} updates (agent replies via nerve_post)`);
+        const newEntries = node.messageStore.length - storeStart;
+        log.info(`dispatch: ${node.name} done, ${newEntries} new messages (agent replies via nerve_post)`);
       }).catch(err => {
         log.warn(`prompt ${node.name} exception: ${err}`);
         if (channelId) {

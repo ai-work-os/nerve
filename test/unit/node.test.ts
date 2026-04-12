@@ -5,6 +5,7 @@
  */
 
 import { NerveNode } from "../../src/node.js";
+import type { Message } from "../../src/protocol.js";
 
 let passed = 0;
 let failed = 0;
@@ -38,6 +39,18 @@ function makeNode(overrides?: Partial<ConstructorParameters<typeof NerveNode>[0]
   });
 }
 
+function makeMessage(overrides?: Partial<Message>): Message {
+  return {
+    id: "m-1",
+    nodeId: "test-id",
+    role: "agent",
+    sender: "test-node",
+    text: "hello",
+    ts: Date.now(),
+    ...overrides,
+  };
+}
+
 // --- Tests ---
 
 function testConstructorStatus() {
@@ -68,37 +81,37 @@ function testPermissionsDefault() {
   assertEq(node.permissions, "member", "default permissions is member");
 }
 
-function testPushUpdate() {
-  console.log("\n▸ pushUpdate adds to buffer");
+function testMessageStoreEmpty() {
+  console.log("\n▸ messageStore starts empty");
   const node = makeNode();
-  node.pushUpdate({ update: { sessionUpdate: "text", text: "hello" } } as any);
-  assertEq(node.updateBuffer.length, 1, "buffer has 1 entry");
+  assertEq(node.messageStore.length, 0, "messageStore is empty");
+  assertEq(node.inFlightAgent, null, "inFlightAgent is null");
 }
 
-function testBufferOverflow() {
-  console.log("\n▸ buffer overflow → shifts old data");
+function testAppendMessage() {
+  console.log("\n▸ appendMessage adds to store");
   const node = makeNode();
-  for (let i = 0; i <= NerveNode.MAX_BUFFER_SIZE; i++) {
-    node.pushUpdate({ update: { sessionUpdate: "text", text: `msg-${i}` } } as any);
-  }
-  assertEq(node.updateBuffer.length, NerveNode.MAX_BUFFER_SIZE, `buffer capped at ${NerveNode.MAX_BUFFER_SIZE}`);
-  // First item should be msg-1 (msg-0 was shifted out)
-  const first = (node.updateBuffer[0] as any).update.text;
-  assertEq(first, "msg-1", "oldest entry (msg-0) was shifted out");
+  node.appendMessage(makeMessage({ id: "m-1", text: "hello" }));
+  node.appendMessage(makeMessage({ id: "m-2", role: "user", text: "hi" }));
+  assertEq(node.messageStore.length, 2, "store has 2 messages");
+  assertEq(node.messageStore[0].id, "m-1", "first message id");
+  assertEq(node.messageStore[1].role, "user", "second message role");
 }
 
-function testClearUpdateBuffer() {
-  console.log("\n▸ clearUpdateBuffer");
+function testClearMessageStore() {
+  console.log("\n▸ clearMessageStore clears store and in-flight");
   const node = makeNode();
-  node.pushUpdate({ update: { sessionUpdate: "text", text: "x" } } as any);
-  node.clearUpdateBuffer();
-  assertEq(node.updateBuffer.length, 0, "buffer is empty after clear");
+  node.appendMessage(makeMessage());
+  node.inFlightAgent = { id: "in-flight", text: "partial" };
+  node.clearMessageStore();
+  assertEq(node.messageStore.length, 0, "store empty after clear");
+  assertEq(node.inFlightAgent, null, "in-flight cleared");
 }
 
-function testUsageExtraction() {
-  console.log("\n▸ pushUpdate with usage_update → extracts usage");
+function testObserveUpdateUsageExtraction() {
+  console.log("\n▸ observeUpdate with usage_update → extracts usage");
   const node = makeNode({ adapter: "mock" });
-  node.pushUpdate({
+  node.observeUpdate({
     update: {
       sessionUpdate: "usage_update",
       used: 5000,
@@ -111,48 +124,22 @@ function testUsageExtraction() {
   assertEq(node.usage!.cost, 0.1, "cost extracted");
 }
 
-function testNoUsageWithoutUsageUpdate() {
-  console.log("\n▸ pushUpdate without usage_update → usage unchanged");
+function testObserveUpdateNonUsageNoop() {
+  console.log("\n▸ observeUpdate without usage_update → usage unchanged");
   const node = makeNode();
-  node.pushUpdate({ update: { sessionUpdate: "text", text: "hello" } } as any);
+  node.observeUpdate({ update: { sessionUpdate: "agent_message_chunk", text: "hi" } } as any);
   assertEq(node.usage, undefined, "usage remains undefined");
+  assertEq(node.messageStore.length, 0, "observeUpdate does not write messageStore");
 }
 
 function testTouch() {
   console.log("\n▸ touch() updates lastActiveAt");
   const node = makeNode();
   const before = node.lastActiveAt;
-  // Small delay to ensure timestamp differs
   const start = Date.now();
   while (Date.now() === start) { /* spin */ }
   node.touch();
   assert(node.lastActiveAt >= before, "lastActiveAt updated");
-}
-
-function testChunkSkipsBuffer() {
-  console.log("\n▸ pushUpdate with agent_message_chunk → skips buffer");
-  const node = makeNode();
-  node.pushUpdate({ update: { sessionUpdate: "agent_message_chunk", text: "hi" } } as any);
-  assertEq(node.updateBuffer.length, 0, "chunk not stored in buffer");
-}
-
-function testNonChunkStillBuffered() {
-  console.log("\n▸ pushUpdate with agent_message_end → stored in buffer");
-  const node = makeNode();
-  node.pushUpdate({ update: { sessionUpdate: "agent_message_end", text: "done" } } as any);
-  assertEq(node.updateBuffer.length, 1, "non-chunk stored in buffer");
-}
-
-function testChunkDoesNotAffectUsage() {
-  console.log("\n▸ pushUpdate chunk after usage_update → usage unchanged");
-  const node = makeNode({ adapter: "mock" });
-  node.pushUpdate({
-    update: { sessionUpdate: "usage_update", used: 5000, size: 200000, cost: { amount: 0.1 } },
-  } as any);
-  const usageBefore = { ...node.usage };
-  node.pushUpdate({ update: { sessionUpdate: "agent_message_chunk", text: "x" } } as any);
-  assertEq(node.usage!.tokenUsed, usageBefore.tokenUsed, "usage not affected by chunk");
-  assertEq(node.updateBuffer.length, 1, "only usage_update in buffer, not chunk");
 }
 
 function testIsProcessIsWebSocket() {
@@ -173,15 +160,12 @@ function main() {
   testToInfo();
   testChannelsEmpty();
   testPermissionsDefault();
-  testPushUpdate();
-  testBufferOverflow();
-  testClearUpdateBuffer();
-  testUsageExtraction();
-  testNoUsageWithoutUsageUpdate();
+  testMessageStoreEmpty();
+  testAppendMessage();
+  testClearMessageStore();
+  testObserveUpdateUsageExtraction();
+  testObserveUpdateNonUsageNoop();
   testTouch();
-  testChunkSkipsBuffer();
-  testNonChunkStillBuffered();
-  testChunkDoesNotAffectUsage();
   testIsProcessIsWebSocket();
 
   console.log("\n══════════════════════════════════════");

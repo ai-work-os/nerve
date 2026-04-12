@@ -1,9 +1,16 @@
 import type { Transport } from "./transport.js";
-import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage } from "./protocol.js";
+import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message } from "./protocol.js";
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
 import { getContextWindow } from "./model-registry.js";
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
+
+// In-flight assembler for streaming agent response.
+// Created on agent_message_start (or lazily on first chunk), finalized at prompt end.
+export interface InFlightMessage {
+  id: string;
+  text: string;
+}
 
 export class NerveNode {
   readonly id: string;
@@ -44,9 +51,13 @@ export class NerveNode {
   // Track last reported context size for change detection
   lastReportedSize?: number;
 
-  // In-memory buffer of ACP updates (for client reconnect replay)
-  static readonly MAX_BUFFER_SIZE = 1000;
-  updateBuffer: (SessionNotification | Record<string, unknown>)[] = [];
+  // In-memory store of assembled Messages (for client reconnect replay).
+  // Not persisted; cleared on node cleanup / session clear / session reset.
+  messageStore: Message[] = [];
+
+  // In-flight agent message being assembled from chunk stream.
+  // Created on agent_message_start (or first chunk), finalized at prompt end.
+  inFlightAgent: InFlightMessage | null = null;
 
   constructor(opts: {
     id: string;
@@ -81,10 +92,12 @@ export class NerveNode {
     this.lastActiveAt = Date.now();
   }
 
-  pushUpdate(params: SessionNotification | Record<string, unknown>): void {
-    log.debug(`[${this.name}] pushUpdate raw: sessionUpdate=${(params as any)?.update?.sessionUpdate} keys=${JSON.stringify(Object.keys((params as any)?.update || {}))}`);
+  // Called on every ACP SessionNotification to normalize usage_update side-effects.
+  // No longer writes to a buffer — the messageStore is populated via explicit
+  // assembler operations in NodePool.
+  observeUpdate(params: SessionNotification | Record<string, unknown>): void {
+    log.debug(`[${this.name}] observeUpdate: sessionUpdate=${(params as any)?.update?.sessionUpdate}`);
 
-    // Normalize usage_update size before pushing to buffer
     const update = (params as SessionNotification).update as (UsageUpdate & { sessionUpdate: string }) | undefined;
     if (update?.sessionUpdate === "usage_update") {
       const adapterModel = this.adapter ? getAdapter(this.adapter)?.model : undefined;
@@ -92,7 +105,6 @@ export class NerveNode {
       log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} actualSize=${actualSize} model=${adapterModel} cost=${JSON.stringify(update.cost)}`);
       const cost = update.cost as Cost | null | undefined;
       const newSize = actualSize ?? update.size ?? 0;
-      // Overwrite size in update so buffer contains normalized value
       (update as any).size = newSize;
       if (this.lastReportedSize !== undefined && this.lastReportedSize !== newSize) {
         log.warn(`[${this.name}] context size changed: ${this.lastReportedSize} → ${newSize}`);
@@ -105,22 +117,18 @@ export class NerveNode {
         lastUpdated: Date.now(),
       };
     }
-
-    // Skip buffer storage for streaming chunks — they are ephemeral,
-    // only needed for real-time WS push, not reconnect replay.
-    if (update?.sessionUpdate === "agent_message_chunk") {
-      log.debug(`[${this.name}] pushUpdate: skipping buffer for agent_message_chunk`);
-      return;
-    }
-
-    this.updateBuffer.push(params);
-    if (this.updateBuffer.length > NerveNode.MAX_BUFFER_SIZE) {
-      this.updateBuffer.shift();
-    }
   }
 
-  clearUpdateBuffer(): void {
-    this.updateBuffer = [];
+  /** Append an assembled Message to the store. */
+  appendMessage(msg: Message): void {
+    this.messageStore.push(msg);
+    log.debug(`[${this.name}] appendMessage: id=${msg.id} role=${msg.role} len=${msg.text.length} total=${this.messageStore.length}`);
+  }
+
+  /** Clear messageStore and in-flight assembler. Called on cleanup / session clear / session reset. */
+  clearMessageStore(): void {
+    this.messageStore = [];
+    this.inFlightAgent = null;
   }
 
   toInfo(): NodeInfo {

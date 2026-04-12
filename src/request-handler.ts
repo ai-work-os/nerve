@@ -76,10 +76,11 @@ export function handleRpcRequest(
     }
 
     case "node.updates": {
+      // Returns assembled Message history (role user/agent). Program node logs are not included.
       const nodeName = params.nodeName as string;
       if (!nodeName) return { ok: false, code: -32602, message: "nodeName required" };
-      const updates = cm.getNodeUpdates(nodeName);
-      return { ok: true, data: { updates } };
+      const messages = cm.getNodeUpdates(nodeName);
+      return { ok: true, data: { messages } };
     }
 
     case "blob.get": {
