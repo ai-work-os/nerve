@@ -131,7 +131,7 @@ export class AcpClient {
     this.mcpServers = opts.mcpServers ?? [];
     this.onReady = opts.onReady;
     this.onError = opts.onError;
-    this.promptTimeout = opts.promptTimeout ?? 300000;
+    this.promptTimeout = opts.promptTimeout ?? 1800000;
 
     const { stream, closeReadable } = transportToStream(opts.transport, opts.onUpdate);
     this.closeReadable = closeReadable;
