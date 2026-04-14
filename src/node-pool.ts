@@ -156,13 +156,13 @@ export class NodePool {
   }
 
   /** Register a WebSocket node (nvim, browser, CLI tool) */
-  registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {
+  registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel, platform?: string): NerveNode {
     if (this.isNameTaken(name)) {
       throw new Error(this.getNameConflictInfo(name));
     }
     const id = nanoid(12);
     const transport = new WebSocketTransport(ws);
-    const node = new NerveNode({ id, name, transport, capabilities, permissions });
+    const node = new NerveNode({ id, name, transport, capabilities, permissions, platform });
     node.status = "idle";
 
     this.nodes.set(id, node);
