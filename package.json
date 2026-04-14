@@ -11,7 +11,8 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts serve",
     "start": "node dist/cli.js serve",
-    "test": "tsx test/self-test.ts",
+    "test": "vitest run",
+    "test:legacy": "tsx test/self-test.ts",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
@@ -30,6 +31,7 @@
     "eslint": "^10.2.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
-    "typescript-eslint": "^8.58.1"
+    "typescript-eslint": "^8.58.1",
+    "vitest": "^4.1.4"
   }
 }

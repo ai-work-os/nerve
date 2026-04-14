@@ -516,14 +516,24 @@ class McTranscriberPlugin extends PluginBase {
   }
 }
 
-// --- Main ---
+// --- Main (only when run as entry point, not when imported) ---
 
-const plugin = new McTranscriberPlugin();
+import { fileURLToPath as _flu } from "node:url";
+const _thisFile = _flu(import.meta.url);
+const _isMain = process.argv[1] && (
+  process.argv[1] === _thisFile ||
+  process.argv[1].endsWith("mc-transcriber/index.ts") ||
+  process.argv[1].endsWith("mc-transcriber/index.js")
+);
 
-plugin.start().catch((err) => {
-  console.error(`[mc-transcriber] failed to start: ${err}`);
-  process.exit(1);
-});
+if (_isMain) {
+  const plugin = new McTranscriberPlugin();
 
-process.on("SIGTERM", () => { plugin.stop(); process.exit(0); });
-process.on("SIGINT", () => { plugin.stop(); process.exit(0); });
+  plugin.start().catch((err) => {
+    console.error(`[mc-transcriber] failed to start: ${err}`);
+    process.exit(1);
+  });
+
+  process.on("SIGTERM", () => { plugin.stop(); process.exit(0); });
+  process.on("SIGINT", () => { plugin.stop(); process.exit(0); });
+}
