@@ -607,18 +607,19 @@ describe("Nerve Integration Tests - Part 1", () => {
     const c1 = new WsClient("mt-client1");
     await c1.connect();
     await c1.request("node.register", { name: "mt-client1", capabilities: ["ui"] });
+    const agentName = `mt-agent-${Date.now()}`;
 
     // Spawn mock agent
     const spawnResult = await httpPost("/node/spawn", {
       adapter: "mock",
-      name: "mt-agent",
+      name: agentName,
       cwd: ROOT,
     });
     assert(!!spawnResult.nodeId, "multi-turn: agent spawned");
     await sleep(3000);
 
     const nodes = await httpPost("/node/list", {});
-    const agentNode = (nodes as any).nodes.find((n: any) => n.name === "mt-agent");
+    const agentNode = (nodes as any).nodes.find((n: any) => n.name === agentName);
     assert(!!agentNode && agentNode.status === "idle", "multi-turn: agent ready");
 
     if (!agentNode) {
@@ -635,7 +636,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     await sleep(1000);
 
     // Check messageStore
-    const bufResult = await c1.request("node.updates", { nodeName: "mt-agent" });
+    const bufResult = await c1.request("node.updates", { nodeName: agentName });
     const storeMessages = (bufResult.messages || []) as Array<any>;
     const userMsgs = storeMessages.filter(m => m.role === "user");
     assert(
@@ -687,18 +688,19 @@ describe("Nerve Integration Tests - Part 1", () => {
     const c1 = new WsClient("bar-client1");
     await c1.connect();
     await c1.request("node.register", { name: "bar-client1", capabilities: ["ui"] });
+    const agentName = `bar-agent-${Date.now()}`;
 
     // Spawn mock agent
     const spawnResult = await httpPost("/node/spawn", {
       adapter: "mock",
-      name: "bar-agent",
+      name: agentName,
       cwd: ROOT,
     });
     assert(!!spawnResult.nodeId, "bar: agent spawned");
     await sleep(3000);
 
     const nodes = await httpPost("/node/list", {});
-    const agentNode = (nodes as any).nodes.find((n: any) => n.name === "bar-agent");
+    const agentNode = (nodes as any).nodes.find((n: any) => n.name === agentName);
     assert(!!agentNode && agentNode.status === "idle", "bar: agent ready");
 
     if (!agentNode) {
@@ -711,7 +713,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     await sleep(1000);
 
     // node.updates RPC returns the assembled message history
-    const bufResult = await c1.request("node.updates", { nodeName: "bar-agent" });
+    const bufResult = await c1.request("node.updates", { nodeName: agentName });
     const messages = (bufResult.messages || []) as Array<any>;
     const userMsgs = messages.filter(m => m.role === "user");
     const agentMsgs = messages.filter(m => m.role === "agent");
@@ -742,7 +744,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     await c1.request("node.prompt", { nodeId: agentNode.id, content: "second question" });
     await sleep(1000);
 
-    const buf2 = await c1.request("node.updates", { nodeName: "bar-agent" });
+    const buf2 = await c1.request("node.updates", { nodeName: agentName });
     const messages2 = (buf2.messages || []) as Array<any>;
     assert(
       messages2.length === 4,

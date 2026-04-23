@@ -212,7 +212,6 @@ export class Server {
             name,
             (p.capabilities as string[]) || ["ui"],
             (p.permissions as any) || "operator",
-            p.platform as string | undefined,
           );
           if (commands) node.commands = commands;
           if (events) node.events = events;
@@ -297,12 +296,11 @@ export class Server {
           if (!nodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
           const node = this.cm.nodePool.get(nodeId);
           if (!node) { this.sendError(ws, id, -32600, "node not found"); return; }
-          const content = node.platform ? `[${node.platform}] ${String(p.content || "")}` : p.content as string;
 
           const msg = this.cm.postMessage(
             p.channelId as string,
             node.name,
-            content,
+            p.content as string,
           );
           this.sendResult(ws, id, { message: msg });
           break;

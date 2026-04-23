@@ -21,7 +21,6 @@ export class NerveNode {
   transport: Transport;
   adapter?: string;
   cwd?: string;
-  platform?: string; // sender platform tag (e.g. "android")
   source?: string;  // client type identifier (e.g., "android", "tui", "web")
   sessionId?: string;
   channels = new Set<string>();
@@ -68,7 +67,6 @@ export class NerveNode {
     permissions?: PermissionLevel;
     adapter?: string;
     cwd?: string;
-    platform?: string;
   }) {
     this.id = opts.id;
     this.name = opts.name;
@@ -77,7 +75,6 @@ export class NerveNode {
     this.permissions = opts.permissions || "member";
     this.adapter = opts.adapter;
     this.cwd = opts.cwd;
-    this.platform = opts.platform;
     this.status = "connecting";
     this.createdAt = Date.now();
     this.lastActiveAt = Date.now();
@@ -146,7 +143,6 @@ export class NerveNode {
       pid: this.transport.type === "stdio" ? (this.transport as any).pid : undefined,
       adapter: this.adapter,
       model: adapterConfig?.model,
-      platform: this.platform,
       source: this.source,
       activity: this.activity,
       channels: [...this.channels],

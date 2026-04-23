@@ -145,8 +145,8 @@ export class ChannelManager {
 
   // --- Node operations ---
 
-  registerNode(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel, platform?: string): NerveNode {
-    return this.nodePool.registerWebSocket(ws, name, capabilities, permissions, platform);
+  registerNode(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {
+    return this.nodePool.registerWebSocket(ws, name, capabilities, permissions);
   }
 
   async spawnNode(adapter: string, name: string, cwd: string): Promise<NerveNode> {

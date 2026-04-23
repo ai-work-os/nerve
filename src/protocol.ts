@@ -92,7 +92,6 @@ export interface NodeInfo {
   pid?: number;
   adapter?: string;
   model?: string;
-  platform?: string;
   source?: string;
   activity?: string;
   cwd?: string;
