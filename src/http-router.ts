@@ -379,12 +379,13 @@ export class HttpRouter {
         const { listProgramAdapters } = await import("./adapter.js");
         const staticAdapters = listProgramAdapters();
 
-        const capabilities: Record<string, { description: string; commands: Record<string, any>; spawned: boolean }> = {};
+        const capabilities: Record<string, { description: string; commands: Record<string, any>; usage?: string; spawned: boolean }> = {};
 
         for (const [name, config] of Object.entries(staticAdapters)) {
           capabilities[name] = {
             description: config.description || "",
             commands: config.commands || {},
+            ...(config.usage ? { usage: config.usage } : {}),
             spawned: false,
           };
         }

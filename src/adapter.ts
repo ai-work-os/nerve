@@ -15,6 +15,8 @@ export interface AdapterConfig {
   description?: string;
   /** Commands this adapter supports, with descriptions and optional args */
   commands?: Record<string, { description: string; args?: Record<string, string> }>;
+  /** Usage guide for AI agents — typical workflows and best practices */
+  usage?: string;
 }
 
 // Proxy env from system (needed for API access)
@@ -130,6 +132,17 @@ const adapters: Record<string, AdapterConfig> = {
       config: { description: "Set config (e.g. config interval 10)", args: { key: "interval", value: "seconds" } },
       flush: { description: "Immediately push buffered transcript to subscribers" },
     },
+    usage: [
+      "AI 的耳朵——实时音频感知能力。",
+      "启动流程：",
+      "1. nerve_spawn({ adapter: \"ai-ear\", name: \"ear-1\" })",
+      "2. 创建或加入频道，把 ear-1 加入",
+      "3. 让需要接收转录的节点订阅：nerve_command({ node: \"ear-1\", command: \"subscribe\", args: { name: \"接收者名\" } })",
+      "   可以是自己，也可以是其他 agent（如专门的 analyst）",
+      "4. nerve_command({ node: \"ear-1\", command: \"start\", args: { source: \"mic\" } })",
+      "转录内容定期推送到频道，@mention 所有订阅者。",
+      "可用 config 调整推送频率：nerve_command({ node: \"ear-1\", command: \"config\", args: { key: \"interval\", value: \"30\" } })",
+    ].join("\n"),
   },
   "duty-monitor": {
     type: "program",
