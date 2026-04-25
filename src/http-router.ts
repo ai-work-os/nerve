@@ -375,6 +375,31 @@ export class HttpRouter {
         return await this.cm.nodePool.cancelNode(targetId);
       }
 
+      case "/node/capabilities": {
+        const { listProgramAdapters } = await import("./adapter.js");
+        const staticAdapters = listProgramAdapters();
+
+        const capabilities: Record<string, { description: string; commands: Record<string, any>; spawned: boolean }> = {};
+
+        for (const [name, config] of Object.entries(staticAdapters)) {
+          capabilities[name] = {
+            description: config.description || "",
+            commands: config.commands || {},
+            spawned: false,
+          };
+        }
+
+        // Override with runtime commands from spawned nodes
+        for (const node of this.cm.nodePool.listAll()) {
+          if (node.adapter && capabilities[node.adapter] && node.commands) {
+            capabilities[node.adapter].commands = node.commands;
+            capabilities[node.adapter].spawned = true;
+          }
+        }
+
+        return { capabilities };
+      }
+
       case "/node/list": {
         let nodes = this.cm.nodePool.listAll();
         const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
