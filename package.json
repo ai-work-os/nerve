@@ -11,7 +11,9 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts serve",
     "start": "node dist/cli.js serve",
-    "test": "vitest run",
+    "test": "vitest run test/vitest/unit.test.ts",
+    "test:integration": "vitest run test/vitest/integration-part",
+    "test:all": "vitest run",
     "test:legacy": "tsx test/self-test.ts",
     "cli": "tsx src/cli.ts"
   },
