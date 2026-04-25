@@ -195,6 +195,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["summary_path"],
       },
     },
+    {
+      name: "nerve_command",
+      description: "Send a structured command to a program node. Returns the command result.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          node: { type: "string", description: "Target program node name" },
+          command: { type: "string", description: "Command name (e.g. start, stop, status)" },
+          args: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description: "Command arguments as key-value pairs",
+          },
+        },
+        required: ["node", "command"],
+      },
+    },
+    {
+      name: "nerve_capabilities",
+      description: "List available program node capabilities (adapters). Returns name, description, and supported commands for each capability. Use this to discover what program nodes are available before spawning them.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
   ],
 }));
 
@@ -457,6 +482,37 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok(`session reset: ${result.sessionId} (previous: ${result.previousSessionId})`);
     } catch (err) {
       log(`nerve_session_reset failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_command") {
+    const { node, command, args: cmdArgs } = args as { node: string; command: string; args?: Record<string, string> };
+    if (!node || !command) return fail("node and command are required");
+    try {
+      log(`nerve_command node=${node} command=${command} args=${JSON.stringify(cmdArgs || {})}`);
+      const result = await post("/node/command", {
+        nodeName: node,
+        command,
+        args: cmdArgs || {},
+        from: NERVE_NODE_NAME,
+      });
+      if (result.error) return fail(String(result.error));
+      if (result.reply) return ok(String(result.reply));
+      return ok(`command "${command}" dispatched to ${node}`);
+    } catch (err) {
+      log(`nerve_command failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_capabilities") {
+    try {
+      log("nerve_capabilities");
+      const result = await post("/node/capabilities", {});
+      return ok(JSON.stringify(result.capabilities || result));
+    } catch (err) {
+      log(`nerve_capabilities failed: ${err}`);
       return fail(String(err));
     }
   }
