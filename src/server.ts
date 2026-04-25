@@ -201,6 +201,19 @@ export class Server {
             this.wsNodeMap.set(ws, pendingNodeId);
             log.info(`node.register: program node ${name} claimed pending slot ${pendingNodeId}`);
             this.sendResult(ws, id, { nodeId: pendingNodeId, name });
+
+            // Replay channel joins — program node was added to channels before WS connected,
+            // so it missed the channel.nodeJoined notifications
+            if (pendingNode && pendingNode.channels.size > 0) {
+              for (const chId of pendingNode.channels) {
+                pendingNode.transport.send({
+                  jsonrpc: "2.0",
+                  method: "channel.nodeJoined",
+                  params: { channelId: chId, nodeId: pendingNodeId, nodeName: name },
+                } as any);
+              }
+              log.info(`node.register: replayed ${pendingNode.channels.size} channel join(s) for ${name}`);
+            }
             break;
           }
 
