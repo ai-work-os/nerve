@@ -11,6 +11,10 @@ export interface AdapterConfig {
   model?: string;
   /** Program node connection timeout in ms (default 10000) */
   connectTimeout?: number;
+  /** Human-readable description of the adapter */
+  description?: string;
+  /** Commands this adapter supports, with descriptions and optional args */
+  commands?: Record<string, { description: string; args?: Record<string, string> }>;
 }
 
 // Proxy env from system (needed for API access)
@@ -103,16 +107,29 @@ const adapters: Record<string, AdapterConfig> = {
     args: ["tsx", "src/plugins/context-guardian/index.ts"],
     capabilities: ["monitor"],
     terminal: false,
+    description: "AI 上下文容量监控与自动重置",
   },
-  "mc": {
+  "ai-ear": {
     type: "program",
     cmd: "npx",
     args: ["tsx", "src/plugins/mc-transcriber/index.ts"],
     env: {
-      DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY || "sk-cc174fc51cb6426e987bb97fb668f817",
+      DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY || "",
     },
     capabilities: ["monitor"],
     terminal: false,
+    description: "实时音频采集与转录",
+    commands: {
+      start: { description: "Start recording", args: { source: "mic / system / both" } },
+      stop: { description: "Stop recording" },
+      continue: { description: "Resume recording" },
+      status: { description: "Show current status" },
+      subscribe: { description: "Subscribe to transcript pushes", args: { name: "subscriber name, or 'me' for self" } },
+      unsubscribe: { description: "Unsubscribe from transcript pushes", args: { name: "subscriber name, or 'me' for self" } },
+      subscribers: { description: "List current subscribers" },
+      config: { description: "Set config (e.g. config interval 10)", args: { key: "interval", value: "seconds" } },
+      flush: { description: "Immediately push buffered transcript to subscribers" },
+    },
   },
   "duty-monitor": {
     type: "program",
@@ -120,6 +137,7 @@ const adapters: Record<string, AdapterConfig> = {
     args: ["tsx", "src/plugins/duty-monitor/index.ts"],
     capabilities: ["monitor"],
     terminal: false,
+    description: "系统健康巡检与定时任务",
   },
   "observer": {
     type: "program",
@@ -127,6 +145,7 @@ const adapters: Record<string, AdapterConfig> = {
     args: ["tsx", "src/plugins/observer/index.ts"],
     capabilities: ["monitor"],
     terminal: false,
+    description: "节点行为观察与记录",
   },
   "user-recorder": {
     type: "program",
@@ -134,6 +153,7 @@ const adapters: Record<string, AdapterConfig> = {
     args: ["tsx", "src/plugins/user-recorder/index.ts"],
     capabilities: ["monitor"],
     terminal: false,
+    description: "用户对话记录",
   },
   "mock-program": {
     type: "program",
@@ -174,4 +194,14 @@ export function getAdapter(name: string): AdapterConfig | undefined {
 
 export function listAdapters(): string[] {
   return Object.keys(adapters);
+}
+
+export function listProgramAdapters(): Record<string, AdapterConfig> {
+  const result: Record<string, AdapterConfig> = {};
+  for (const [name, config] of Object.entries(adapters)) {
+    if (config.type === "program" && !name.startsWith("mock-")) {
+      result[name] = config;
+    }
+  }
+  return result;
 }
