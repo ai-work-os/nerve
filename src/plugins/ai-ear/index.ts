@@ -34,7 +34,7 @@ const PORT = parseInt(getArg("--port", "4800"));
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || "";
 const DASHSCOPE_MODEL = process.env.DASHSCOPE_MODEL || "qwen3-asr-flash-realtime";
 const AUDIO_SOURCE = (process.env.MC_AUDIO_SOURCE || "mic") as AudioSource;
-let PUSH_INTERVAL = parseInt(process.env.MC_PUSH_INTERVAL || "30000");
+let PUSH_INTERVAL = parseInt(process.env.MC_PUSH_INTERVAL || "300000");
 let PUSH_LINES = parseInt(process.env.MC_PUSH_LINES || "10");
 
 // --- Transcript Buffer (exported for testing) ---
