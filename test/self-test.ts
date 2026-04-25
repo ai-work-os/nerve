@@ -2723,7 +2723,7 @@ async function testPluginHelpCommand() {
 }
 
 // ============================================================
-// flush command via DM (mc-transcriber onCommand path)
+// flush command via DM (ai-ear onCommand path)
 // ============================================================
 
 async function testMcFlushCommand() {
@@ -2734,7 +2734,7 @@ async function testMcFlushCommand() {
   await c.request("node.register", { name: "flush-test", capabilities: ["ui"] });
 
   // Spawn mc
-  const sp = await c.request("node.spawn", { adapter: "mc", name: "mc-flush-test", cwd: ROOT });
+  const sp = await c.request("node.spawn", { adapter: "ai-ear", name: "mc-flush-test", cwd: ROOT });
 
   // Wait for mc to become idle (poll)
   for (let i = 0; i < 100; i++) {
@@ -2919,14 +2919,14 @@ async function testPromptNodeEndTurnClearsActivity() {
 }
 
 // ============================================================
-// mc-transcriber: pushToChannel logs success with channelId + subscribers + slicePath
+// ai-ear: pushToChannel logs success with channelId + subscribers + slicePath
 // ============================================================
 
 async function testMcPushToChannelSuccessLog() {
-  console.log("\n▸ mc-transcriber: pushToChannel success log");
+  console.log("\n▸ ai-ear: pushToChannel success log");
 
   // Test via TranscriptBuffer + SliceWriter directly (unit test)
-  const { TranscriptBuffer, SliceWriter } = await import("../src/plugins/mc-transcriber/index.js");
+  const { TranscriptBuffer, SliceWriter } = await import("../src/plugins/ai-ear/index.js");
 
   const tmpDir = `/tmp/mc-push-log-test-${Date.now()}`;
   const sw = new SliceWriter(tmpDir, "test");
@@ -3182,7 +3182,7 @@ async function testMcAutoUnsubscribeOnLeave() {
 async function testMcNoSubscriberNoPost() {
   console.log("\n▸ mc subscribe: TranscriptBuffer flush mechanics");
 
-  const { TranscriptBuffer } = await import("../src/plugins/mc-transcriber/index.js");
+  const { TranscriptBuffer } = await import("../src/plugins/ai-ear/index.js");
 
   const flushed: string[][] = [];
   const buf = new TranscriptBuffer({
@@ -4400,7 +4400,7 @@ async function testMcStopSafeShutdown() {
 
   // Test the stopRecording logic directly via TranscriptBuffer (the only part we can unit-test)
   // Buffer.stop() should always work even if called multiple times
-  const { TranscriptBuffer } = await import("../src/plugins/mc-transcriber/index.js");
+  const { TranscriptBuffer } = await import("../src/plugins/ai-ear/index.js");
 
   let flushCount = 0;
   const buf = new TranscriptBuffer({
@@ -5098,7 +5098,7 @@ async function main() {
     await testMcStopAllThreeError();
     await testMcStopLogsOnError();
 
-    // Bug fix: mc-transcriber API key handling
+    // Bug fix: ai-ear API key handling
     await testMcApiKeyFromEnv();
     await testMcApiKeyEmptyGuard();
     await testMcApiKeyPassedToAsrClient();

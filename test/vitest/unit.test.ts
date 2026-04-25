@@ -32,12 +32,12 @@ describe("EventLogger", () => {
 });
 
 // ============================================================
-// mc-transcriber stopRecording safety
+// ai-ear stopRecording safety
 // ============================================================
 
 describe("mc stop: stopRecording safety", () => {
   it("buffer.stop() flushes remaining lines and double-stop is safe", async () => {
-    const { TranscriptBuffer } = await import("../../src/plugins/mc-transcriber/index.js");
+    const { TranscriptBuffer } = await import("../../src/plugins/ai-ear/index.js");
 
     let flushCount = 0;
     const buf = new TranscriptBuffer({
@@ -198,7 +198,7 @@ describe("mc stop: stopRecording safety", () => {
 });
 
 // ============================================================
-// mc-transcriber API key
+// ai-ear API key
 // ============================================================
 
 describe("mc API key", () => {

@@ -1,15 +1,15 @@
 #!/usr/bin/env npx tsx
 /**
- * mc-transcriber — Tests
+ * ai-ear — Tests
  *
  * Tests with mock ASR WebSocket server:
  * 1. AsrClient Qwen3 protocol — connect, session.update, send audio, receive transcript
  * 2. AsrClient Qwen3 — pending chunks flushed after session.updated
  * 3. AsrClient Qwen3 — reconnect on error
  * 4. AudioCapture — start/stop lifecycle (mocked binary)
- * 5. McTranscriberPlugin — full integration via spawn
+ * 5. AiEarPlugin — full integration via spawn
  *
- * Usage: npx tsx test/mc-transcriber.test.ts
+ * Usage: npx tsx test/ai-ear.test.ts
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -267,7 +267,7 @@ async function waitForNotification(
 async function testAsrClientQwen3Protocol() {
   console.log("\n▸ AsrClient — Qwen3 protocol basics");
 
-  const { AsrClient } = await import("../src/plugins/mc-transcriber/asr-client.js");
+  const { AsrClient } = await import("../src/plugins/ai-ear/asr-client.js");
 
   const mockAsr = new MockAsrServer(MOCK_ASR_PORT);
   await mockAsr.start();
@@ -317,7 +317,7 @@ async function testAsrClientQwen3Protocol() {
 async function testAsrClientPendingChunks() {
   console.log("\n▸ AsrClient — pending chunks flushed after session ready");
 
-  const { AsrClient } = await import("../src/plugins/mc-transcriber/asr-client.js");
+  const { AsrClient } = await import("../src/plugins/ai-ear/asr-client.js");
 
   // Use a higher port to avoid conflict
   const port = MOCK_ASR_PORT + 1;
@@ -350,7 +350,7 @@ async function testAsrClientPendingChunks() {
 async function testAsrClientErrorEvent() {
   console.log("\n▸ AsrClient — error event handling");
 
-  const { AsrClient } = await import("../src/plugins/mc-transcriber/asr-client.js");
+  const { AsrClient } = await import("../src/plugins/ai-ear/asr-client.js");
 
   const port = MOCK_ASR_PORT + 2;
   const errors: Error[] = [];
@@ -376,7 +376,7 @@ async function testAsrClientErrorEvent() {
 async function testAudioCapture() {
   console.log("\n▸ AudioCapture — start/stop lifecycle");
 
-  const { AudioCapture } = await import("../src/plugins/mc-transcriber/audio-capture.js");
+  const { AudioCapture } = await import("../src/plugins/ai-ear/audio-capture.js");
 
   // Test with a mock binary that outputs PCM-like data
   // Use `dd` to generate some bytes to stdout
@@ -406,7 +406,7 @@ async function testAudioCapture() {
 async function testAudioCaptureStop() {
   console.log("\n▸ AudioCapture — manual stop");
 
-  const { AudioCapture } = await import("../src/plugins/mc-transcriber/audio-capture.js");
+  const { AudioCapture } = await import("../src/plugins/ai-ear/audio-capture.js");
 
   // Use `cat /dev/zero` as an infinite PCM-like stream
   const capture = new AudioCapture("mic", {
@@ -427,9 +427,9 @@ async function testAudioCaptureStop() {
 }
 
 async function testPluginBufferFlush() {
-  console.log("\n▸ McTranscriberPlugin — buffer flush logic + reason tracking");
+  console.log("\n▸ AiEarPlugin — buffer flush logic + reason tracking");
 
-  const { TranscriptBuffer } = await import("../src/plugins/mc-transcriber/index.js");
+  const { TranscriptBuffer } = await import("../src/plugins/ai-ear/index.js");
 
   const flushed: Array<{ lines: string[]; reason: string }> = [];
   const buf = new TranscriptBuffer({
@@ -476,7 +476,7 @@ async function testPluginBufferFlush() {
 async function testBufferIntervalChange() {
   console.log("\n▸ TranscriptBuffer — interval change takes effect");
 
-  const { TranscriptBuffer } = await import("../src/plugins/mc-transcriber/index.js");
+  const { TranscriptBuffer } = await import("../src/plugins/ai-ear/index.js");
 
   const flushed: string[][] = [];
 
@@ -513,7 +513,7 @@ async function testBufferIntervalChange() {
 async function testConfigIntervalAlsoAdjustsLines() {
   console.log("\n▸ config interval — large interval should not be bypassed by line threshold");
 
-  const { TranscriptBuffer } = await import("../src/plugins/mc-transcriber/index.js");
+  const { TranscriptBuffer } = await import("../src/plugins/ai-ear/index.js");
 
   // Simulate: user sets large interval but default pushLines=10
   // Expect: 10 lines should NOT trigger flush if interval is large
@@ -551,7 +551,7 @@ async function testConfigIntervalAlsoAdjustsLines() {
 async function testSliceWriter() {
   console.log("\n▸ SliceWriter — file-based transcript slices");
 
-  const { SliceWriter } = await import("../src/plugins/mc-transcriber/index.js");
+  const { SliceWriter } = await import("../src/plugins/ai-ear/index.js");
 
   const tmpDir = resolve(TEST_DATA, "slice-test-tmp");
 
@@ -591,7 +591,7 @@ async function testSliceWriter() {
 async function testSliceWriterTimeRange() {
   console.log("\n▸ SliceWriter.timeRange — extract time range from lines");
 
-  const { SliceWriter } = await import("../src/plugins/mc-transcriber/index.js");
+  const { SliceWriter } = await import("../src/plugins/ai-ear/index.js");
 
   // Multiple lines with different times
   assertEq(
@@ -616,15 +616,15 @@ async function testSliceWriterTimeRange() {
 }
 
 async function testSpawnMcTranscriber() {
-  console.log("\n▸ mc-transcriber — spawn integration");
+  console.log("\n▸ ai-ear — spawn integration");
 
   const tui = new WsClient("tui");
   await tui.connect();
   await tui.request("node.register", { name: "tui-mc", capabilities: ["ui"] });
 
-  // Spawn mc-transcriber
+  // Spawn ai-ear
   const spawn = await tui.request("node.spawn", {
-    adapter: "mc",
+    adapter: "ai-ear",
     name: "mc",
     cwd: ROOT,
   });
@@ -642,7 +642,7 @@ async function testSpawnMcTranscriber() {
   const list = await tui.request("node.list");
   const mcNode = list.nodes.find((n: any) => n.name === "mc");
   assert(!!mcNode, "mc in node.list");
-  assertEq(mcNode?.adapter, "mc", "adapter name correct");
+  assertEq(mcNode?.adapter, "ai-ear", "adapter name correct");
   assertEq(mcNode?.transport, "websocket", "transport is websocket");
 
   // Stop
@@ -654,14 +654,14 @@ async function testSpawnMcTranscriber() {
 }
 
 async function testChannelMessageNotDispatchedAsCommand() {
-  console.log("\n▸ mc-transcriber — non-command @mc channel messages ignored");
+  console.log("\n▸ ai-ear — non-command @mc channel messages ignored");
 
   const tui = new WsClient("tui");
   await tui.connect();
   await tui.request("node.register", { name: "tui-mc2", capabilities: ["ui"] });
 
-  // Spawn mc
-  const sp = await tui.request("node.spawn", { adapter: "mc", name: "mc-cmd-test", cwd: ROOT });
+  // Spawn ai-ear
+  const sp = await tui.request("node.spawn", { adapter: "ai-ear", name: "mc-cmd-test", cwd: ROOT });
   await waitForNotification(tui, "node.statusChanged", p => p.name === "mc-cmd-test" && p.status === "idle", 10000);
 
   // Create channel and join both
@@ -698,7 +698,7 @@ async function testChannelMessageNotDispatchedAsCommand() {
 async function testAsrPendingCap() {
   console.log("\n▸ AsrClient — pending buffer cap prevents OOM");
 
-  const { AsrClient } = await import("../src/plugins/mc-transcriber/asr-client.js");
+  const { AsrClient } = await import("../src/plugins/ai-ear/asr-client.js");
 
   // Create a mock server that never sends session.updated (simulates stuck session)
   const port = MOCK_ASR_PORT + 3;
@@ -734,7 +734,7 @@ async function testAsrPendingCap() {
 async function testAsrDisconnectReconnect() {
   console.log("\n▸ AsrClient — disconnect triggers reconnect");
 
-  const { AsrClient } = await import("../src/plugins/mc-transcriber/asr-client.js");
+  const { AsrClient } = await import("../src/plugins/ai-ear/asr-client.js");
 
   const port = MOCK_ASR_PORT + 4;
   const mockAsr = new MockAsrServer(port);
@@ -780,7 +780,7 @@ async function testAsrDisconnectReconnect() {
 async function testAsrDisconnectNoEmptyCommit() {
   console.log("\n▸ AsrClient — disconnect skips commit when no uncommitted audio");
 
-  const { AsrClient } = await import("../src/plugins/mc-transcriber/asr-client.js");
+  const { AsrClient } = await import("../src/plugins/ai-ear/asr-client.js");
 
   const port = MOCK_ASR_PORT + 5;
   const mockAsr = new MockAsrServer(port);
@@ -828,7 +828,7 @@ async function testAsrDisconnectNoEmptyCommit() {
 
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║   mc-transcriber Tests               ║");
+  console.log("║   ai-ear Tests                       ║");
   console.log("╚══════════════════════════════════════╝");
 
   try {

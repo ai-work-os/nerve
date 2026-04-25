@@ -112,7 +112,7 @@ const adapters: Record<string, AdapterConfig> = {
   "ai-ear": {
     type: "program",
     cmd: "npx",
-    args: ["tsx", "src/plugins/mc-transcriber/index.ts"],
+    args: ["tsx", "src/plugins/ai-ear/index.ts"],
     env: {
       DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY || "",
     },

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * mc-transcriber — Meeting transcription plugin for nerve.
+ * ai-ear — Meeting transcription plugin for nerve.
  *
  * Captures audio (mic/system/both) via native binary, sends to DashScope ASR,
  * writes transcripts to file, pushes to channel via buffer strategy.
  *
  * Usage:
- *   Spawn via nerve: :spawn mc-transcriber
- *   Manual: npx tsx src/plugins/mc-transcriber/index.ts [--port 4800]
+ *   Spawn via nerve: :spawn ai-ear
+ *   Manual: npx tsx src/plugins/ai-ear/index.ts [--port 4800]
  *
  * Environment:
  *   DASHSCOPE_API_KEY    — Required for ASR
@@ -124,7 +124,7 @@ export class SliceWriter {
 
 // --- Plugin ---
 
-class McTranscriberPlugin extends PluginBase {
+class AiEarPlugin extends PluginBase {
   private capture: AudioCapture | null = null;
   private asr: AsrClient | null = null;
   private meetingFile: string | null = null;
@@ -140,7 +140,7 @@ class McTranscriberPlugin extends PluginBase {
   constructor() {
     super({
       port: PORT,
-      name: "mc",
+      name: "ai-ear",
       capabilities: ["monitor"],
       permissions: "member",
     });
@@ -522,15 +522,15 @@ import { fileURLToPath as _flu } from "node:url";
 const _thisFile = _flu(import.meta.url);
 const _isMain = process.argv[1] && (
   process.argv[1] === _thisFile ||
-  process.argv[1].endsWith("mc-transcriber/index.ts") ||
-  process.argv[1].endsWith("mc-transcriber/index.js")
+  process.argv[1].endsWith("ai-ear/index.ts") ||
+  process.argv[1].endsWith("ai-ear/index.js")
 );
 
 if (_isMain) {
-  const plugin = new McTranscriberPlugin();
+  const plugin = new AiEarPlugin();
 
   plugin.start().catch((err) => {
-    console.error(`[mc-transcriber] failed to start: ${err}`);
+    console.error(`[ai-ear] failed to start: ${err}`);
     process.exit(1);
   });
 

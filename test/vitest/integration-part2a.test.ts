@@ -659,17 +659,17 @@ describe("Nerve Integration Tests - Part 2a", () => {
   });
 
   // ============================================================
-  // mc-transcriber tests
+  // ai-ear tests
   // ============================================================
 
-  describe("mc-transcriber", () => {
+  describe("ai-ear", () => {
     it("flush command (no active buffer)", async () => {
       const c = new WsClient("flush-test");
       await c.connect();
       await c.request("node.register", { name: "flush-test", capabilities: ["ui"] });
 
-      // Spawn mc
-      const sp = await c.request("node.spawn", { adapter: "mc", name: "mc-flush-test", cwd: ROOT });
+      // Spawn ai-ear
+      const sp = await c.request("node.spawn", { adapter: "ai-ear", name: "mc-flush-test", cwd: ROOT });
 
       // Wait for mc to become idle (poll)
       for (let i = 0; i < 100; i++) {
@@ -708,7 +708,7 @@ describe("Nerve Integration Tests - Part 2a", () => {
 
     it("pushToChannel success log", async () => {
       // Test via TranscriptBuffer + SliceWriter directly (unit test)
-      const { TranscriptBuffer, SliceWriter } = await import("../../src/plugins/mc-transcriber/index.js");
+      const { TranscriptBuffer, SliceWriter } = await import("../../src/plugins/ai-ear/index.js");
 
       const tmpDir = `/tmp/mc-push-log-test-${Date.now()}`;
       const sw = new SliceWriter(tmpDir, "test");
@@ -742,7 +742,7 @@ describe("Nerve Integration Tests - Part 2a", () => {
     });
 
     it("TranscriptBuffer flush mechanics", async () => {
-      const { TranscriptBuffer } = await import("../../src/plugins/mc-transcriber/index.js");
+      const { TranscriptBuffer } = await import("../../src/plugins/ai-ear/index.js");
 
       const flushed: string[][] = [];
       const buf = new TranscriptBuffer({

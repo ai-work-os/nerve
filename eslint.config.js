@@ -2,7 +2,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/", "node_modules/", "test/", "src/plugins/mc-transcriber/native/"],
+    ignores: ["dist/", "node_modules/", "test/", "src/plugins/ai-ear/native/"],
   },
   {
     files: ["src/**/*.ts"],
