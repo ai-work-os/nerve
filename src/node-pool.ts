@@ -37,6 +37,10 @@ export class NodePool {
   private pendingPrograms = new Map<string, { nodeId: string; process: ChildProcess; timer: NodeJS.Timeout }>();
   private programProcesses = new Map<string, ChildProcess>(); // nodeId → process (for stop/shutdown)
 
+  // Command routing (node.command request-response)
+  private nextCommandId = 100000;
+  private pendingCommands = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+
   constructor(store: Store, onEvent: NodeEventHandler, transportFactory?: TransportFactory) {
     this.store = store;
     this.onEvent = onEvent;
@@ -461,6 +465,51 @@ export class NodePool {
     log.info(`program node connected: ${node.name} (nodeId=${nodeId})`);
     this.onEvent("node.ready", node);
     this.onEvent("node.statusChanged", node);
+  }
+
+  /** Send a command to a program node and wait for its response */
+  async sendCommand(nodeName: string, command: string, args: Record<string, string>, from: string): Promise<Record<string, unknown>> {
+    const node = this.getByName(nodeName);
+    if (!node) throw new Error(`node "${nodeName}" not found`);
+    if (!node.transport.alive) throw new Error("node transport not connected");
+
+    const reqId = this.nextCommandId++;
+    log.info(`sendCommand: ${nodeName} command=${command} reqId=${reqId} from=${from}`);
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCommands.delete(reqId);
+        log.warn(`sendCommand timeout: ${nodeName} command=${command} reqId=${reqId}`);
+        reject(new Error("command timeout (10s)"));
+      }, 10000);
+
+      this.pendingCommands.set(reqId, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+
+      node.transport.send({
+        jsonrpc: "2.0",
+        id: reqId,
+        method: "node.command",
+        params: { command, args, from },
+      } as any);
+    });
+  }
+
+  /** Handle a command response from a program node (called from server.ts WS handler) */
+  handleCommandResponse(id: number, result?: unknown, error?: { code?: number; message: string }): boolean {
+    const pending = this.pendingCommands.get(id);
+    if (!pending) return false;
+    this.pendingCommands.delete(id);
+    if (error) {
+      log.info(`handleCommandResponse: reqId=${id} error=${error.message}`);
+      pending.reject(new Error(error.message));
+    } else {
+      log.info(`handleCommandResponse: reqId=${id} ok`);
+      pending.resolve(result || {});
+    }
+    return true;
   }
 
   private _computeExitReason(exitCode: number | null | undefined, node: NerveNode): string {

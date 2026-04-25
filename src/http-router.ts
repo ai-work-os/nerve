@@ -318,6 +318,17 @@ export class HttpRouter {
         return { ok: true };
       }
 
+      case "/node/command": {
+        const nodeName = data.nodeName as string;
+        const command = data.command as string;
+        const cmdArgs = (data.args as Record<string, string>) || {};
+        if (!nodeName) throw new Error("nodeName required");
+        if (!command) throw new Error("command required");
+        const fromName = (data.from as string) || "http";
+        const result = await this.cm.nodePool.sendCommand(nodeName, command, cmdArgs, fromName);
+        return result;
+      }
+
       case "/node/message": {
         const content = data.content as string;
         if (!content) throw new Error("content required");

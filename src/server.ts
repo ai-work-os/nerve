@@ -111,6 +111,11 @@ export class Server {
       ws.on("message", (data) => {
         try {
           const msg = JSON.parse(data.toString()) as JsonRpcMessage;
+          // Response from program node (for node.command)
+          if ("id" in msg && !("method" in msg)) {
+            this.cm.nodePool.handleCommandResponse(msg.id as number, (msg as any).result, (msg as any).error);
+            return;
+          }
           if ("method" in msg && "id" in msg) {
             this.handleRequest(ws, msg as JsonRpcRequest);
           }

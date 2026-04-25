@@ -303,7 +303,7 @@ export class PluginBase {
         let msg: any;
         try { msg = JSON.parse(data.toString()); } catch { return; }
 
-        // Response to a request
+        // Response to a request we sent
         if (msg.id !== undefined && !msg.method) {
           const p = this.pending.get(msg.id);
           if (p) {
@@ -314,7 +314,26 @@ export class PluginBase {
           return;
         }
 
-        // Notification
+        // Incoming request (server → plugin): has both method and id
+        if (msg.method && msg.id !== undefined) {
+          if (msg.method === "node.command") {
+            const { command, args, from } = msg.params || {};
+            const commands = this.getCommands();
+            if (!commands[command]) {
+              const available = Object.keys(commands).join(", ");
+              this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown command "${command}". available: ${available}` } });
+              return;
+            }
+            const result = this.onCommand(command, args || {}, from);
+            const reply = typeof result === "string" ? { error: result } : (result || {});
+            this.send({ jsonrpc: "2.0", id: msg.id, result: reply });
+            return;
+          }
+          this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: `method not found: ${msg.method}` } });
+          return;
+        }
+
+        // Notification (method only, no id)
         if (msg.method) {
           const handler = this.notificationHandlers.get(msg.method);
           if (handler) handler(msg.params);

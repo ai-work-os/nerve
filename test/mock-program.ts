@@ -35,12 +35,34 @@ ws.on("open", () => {
     name: NAME,
     capabilities: ["monitor"],
     permissions: "member",
+    commands: {
+      status: { description: "Show status" },
+      ping: { description: "Return pong" },
+    },
   });
 });
 
 ws.on("message", (data) => {
   let msg: any;
   try { msg = JSON.parse(data.toString()); } catch { return; }
+
+  // Handle incoming requests (node.command) — has both method and id
+  if (msg.method && msg.id !== undefined) {
+    if (msg.method === "node.command") {
+      const { command, args, from } = msg.params || {};
+      let result: any = {};
+      if (command === "status") {
+        result = { reply: `ok, from=${from || "unknown"}` };
+      } else if (command === "ping") {
+        result = { reply: "pong" };
+      } else {
+        send(ws, { jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown command: ${command}` } });
+        return;
+      }
+      send(ws, { jsonrpc: "2.0", id: msg.id, result });
+      return;
+    }
+  }
 
   // Handle registration response
   if (msg.id !== undefined && msg.result?.nodeId) {
