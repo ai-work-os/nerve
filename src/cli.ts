@@ -292,13 +292,14 @@ async function cmdNode(sub: string, args: string[]) {
       }
       case "spawn": {
         const adapter = args[0];
-        if (!adapter) die("Usage: nerve node spawn <adapter> [--name NAME] [--cwd DIR]");
-        let name: string | undefined, cwd: string | undefined;
+        if (!adapter) die("Usage: nerve node spawn <adapter> [--name NAME] [--cwd DIR] [--model MODEL]");
+        let name: string | undefined, cwd: string | undefined, model: string | undefined;
         for (let i = 1; i < args.length; i++) {
           if (args[i] === "--name" && args[i + 1]) { name = args[i + 1]; i++; }
           else if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
+          else if (args[i] === "--model" && args[i + 1]) { model = args[i + 1]; i++; }
         }
-        const r = await post("/node/spawn", { adapter, name, cwd });
+        const r = await post("/node/spawn", { adapter, name, cwd, model });
         if (r.error) die(r.error);
         console.log(`${r.nodeId}  ${r.name}  [${r.status}]`);
         break;
@@ -394,7 +395,7 @@ Commands:
   channel post <ID> <message> [--from X] Post a message
 
   node list                              List nodes
-  node spawn <adapter> [--name N]        Spawn an agent
+  node spawn <adapter> [--name N] [--model M] Spawn an agent
   node join <name> <channelId>           Join agent to channel
   node leave <name> <channelId>          Remove agent from channel
   node stop <ID|name>                    Stop a node

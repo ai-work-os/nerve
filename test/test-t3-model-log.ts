@@ -39,12 +39,13 @@ function assertEq(actual: unknown, expected: unknown, name: string): void {
 // pushUpdate — lastReportedSize tracking
 // ============================================================
 
-function makeNode(adapter?: string): NerveNode {
+function makeNode(adapter?: string, model?: string): NerveNode {
   return new NerveNode({
     id: "test-node-1",
     name: "test-agent",
     transport: { type: "stdio" } as any,
     adapter,
+    model,
   });
 }
 
@@ -78,6 +79,14 @@ function testLastReportedSizeUpdatesOnSizeChange() {
   assertEq((node as any).lastReportedSize, 999_999, "lastReportedSize stays normalized after second observe");
 }
 
+function testUsageUsesNodeModelOverride() {
+  console.log("\n▸ observeUpdate: instance model override controls context size");
+  const node = makeNode("mock", "sonnet[1m]");
+  node.observeUpdate(makeUsageUpdate(10_000, 200_000));
+  assertEq((node as any).lastReportedSize, 1_000_000, "lastReportedSize uses node model override");
+  assertEq(node.usage?.tokenSize, 1_000_000, "usage tokenSize uses node model override");
+}
+
 // ============================================================
 // toInfo() — model field
 // ============================================================
@@ -103,6 +112,13 @@ function testToInfoReturnsModelForMock() {
   const info = node.toInfo();
   const expected = getAdapter("mock")?.model;
   assertEq(info.model, expected, `model should be ${JSON.stringify(expected)}`);
+}
+
+function testToInfoReturnsNodeModelOverride() {
+  console.log("\n▸ toInfo: instance model overrides adapter model");
+  const node = makeNode("mock", "sonnet");
+  const info = node.toInfo();
+  assertEq(info.model, "sonnet", "model should use node override");
 }
 
 function testToInfoReturnsModelForC1() {
@@ -135,11 +151,13 @@ function main() {
   // 1. lastReportedSize tracking
   testLastReportedSizeUpdatesOnFirstPush();
   testLastReportedSizeUpdatesOnSizeChange();
+  testUsageUsesNodeModelOverride();
 
   // 2. toInfo model field
   testToInfoReturnsModelForClaude();
   testToInfoReturnsUndefinedModelForNoAdapter();
   testToInfoReturnsModelForMock();
+  testToInfoReturnsNodeModelOverride();
   testToInfoReturnsModelForC1();
   testToInfoReturnsModelForC2();
 

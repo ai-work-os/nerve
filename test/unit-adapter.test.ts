@@ -22,6 +22,7 @@ function assert(condition: boolean, name: string, detail?: string): void {
 
 console.log("\n▸ getAdapter");
 assert(!!getAdapter("claude"), "claude adapter exists");
+assert(!!getAdapter("opencode"), "opencode adapter exists");
 assert(!!getAdapter("ai-ear"), "ai-ear adapter exists");
 assert(!getAdapter("mc"), "mc adapter removed");
 assert(!getAdapter("nonexistent"), "nonexistent returns undefined");
@@ -29,6 +30,7 @@ assert(!getAdapter("nonexistent"), "nonexistent returns undefined");
 console.log("\n▸ listAdapters");
 const all = listAdapters();
 assert(all.includes("claude"), "listAdapters includes claude");
+assert(all.includes("opencode"), "listAdapters includes opencode");
 assert(all.includes("ai-ear"), "listAdapters includes ai-ear");
 assert(!all.includes("mc"), "listAdapters does not include mc");
 
@@ -36,6 +38,7 @@ console.log("\n▸ listProgramAdapters");
 const progs = listProgramAdapters();
 assert(Object.keys(progs).length > 0, "has program adapters");
 assert(!progs["claude"], "excludes AI adapters");
+assert(!progs["opencode"], "excludes opencode");
 assert(!progs["c1"], "excludes c1");
 assert(!progs["mock-program"], "excludes mock adapters");
 assert(!progs["mock-program-timeout"], "excludes mock-program-timeout");

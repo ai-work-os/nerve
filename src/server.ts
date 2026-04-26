@@ -347,6 +347,11 @@ export class Server {
           const cwd = resolve((p.cwd as string) || process.cwd());
           const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
           const standalone = p.standalone as boolean | undefined;
+          const model = typeof p.model === "string" && p.model.trim() ? p.model.trim() : undefined;
+          if (p.model !== undefined && typeof p.model !== "string") {
+            this.sendError(ws, id, -32602, "model must be a string");
+            return;
+          }
           let channelId = p.channelId as string | undefined;
 
           // Auto-inherit caller's channel if not explicitly provided and not standalone
@@ -366,7 +371,7 @@ export class Server {
             return;
           }
 
-          this.cm.spawnNode(adapter, name, cwd).then(node => {
+          this.cm.spawnNode(adapter, name, cwd, { model }).then(node => {
             // Auto-join channel if resolved (explicit or inherited)
             if (channelId) {
               this.cm.addNodeToChannel(channelId, node.id, node.name);

@@ -20,6 +20,7 @@ export class NerveNode {
   permissions: PermissionLevel;
   transport: Transport;
   adapter?: string;
+  model?: string;
   cwd?: string;
   source?: string;  // client type identifier (e.g., "android", "tui", "web")
   sessionId?: string;
@@ -66,6 +67,7 @@ export class NerveNode {
     capabilities?: string[];
     permissions?: PermissionLevel;
     adapter?: string;
+    model?: string;
     cwd?: string;
   }) {
     this.id = opts.id;
@@ -74,6 +76,7 @@ export class NerveNode {
     this.capabilities = opts.capabilities || [];
     this.permissions = opts.permissions || "member";
     this.adapter = opts.adapter;
+    this.model = opts.model;
     this.cwd = opts.cwd;
     this.status = "connecting";
     this.createdAt = Date.now();
@@ -92,6 +95,11 @@ export class NerveNode {
     this.lastActiveAt = Date.now();
   }
 
+  get effectiveModel(): string | undefined {
+    const adapterModel = this.adapter ? getAdapter(this.adapter)?.model : undefined;
+    return this.model || adapterModel;
+  }
+
   // Called on every ACP SessionNotification to normalize usage_update side-effects.
   // No longer writes to a buffer — the messageStore is populated via explicit
   // assembler operations in NodePool.
@@ -100,9 +108,9 @@ export class NerveNode {
 
     const update = (params as SessionNotification).update as (UsageUpdate & { sessionUpdate: string }) | undefined;
     if (update?.sessionUpdate === "usage_update") {
-      const adapterModel = this.adapter ? getAdapter(this.adapter)?.model : undefined;
-      const actualSize = getContextWindow(adapterModel);
-      log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} actualSize=${actualSize} model=${adapterModel} cost=${JSON.stringify(update.cost)}`);
+      const effectiveModel = this.effectiveModel;
+      const actualSize = getContextWindow(effectiveModel);
+      log.debug(`[${this.name}] usage_update wire: used=${update.used} size=${update.size} actualSize=${actualSize} model=${effectiveModel} cost=${JSON.stringify(update.cost)}`);
       const cost = update.cost as Cost | null | undefined;
       const newSize = actualSize ?? update.size ?? 0;
       (update as any).size = newSize;
@@ -132,7 +140,6 @@ export class NerveNode {
   }
 
   toInfo(): NodeInfo {
-    const adapterConfig = this.adapter ? getAdapter(this.adapter) : undefined;
     return {
       id: this.id,
       name: this.name,
@@ -142,7 +149,7 @@ export class NerveNode {
       transport: this.transport.type,
       pid: this.transport.type === "stdio" ? (this.transport as any).pid : undefined,
       adapter: this.adapter,
-      model: adapterConfig?.model,
+      model: this.effectiveModel,
       source: this.source,
       activity: this.activity,
       channels: [...this.channels],

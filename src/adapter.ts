@@ -71,6 +71,12 @@ const adapters: Record<string, AdapterConfig> = {
     capabilities: ["code"],
     terminal: false,
   },
+  opencode: {
+    cmd: "opencode",
+    args: ["acp"],
+    capabilities: ["code", "analysis"],
+    terminal: false,
+  },
   kimi: {
     cmd: "kimi-cli",
     args: ["acp"],

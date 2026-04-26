@@ -505,6 +505,48 @@ describe("Nerve Integration Tests - Part 1", () => {
     await c.disconnect();
   });
 
+  it("spawn model override is returned by node.list", async () => {
+    const name = `http-model-override-agent-${Date.now()}`;
+    const spawnResult = await httpPost("/node/spawn", {
+      adapter: "mock",
+      name,
+      cwd: ROOT,
+      model: "sonnet[1m]",
+    });
+    assert(!!spawnResult.nodeId, "model override: agent spawned");
+
+    const list = await httpPost("/node/list", {});
+    const agent = (list as any).nodes.find((n: any) => n.name === name);
+    assert(!!agent, "model override: agent found in node.list");
+    assertEq(agent.model, "sonnet[1m]", "model override: node.list returns spawn model");
+
+    await httpPost("/node/stop", { nodeId: spawnResult.nodeId });
+    await sleep(500);
+  });
+
+  it("WS node.spawn model override is returned by node.list", async () => {
+    const c = new WsClient("ws-model-override-client");
+    await c.connect();
+    await c.request("node.register", { name: "ws-model-override-client", capabilities: ["ui"] });
+
+    const name = `ws-model-override-agent-${Date.now()}`;
+    const spawnResult = await c.request("node.spawn", {
+      adapter: "mock",
+      name,
+      cwd: ROOT,
+      model: "sonnet",
+    });
+    assert(!!spawnResult.nodeId, "ws model override: agent spawned");
+
+    const list = await c.request("node.list", {});
+    const agent = list.nodes.find((n: any) => n.name === name);
+    assert(!!agent, "ws model override: agent found in node.list");
+    assertEq(agent.model, "sonnet", "ws model override: node.list returns spawn model");
+
+    await c.request("node.stop", { nodeId: spawnResult.nodeId });
+    await c.disconnect();
+  });
+
   it("Update Buffer & Replay", async () => {
     // Client 1: set up agent and trigger updates
     const c1 = new WsClient("buf-client1");
@@ -1261,6 +1303,8 @@ describe("Nerve Integration Tests - Part 1", () => {
     assert(toolNames.includes("nerve_create_channel"), "mcp-tools: nerve_create_channel listed");
     assert(toolNames.includes("nerve_join"), "mcp-tools: nerve_join listed");
     assert(toolNames.includes("nerve_remove"), "mcp-tools: nerve_remove listed");
+    const spawnTool = tools.find((t: any) => t.name === "nerve_spawn");
+    assert(!!spawnTool?.inputSchema?.properties?.model, "mcp-tools: nerve_spawn exposes model");
 
     const createResult = await mcp.callTool("nerve_create_channel", { name: "orch-test" });
     assert(!createResult.isError, "mcp-tools: create channel succeeds");
@@ -1275,13 +1319,14 @@ describe("Nerve Integration Tests - Part 1", () => {
     }
     assert(!!channel.nodes?.orchestrator, "mcp-tools: creator auto-joined channel");
 
-    const spawnResult = await mcp.callTool("nerve_spawn", { adapter: "mock", name: "orch-worker", cwd: ROOT });
+    const spawnResult = await mcp.callTool("nerve_spawn", { adapter: "mock", name: "orch-worker", cwd: ROOT, model: "sonnet[1m]" });
     assert(!spawnResult.isError, "mcp-tools: spawn succeeds");
     await sleep(3000);
 
     const nodesAfterSpawn = await c.request("node.list", {});
     const worker = nodesAfterSpawn.nodes.find((n: any) => n.name === "orch-worker");
     assert(!!worker, "mcp-tools: spawned worker visible");
+    assertEq(worker?.model, "sonnet[1m]", "mcp-tools: spawn model propagated");
     if (!worker) {
       await mcp.close();
       await c.disconnect();

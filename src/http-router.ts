@@ -274,8 +274,12 @@ export class HttpRouter {
         const name = (data.name as string) || this.generateNodeName(adapter, cwd);
         const channelId = data.channelId as string | undefined;
         const standalone = data.standalone as boolean | undefined;
+        if (data.model !== undefined && typeof data.model !== "string") {
+          throw new Error("model must be a string");
+        }
+        const model = typeof data.model === "string" && data.model.trim() ? data.model.trim() : undefined;
 
-        const nodeId = this.cm.spawnNodeSync(adapter, name, cwd);
+        const nodeId = this.cm.spawnNodeSync(adapter, name, cwd, { model });
 
         // Auto-join channel if requested and not standalone
         if (channelId && !standalone) {

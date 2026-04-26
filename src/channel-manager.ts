@@ -1,6 +1,7 @@
 import { Channel } from "./channel.js";
 import { ChannelStore } from "./channel-store.js";
 import { NodePool } from "./node-pool.js";
+import type { SpawnOptions } from "./node-pool.js";
 import { route } from "./router.js";
 import { Store } from "./store.js";
 import { NerveNode } from "./node.js";
@@ -149,13 +150,13 @@ export class ChannelManager {
     return this.nodePool.registerWebSocket(ws, name, capabilities, permissions);
   }
 
-  async spawnNode(adapter: string, name: string, cwd: string): Promise<NerveNode> {
-    return this.nodePool.spawnProcess(adapter, name, cwd, this.port);
+  async spawnNode(adapter: string, name: string, cwd: string, options: SpawnOptions = {}): Promise<NerveNode> {
+    return this.nodePool.spawnProcess(adapter, name, cwd, this.port, options);
   }
 
   /** Spawn node and return ID immediately (handshake runs in background) */
-  spawnNodeSync(adapter: string, name: string, cwd: string): string {
-    const node = this.nodePool.spawnProcessSync(adapter, name, cwd, this.port);
+  spawnNodeSync(adapter: string, name: string, cwd: string, options: SpawnOptions = {}): string {
+    const node = this.nodePool.spawnProcessSync(adapter, name, cwd, this.port, options);
     return node.id;
   }
 

@@ -20,6 +20,10 @@ export interface TransportFactory {
   createNull(): NullTransport;
 }
 
+export interface SpawnOptions {
+  model?: string;
+}
+
 export const defaultTransportFactory: TransportFactory = {
   createStdio: () => new StdioTransport(),
   createNull: () => new NullTransport(),
@@ -184,16 +188,16 @@ export class NodePool {
   }
 
   /** Spawn a Process Node synchronously (handshake runs in background) */
-  spawnProcessSync(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
-    return this._spawnProcess(adapterName, name, cwd, serverPort);
+  spawnProcessSync(adapterName: string, name: string, cwd: string, serverPort: number, options: SpawnOptions = {}): NerveNode {
+    return this._spawnProcess(adapterName, name, cwd, serverPort, options);
   }
 
   /** Spawn a Process Node (CLI agent) */
-  async spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number): Promise<NerveNode> {
-    return this._spawnProcess(adapterName, name, cwd, serverPort);
+  async spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number, options: SpawnOptions = {}): Promise<NerveNode> {
+    return this._spawnProcess(adapterName, name, cwd, serverPort, options);
   }
 
-  private _spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number): NerveNode {
+  private _spawnProcess(adapterName: string, name: string, cwd: string, serverPort: number, options: SpawnOptions): NerveNode {
     if (this.isNameTaken(name)) {
       throw new Error(this.getNameConflictInfo(name));
     }
@@ -213,8 +217,11 @@ export class NodePool {
       transport,
       capabilities: adapter.capabilities,
       adapter: adapterName,
+      model: options.model,
       cwd,
     });
+    const effectiveModel = node.effectiveModel;
+    log.info(`spawn process: adapter=${adapterName} name=${name} model=${options.model || ""} effectiveModel=${effectiveModel || ""}`);
 
     this.nodes.set(id, node);
     this.nameIndex.set(name, id);
@@ -229,17 +236,19 @@ export class NodePool {
         const settings: Record<string, unknown> = {
           permissions: { allow: [], deny: [], ask: [] },
         };
-        if (adapter.model) {
-          settings.model = adapter.model;
+        if (effectiveModel) {
+          settings.model = effectiveModel;
         }
         writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
-      } else if (adapter.model) {
+        if (effectiveModel) log.info(`settings.local.json model set for ${name}: ${effectiveModel}`);
+      } else if (effectiveModel) {
         // Ensure model is set in existing settings file
         try {
           const existing = JSON.parse(readFileSync(settingsFile, "utf8"));
-          if (existing.model !== adapter.model) {
-            existing.model = adapter.model;
+          if (existing.model !== effectiveModel) {
+            existing.model = effectiveModel;
             writeFileSync(settingsFile, JSON.stringify(existing, null, 2));
+            log.info(`settings.local.json model updated for ${name}: ${effectiveModel}`);
           }
         } catch (e) { log.warn(`settings.local.json parse error for ${name}: ${e}`); }
       }
