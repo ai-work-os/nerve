@@ -69,6 +69,7 @@ async function cmdServe(args: string[]) {
   let eventLogPath: string | undefined;
   let noGuardian = false;
   let noRecorder = false;
+  let noDuty = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -76,6 +77,7 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--event-log" && args[i + 1]) { eventLogPath = resolve(args[i + 1]); i++; }
     else if (args[i] === "--no-guardian") { noGuardian = true; }
     else if (args[i] === "--no-recorder") { noRecorder = true; }
+    else if (args[i] === "--no-duty") { noDuty = true; }
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
@@ -136,6 +138,29 @@ async function cmdServe(args: string[]) {
     startRecorder();
   }
 
+  // Auto-start duty-monitor plugin
+  let dutyNodeId: string | undefined;
+
+  if (!noDuty) {
+    const startDuty = () => {
+      const result = nerve.cleanupStaleGuardian("duty-monitor");
+      if (result === "alive") {
+        info("duty-monitor already running, skipping spawn");
+        return;
+      }
+
+      try {
+        const node = nerve.nodePool.spawnProcessSync("duty-monitor", "duty-monitor", resolve(dataDir), port);
+        dutyNodeId = node.id;
+        info(`duty-monitor spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`duty-monitor spawn failed: ${err.message}`);
+      }
+    };
+
+    startDuty();
+  }
+
   const shutdown = async () => {
     try {
       info("shutting down...");
@@ -146,6 +171,10 @@ async function cmdServe(args: string[]) {
       if (recorderNodeId) {
         try { await nerve.nodePool.stopNode(recorderNodeId); } catch (e) { info(`user-recorder stop failed: ${e}`); }
         info("user-recorder stopped");
+      }
+      if (dutyNodeId) {
+        try { await nerve.nodePool.stopNode(dutyNodeId); } catch (e) { info(`duty-monitor stop failed: ${e}`); }
+        info("duty-monitor stopped");
       }
       await server.shutdown();
       closeLog();

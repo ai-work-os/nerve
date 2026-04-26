@@ -13,6 +13,8 @@
 
 import * as os from "node:os";
 import { statfs } from "node:fs/promises";
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 
 // --- CLI args ---
@@ -47,6 +49,105 @@ export interface HealthAlert {
   metric: string;
   value: number;
   threshold: number;
+}
+
+// --- Schedule parsing ---
+
+const DAY_MAP: Record<string, number> = {
+  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+};
+
+export type Schedule = { hour?: number; minute?: number; dayOfWeek?: number; intervalMinutes?: number };
+
+export function parseSchedule(input: string): Schedule | null {
+  if (!input) return null;
+
+  // Interval: "every:60m"
+  const intervalMatch = input.match(/^every:(\d+)m$/);
+  if (intervalMatch) {
+    const minutes = parseInt(intervalMatch[1]);
+    if (minutes <= 0) return null;
+    return { intervalMinutes: minutes };
+  }
+
+  // Day + time: "Mon:08:00"
+  const dayTimeMatch = input.match(/^([A-Za-z]{3}):(\d{1,2}):(\d{2})$/);
+  if (dayTimeMatch) {
+    const day = DAY_MAP[dayTimeMatch[1].toLowerCase()];
+    if (day === undefined) return null;
+    const hour = parseInt(dayTimeMatch[2]);
+    const minute = parseInt(dayTimeMatch[3]);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour, minute, dayOfWeek: day };
+  }
+
+  // Fixed time: "22:00" or "8:05"
+  const timeMatch = input.match(/^(\d{1,2}):(\d{2})$/);
+  if (timeMatch) {
+    const hour = parseInt(timeMatch[1]);
+    const minute = parseInt(timeMatch[2]);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour, minute };
+  }
+
+  return null;
+}
+
+// --- TaskDef & TaskStore ---
+
+export interface TaskDef {
+  name: string;
+  schedule: Schedule;
+  message: string;
+}
+
+export class TaskStore {
+  private tasks: TaskDef[] = [];
+  private filePath: string;
+
+  constructor(dataDir: string) {
+    mkdirSync(dataDir, { recursive: true });
+    this.filePath = resolve(dataDir, "tasks.json");
+    this.load();
+  }
+
+  add(task: TaskDef): void {
+    if (!task.name) {
+      task.name = task.message.replace(/^@\S+\s*/, "").slice(0, 20).trim() || `task-${Date.now()}`;
+    }
+    const idx = this.tasks.findIndex(t => t.name === task.name);
+    if (idx >= 0) {
+      this.tasks[idx] = task;
+    } else {
+      this.tasks.push(task);
+    }
+    this.save();
+  }
+
+  remove(name: string): boolean {
+    const idx = this.tasks.findIndex(t => t.name === name);
+    if (idx < 0) return false;
+    this.tasks.splice(idx, 1);
+    this.save();
+    return true;
+  }
+
+  list(): TaskDef[] {
+    return [...this.tasks];
+  }
+
+  private load(): void {
+    if (!existsSync(this.filePath)) { this.tasks = []; return; }
+    try {
+      this.tasks = JSON.parse(readFileSync(this.filePath, "utf-8"));
+    } catch {
+      this.tasks = [];
+    }
+  }
+
+  private save(): void {
+    writeFileSync(this.filePath, JSON.stringify(this.tasks, null, 2));
+  }
 }
 
 // --- CronScheduler ---
@@ -179,8 +280,19 @@ export function checkProcessHealth(
 
 const TICK_INTERVAL_MS = 30_000; // 30s tick to prevent drift
 
+function formatSchedule(s: Schedule): string {
+  if (s.intervalMinutes !== undefined) return `every ${s.intervalMinutes}min`;
+  const time = `${s.hour}:${String(s.minute ?? 0).padStart(2, "0")}`;
+  if (s.dayOfWeek !== undefined) {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return `${days[s.dayOfWeek]} ${time}`;
+  }
+  return time;
+}
+
 class DutyMonitor extends PluginBase {
   private scheduler = new CronScheduler();
+  private taskStore!: TaskStore;
   private tickTimer?: ReturnType<typeof setInterval>;
   private channelId?: string;
   private isChecking = false;
@@ -196,52 +308,45 @@ class DutyMonitor extends PluginBase {
 
   override getCommands(): Record<string, CommandDef> {
     return {
-      status: { description: "显示当前状态和下次触发时间" },
-      trigger: { description: "手动触发指定任务", args: { task: "daily|worklog|health" } },
+      add: { description: "添加定时任务", args: { schedule: "HH:MM | Day:HH:MM | every:Nm", message: "@target 消息内容" } },
+      remove: { description: "删除任务", args: { name: "任务名" } },
+      list: { description: "列出所有任务" },
+      trigger: { description: "立即触发任务", args: { name: "任务名" } },
+      status: { description: "显示运行状态" },
       check: { description: "立即执行健康检查" },
     };
   }
 
-  /** Capture channelId from incoming channel messages */
+  protected override registerNotifications(): void {
+    super.registerNotifications();
+
+    this.onNotification("channel.nodeJoined", (params: any) => {
+      if (params?.nodeName === this.options.name) {
+        this.channelId = params.channelId;
+        this.log("info", `joined channel ${this.channelId}`);
+      }
+    });
+
+    this.onNotification("channel.nodeLeft", (params: any) => {
+      if (params?.nodeName === this.options.name && params?.channelId === this.channelId) {
+        this.channelId = undefined;
+        this.log("info", "left channel");
+      }
+    });
+  }
+
   protected override handleChannelMessage(params: any): void {
-    const channelId = params?.channelId as string | undefined;
-    if (channelId && !this.channelId) {
-      this.channelId = channelId;
-      this.log("info", `channel discovered: ${channelId}`);
-    }
-    // Delegate to base for @mention command dispatch
+    if (params?.channelId) this.channelId = params.channelId;
     super.handleChannelMessage(params);
   }
 
   protected override async onReady(): Promise<void> {
-    this.log("info", `config: cpu_threshold=${CPU_THRESHOLD}%, mem_threshold=${MEM_THRESHOLD}%, disk_threshold=${DISK_THRESHOLD}%`);
-    this.log("info", `tick interval: ${TICK_INTERVAL_MS}ms`);
+    this.taskStore = new TaskStore(this.dataDir);
+    this.log("info", `tick interval: ${TICK_INTERVAL_MS}ms, data: ${this.dataDir}`);
 
-    // Discover channel: poll channel.list until found (scene may not have joined us yet)
-    void this.discoverChannel();
+    this.syncTasksToScheduler();
+    this.log("info", `loaded ${this.taskStore.list().length} tasks from disk`);
 
-    // Register cron jobs
-    this.scheduler.addJob({
-      name: "daily-report",
-      schedule: { hour: 22, minute: 0 },
-      action: () => this.triggerDaily(),
-    });
-
-    this.scheduler.addJob({
-      name: "weekly-worklog",
-      schedule: { hour: 8, minute: 0, dayOfWeek: 1 }, // Monday
-      action: () => this.triggerWorklog(),
-    });
-
-    this.scheduler.addJob({
-      name: "health-check",
-      schedule: { intervalMinutes: 60 },
-      action: () => this.runHealthCheck(),
-    });
-
-    this.log("info", `registered ${this.scheduler.jobs.length} cron jobs: ${this.scheduler.jobs.map(j => j.name).join(", ")}`);
-
-    // Start tick loop
     this.tickTimer = setInterval(() => {
       const now = new Date();
       const fired = this.scheduler.tick(now);
@@ -260,37 +365,27 @@ class DutyMonitor extends PluginBase {
 
   protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     switch (command) {
-      case "status": {
-        const jobs = this.scheduler.jobs.map(j => {
-          const s = j.schedule;
-          let schedule = "";
-          if (s.intervalMinutes !== undefined) {
-            schedule = `every ${s.intervalMinutes}min`;
-          } else {
-            const parts: string[] = [];
-            if (s.hour !== undefined) parts.push(`${s.hour}:${String(s.minute ?? 0).padStart(2, "0")}`);
-            if (s.dayOfWeek !== undefined) parts.push(`day=${s.dayOfWeek}`);
-            schedule = parts.join(" ");
-          }
-          const lastRun = j.lastRun !== undefined
-            ? `${Math.floor(j.lastRun / 60)}:${String(j.lastRun % 60).padStart(2, "0")}`
-            : "never";
-          return `${j.name}: ${schedule} (last: ${lastRun})`;
-        });
-        return { reply: `channel=${this.channelId || "none"}\n${jobs.join("\n")}` };
+      case "add": {
+        // Reconstruct: positional args "0"="22:00", "1"="@agent", "2"="写日报" → "22:00 @agent 写日报"
+        const positional: string[] = [];
+        for (let i = 0; args[String(i)] !== undefined; i++) positional.push(args[String(i)]);
+        const raw = positional.join(" ");
+        return this.handleAdd(raw, from);
       }
+      case "remove": {
+        const positional: string[] = [];
+        for (let i = 0; args[String(i)] !== undefined; i++) positional.push(args[String(i)]);
+        return this.handleRemove(positional.join(" "), from);
+      }
+      case "list":
+        return this.handleList();
       case "trigger": {
-        const task = args["0"] || args.task;
-        this.log("info", `manual trigger: ${task} by ${from || "unknown"}`);
-        switch (task) {
-          case "daily": void this.triggerDaily(); break;
-          case "worklog": void this.triggerWorklog(); break;
-          case "health": void this.runHealthCheck(); break;
-          default:
-            return `unknown task: "${task}". available: daily, worklog, health`;
-        }
-        break;
+        const positional: string[] = [];
+        for (let i = 0; args[String(i)] !== undefined; i++) positional.push(args[String(i)]);
+        return this.handleTrigger(positional.join(" "), from);
       }
+      case "status":
+        return this.handleStatus();
       case "check":
         this.log("info", `manual health check by ${from || "unknown"}`);
         void this.runHealthCheck();
@@ -298,27 +393,119 @@ class DutyMonitor extends PluginBase {
     }
   }
 
-  /** Poll channel.list until we find a channel (max 6 attempts, 5s apart) */
-  private async discoverChannel(): Promise<void> {
-    for (let i = 0; i < 6; i++) {
-      try {
-        const result = await this.request("channel.list");
-        const channels: any[] = result.channels || [];
-        if (channels.length > 0) {
-          this.channelId = channels[0].id || channels[0].channelId;
-          this.log("info", `channel discovered via list: ${this.channelId}`);
-          return;
-        }
-      } catch (err) {
-        this.log("warn", `channel.list attempt ${i + 1} failed: ${err}`);
-      }
-      if (i < 5) await new Promise(r => setTimeout(r, 5000));
+  private handleAdd(raw: string, from?: string): CommandResult {
+    // Parse: "22:00 @duty-agent 写日报" or "--name foo 22:00 @agent msg"
+    let name = "";
+    let input = raw;
+
+    const nameMatch = input.match(/^--name\s+(\S+)\s+/);
+    if (nameMatch) {
+      name = nameMatch[1];
+      input = input.slice(nameMatch[0].length);
     }
-    this.log("warn", "channel not found after polling, will rely on handleChannelMessage fallback");
+
+    const parts = input.match(/^(\S+)\s+(.+)$/);
+    if (!parts) {
+      this.log("error", `add: invalid format "${raw}" from ${from || "unknown"}`);
+      return { reply: "格式：add <schedule> <message>\nschedule: HH:MM | Day:HH:MM | every:Nm" };
+    }
+
+    const scheduleStr = parts[1];
+    const message = parts[2];
+    const schedule = parseSchedule(scheduleStr);
+
+    if (!schedule) {
+      this.log("error", `add: invalid schedule "${scheduleStr}" from ${from || "unknown"}`);
+      return { reply: `无法解析 schedule: "${scheduleStr}"\n支持: 22:00 | Mon:08:00 | every:60m` };
+    }
+
+    const task: TaskDef = { name, schedule, message };
+    this.taskStore.add(task);
+    this.syncTasksToScheduler();
+    const finalName = this.taskStore.list().find(t => t.message === message)?.name || name;
+    this.log("info", `add: task "${finalName}" schedule=${formatSchedule(schedule)} message="${message}" by ${from || "unknown"}`);
+    return { reply: `已添加: ${finalName} (${formatSchedule(schedule)})` };
+  }
+
+  private handleRemove(name: string, from?: string): CommandResult {
+    if (!name) {
+      this.log("error", `remove: no task name from ${from || "unknown"}`);
+      return { reply: "格式：remove <任务名>" };
+    }
+    const ok = this.taskStore.remove(name);
+    if (ok) {
+      this.syncTasksToScheduler();
+      this.log("info", `removed task "${name}" by ${from || "unknown"}`);
+      return { reply: `已删除: ${name}` };
+    }
+    this.log("warn", `remove: task "${name}" not found, from ${from || "unknown"}`);
+    const available = this.taskStore.list().map(t => t.name).join(", ") || "无";
+    return { reply: `任务 "${name}" 不存在。当前任务: ${available}` };
+  }
+
+  private handleList(): CommandResult {
+    const tasks = this.taskStore.list();
+    if (tasks.length === 0) {
+      this.log("info", "list: no tasks");
+      return { reply: "当前无任务。用 add <schedule> <message> 添加" };
+    }
+    const lines = tasks.map(t => {
+      const job = this.scheduler.jobs.find(j => j.name === t.name);
+      const lastRun = job?.lastRun !== undefined
+        ? `${Math.floor(job.lastRun / 60)}:${String(job.lastRun % 60).padStart(2, "0")}`
+        : "never";
+      return `• ${t.name}: ${formatSchedule(t.schedule)} → ${t.message.slice(0, 40)} (last: ${lastRun})`;
+    });
+    this.log("info", `list: ${tasks.length} tasks`);
+    return { reply: lines.join("\n") };
+  }
+
+  private handleTrigger(name: string, from?: string): CommandResult {
+    if (!name) {
+      this.log("error", `trigger: no task name from ${from || "unknown"}`);
+      return { reply: "格式：trigger <任务名>" };
+    }
+    const task = this.taskStore.list().find(t => t.name === name);
+    if (!task) {
+      this.log("warn", `trigger: task "${name}" not found, from ${from || "unknown"}`);
+      return { reply: `任务 "${name}" 不存在` };
+    }
+    this.log("info", `trigger: "${name}" by ${from || "unknown"}`);
+    void this.postToChannelSafe(task.message);
+    return { reply: `已触发: ${name}` };
+  }
+
+  private handleStatus(): CommandResult {
+    const tasks = this.taskStore.list();
+    const lines = [
+      `channel=${this.channelId || "none"}`,
+      `tasks=${tasks.length}`,
+      `tick=${TICK_INTERVAL_MS}ms`,
+    ];
+    for (const job of this.scheduler.jobs) {
+      const lastRun = job.lastRun !== undefined
+        ? `${Math.floor(job.lastRun / 60)}:${String(job.lastRun % 60).padStart(2, "0")}`
+        : "never";
+      lines.push(`  ${job.name}: last=${lastRun}`);
+    }
+    return { reply: lines.join("\n") };
+  }
+
+  private syncTasksToScheduler(): void {
+    this.scheduler.jobs = [];
+    for (const task of this.taskStore.list()) {
+      this.scheduler.addJob({
+        name: task.name,
+        schedule: task.schedule,
+        action: () => {
+          this.log("info", `cron fired: "${task.name}" → ${task.message.slice(0, 50)}`);
+          void this.postToChannelSafe(task.message);
+        },
+      });
+    }
   }
 
   private async postToChannelSafe(content: string): Promise<void> {
-    // Lazy channel discovery: if channelId not yet known, try once
     if (!this.channelId) {
       try {
         const result = await this.request("channel.list");
@@ -341,16 +528,6 @@ class DutyMonitor extends PluginBase {
     }
   }
 
-  private triggerDaily(): void {
-    this.log("info", "triggering daily report");
-    void this.postToChannelSafe("@duty-agent 写日报");
-  }
-
-  private triggerWorklog(): void {
-    this.log("info", "triggering worklog");
-    void this.postToChannelSafe("@duty-agent 整理 worklog");
-  }
-
   private async runHealthCheck(): Promise<void> {
     if (this.isChecking) {
       this.log("info", "health check already in progress, skipping");
@@ -359,39 +536,29 @@ class DutyMonitor extends PluginBase {
     this.isChecking = true;
     this.log("info", "running health check");
     try {
-      // CPU: two samples 1s apart
       const cpuPrev = os.cpus();
       await new Promise(r => setTimeout(r, 1000));
       const cpuCurr = os.cpus();
       const cpuPercent = getCpuUsage(cpuPrev, cpuCurr);
-
-      // Memory
       const mem = getMemoryUsage();
-
-      // Disk
       const disk = await getDiskUsage();
 
       const memPercent = (mem.used / mem.total) * 100;
       const diskPercent = (disk.used / disk.total) * 100;
 
-      this.log("info", `health check: cpu=${Math.round(cpuPercent)}%, mem=${Math.round(memPercent)}%, disk=${Math.round(diskPercent)}% — ${
+      this.log("info", `health: cpu=${Math.round(cpuPercent)}%, mem=${Math.round(memPercent)}%, disk=${Math.round(diskPercent)}% — ${
         cpuPercent <= CPU_THRESHOLD && memPercent <= MEM_THRESHOLD && diskPercent <= DISK_THRESHOLD ? "all OK" : "ALERT"
       }`);
 
-      // Check thresholds
       const alerts = checkHealth(cpuPercent, mem.used, mem.total, disk.used, disk.total, {
-        cpu: CPU_THRESHOLD,
-        mem: MEM_THRESHOLD,
-        disk: DISK_THRESHOLD,
+        cpu: CPU_THRESHOLD, mem: MEM_THRESHOLD, disk: DISK_THRESHOLD,
       });
-
       if (alerts.length > 0) {
         const detail = alerts.map(a => `${a.metric}: ${a.value}%>${a.threshold}%`).join(", ");
         this.log("warn", `health alerts: ${detail}`);
         void this.postToChannelSafe(`@duty-agent 分析异常：${detail}`);
       }
 
-      // V8 heap + RSS check (nerve server process)
       const heapThreshold = parseInt(process.env.NERVE_HEAP_THRESHOLD ?? "1500");
       const rssThreshold = parseInt(process.env.NERVE_RSS_THRESHOLD ?? "2000");
       const procMem = process.memoryUsage();

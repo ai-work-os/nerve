@@ -50,7 +50,7 @@ async function sleep(ms: number): Promise<void> {
 // ============================================================
 
 // Import from real production module (green phase)
-import { CronScheduler, type CronJob } from "../src/plugins/duty-monitor/index.js";
+import { CronScheduler, type CronJob, parseSchedule, TaskStore, type TaskDef } from "../src/plugins/duty-monitor/index.js";
 
 // --- CronScheduler unit tests ---
 
@@ -555,6 +555,252 @@ async function testDutyMonitorCheck() {
 }
 
 // ============================================================
+// INTEGRATION TESTS — dynamic commands (real duty-monitor process)
+// ============================================================
+
+let dutyProc: ChildProcess | null = null;
+
+async function spawnDutyMonitor(): Promise<void> {
+  dutyProc = spawn("npx", ["tsx", "src/plugins/duty-monitor/index.ts", "--port", String(TEST_PORT)], {
+    cwd: ROOT,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, NERVE_SPAWNED: "0" },
+  });
+  // Wait for it to connect by checking node.list
+  for (let i = 0; i < 20; i++) {
+    await sleep(500);
+    try {
+      const c = new WsClient();
+      await c.connect();
+      const list = await c.request("node.list");
+      const found = list.nodes?.find((n: any) => n.name === "duty-monitor");
+      await c.disconnect();
+      if (found && found.status !== "connecting") return;
+    } catch { /* retry */ }
+  }
+  throw new Error("duty-monitor did not register within 10s");
+}
+
+function stopDutyMonitor(): void {
+  if (dutyProc) { dutyProc.kill("SIGTERM"); dutyProc = null; }
+}
+
+let dmSeq = 0;
+async function sendDmCommand(nodeId: string, content: string): Promise<void> {
+  const c = new WsClient();
+  await c.connect();
+  await c.request("node.register", { name: `test-user-${++dmSeq}`, capabilities: ["ui"] });
+  await c.request("node.message", { nodeId, content });
+  await c.disconnect();
+}
+
+async function getDutyMonitorNodeId(): Promise<string> {
+  const c = new WsClient();
+  await c.connect();
+  const list = await c.request("node.list");
+  const node = list.nodes?.find((n: any) => n.name === "duty-monitor");
+  await c.disconnect();
+  return node?.id;
+}
+
+async function readDutyLog(): Promise<string> {
+  const logPath = resolve(process.env.HOME || "~", ".nerve/plugins/duty-monitor/activity.log");
+  if (!existsSync(logPath)) return "";
+  const { readFileSync: rfs } = await import("node:fs");
+  return rfs(logPath, "utf-8");
+}
+
+async function testDynamicAdd() {
+  console.log("\n▸ Dynamic: add command creates a new task");
+  const nodeId = await getDutyMonitorNodeId();
+  assert(!!nodeId, "duty-monitor has nodeId");
+  if (!nodeId) return;
+
+  await sendDmCommand(nodeId, "add 23:30 @test-agent 测试任务");
+  await sleep(500);
+
+  // Verify via list command — check the log for task info
+  await sendDmCommand(nodeId, "list");
+  await sleep(500);
+
+  const log = await readDutyLog();
+  assert(log.includes("测试任务"), "task message appears in log");
+  assert(log.includes("23:30") || log.includes("23:") , "schedule time appears in log");
+}
+
+async function testDynamicList() {
+  console.log("\n▸ Dynamic: list command shows tasks");
+  const nodeId = await getDutyMonitorNodeId();
+  if (!nodeId) return;
+
+  await sendDmCommand(nodeId, "list");
+  await sleep(500);
+
+  const log = await readDutyLog();
+  assert(log.includes("list:"), "list command produced log output");
+}
+
+async function testDynamicRemove() {
+  console.log("\n▸ Dynamic: remove command deletes a task");
+  const nodeId = await getDutyMonitorNodeId();
+  if (!nodeId) return;
+
+  await sendDmCommand(nodeId, "remove 测试任务");
+  await sleep(500);
+
+  const log = await readDutyLog();
+  assert(log.includes("removed") || log.includes("remove"), "remove action logged");
+}
+
+async function testDynamicTrigger() {
+  console.log("\n▸ Dynamic: trigger fires a task immediately");
+  const nodeId = await getDutyMonitorNodeId();
+  if (!nodeId) return;
+
+  // Add a task first, then trigger it
+  await sendDmCommand(nodeId, "add every:999m @test-agent 触发测试");
+  await sleep(500);
+  await sendDmCommand(nodeId, "trigger 触发测试");
+  await sleep(500);
+
+  const log = await readDutyLog();
+  assert(log.includes("trigger") || log.includes("触发"), "trigger action logged");
+}
+
+async function testDynamicAddInvalid() {
+  console.log("\n▸ Dynamic: add with invalid schedule logs error");
+  const nodeId = await getDutyMonitorNodeId();
+  if (!nodeId) return;
+
+  await sendDmCommand(nodeId, "add garbage @agent test");
+  await sleep(500);
+
+  const log = await readDutyLog();
+  assert(log.includes("invalid") || log.includes("error") || log.includes("无法解析"), "invalid schedule logged as error");
+}
+
+// ============================================================
+// UNIT TESTS — parseSchedule
+// ============================================================
+
+function testParseScheduleFixedTime() {
+  console.log("\n▸ parseSchedule: '22:00' → { hour: 22, minute: 0 }");
+  const result = parseSchedule("22:00");
+  assertEq(result, { hour: 22, minute: 0 }, "22:00 parsed correctly");
+}
+
+function testParseScheduleFixedTimeSingleDigit() {
+  console.log("\n▸ parseSchedule: '8:05' → { hour: 8, minute: 5 }");
+  const result = parseSchedule("8:05");
+  assertEq(result, { hour: 8, minute: 5 }, "8:05 parsed correctly");
+}
+
+function testParseScheduleWithDayOfWeek() {
+  console.log("\n▸ parseSchedule: 'Mon:08:00' → { hour: 8, minute: 0, dayOfWeek: 1 }");
+  const result = parseSchedule("Mon:08:00");
+  assertEq(result, { hour: 8, minute: 0, dayOfWeek: 1 }, "Mon:08:00 parsed correctly");
+}
+
+function testParseScheduleWithDayFriday() {
+  console.log("\n▸ parseSchedule: 'Fri:18:30' → { hour: 18, minute: 30, dayOfWeek: 5 }");
+  const result = parseSchedule("Fri:18:30");
+  assertEq(result, { hour: 18, minute: 30, dayOfWeek: 5 }, "Fri:18:30 parsed correctly");
+}
+
+function testParseScheduleWithDaySunday() {
+  console.log("\n▸ parseSchedule: 'Sun:09:00' → { hour: 9, minute: 0, dayOfWeek: 0 }");
+  const result = parseSchedule("Sun:09:00");
+  assertEq(result, { hour: 9, minute: 0, dayOfWeek: 0 }, "Sun:09:00 parsed correctly");
+}
+
+function testParseScheduleInterval() {
+  console.log("\n▸ parseSchedule: 'every:60m' → { intervalMinutes: 60 }");
+  const result = parseSchedule("every:60m");
+  assertEq(result, { intervalMinutes: 60 }, "every:60m parsed correctly");
+}
+
+function testParseScheduleIntervalShort() {
+  console.log("\n▸ parseSchedule: 'every:5m' → { intervalMinutes: 5 }");
+  const result = parseSchedule("every:5m");
+  assertEq(result, { intervalMinutes: 5 }, "every:5m parsed correctly");
+}
+
+function testParseScheduleInvalid() {
+  console.log("\n▸ parseSchedule: invalid input returns null");
+  assertEq(parseSchedule("garbage"), null, "garbage → null");
+  assertEq(parseSchedule(""), null, "empty → null");
+  assertEq(parseSchedule("25:00"), null, "25:00 → null (hour out of range)");
+  assertEq(parseSchedule("12:60"), null, "12:60 → null (minute out of range)");
+  assertEq(parseSchedule("every:0m"), null, "every:0m → null (zero interval)");
+  assertEq(parseSchedule("Xyz:10:00"), null, "Xyz:10:00 → null (bad day)");
+}
+
+// ============================================================
+// UNIT TESTS — TaskStore
+// ============================================================
+
+function testTaskStoreAddAndList() {
+  console.log("\n▸ TaskStore: add task and list");
+  const store = new TaskStore(resolve(TEST_DATA, "task-store-test-1"));
+  store.add({ name: "test-task", schedule: { hour: 10, minute: 0 }, message: "@agent do stuff" });
+  const tasks = store.list();
+  assertEq(tasks.length, 1, "one task");
+  assertEq(tasks[0].name, "test-task", "correct name");
+  assertEq(tasks[0].message, "@agent do stuff", "correct message");
+}
+
+function testTaskStoreRemove() {
+  console.log("\n▸ TaskStore: remove task");
+  const store = new TaskStore(resolve(TEST_DATA, "task-store-test-2"));
+  store.add({ name: "a", schedule: { hour: 10, minute: 0 }, message: "@agent a" });
+  store.add({ name: "b", schedule: { hour: 11, minute: 0 }, message: "@agent b" });
+  const removed = store.remove("a");
+  assert(removed, "remove returns true");
+  assertEq(store.list().length, 1, "one task remaining");
+  assertEq(store.list()[0].name, "b", "correct task remaining");
+}
+
+function testTaskStoreRemoveNonExistent() {
+  console.log("\n▸ TaskStore: remove non-existent returns false");
+  const store = new TaskStore(resolve(TEST_DATA, "task-store-test-3"));
+  const removed = store.remove("nope");
+  assert(!removed, "remove returns false for non-existent");
+}
+
+function testTaskStorePersistence() {
+  console.log("\n▸ TaskStore: tasks persist to disk and reload");
+  const dir = resolve(TEST_DATA, "task-store-test-4");
+  const store1 = new TaskStore(dir);
+  store1.add({ name: "persist-test", schedule: { intervalMinutes: 30 }, message: "@agent check" });
+
+  // New instance reads from same dir
+  const store2 = new TaskStore(dir);
+  const tasks = store2.list();
+  assertEq(tasks.length, 1, "reloaded one task");
+  assertEq(tasks[0].name, "persist-test", "correct name after reload");
+  assertEq(tasks[0].schedule, { intervalMinutes: 30 }, "correct schedule after reload");
+}
+
+function testTaskStoreDuplicateName() {
+  console.log("\n▸ TaskStore: adding duplicate name overwrites");
+  const store = new TaskStore(resolve(TEST_DATA, "task-store-test-5"));
+  store.add({ name: "dup", schedule: { hour: 10, minute: 0 }, message: "@agent old" });
+  store.add({ name: "dup", schedule: { hour: 11, minute: 0 }, message: "@agent new" });
+  assertEq(store.list().length, 1, "still one task");
+  assertEq(store.list()[0].message, "@agent new", "message updated");
+  assertEq(store.list()[0].schedule, { hour: 11, minute: 0 }, "schedule updated");
+}
+
+function testTaskStoreAutoName() {
+  console.log("\n▸ TaskStore: auto-generates name from message if not provided");
+  const store = new TaskStore(resolve(TEST_DATA, "task-store-test-6"));
+  store.add({ name: "", schedule: { hour: 10, minute: 0 }, message: "@duty-agent 写日报" });
+  const tasks = store.list();
+  assert(tasks[0].name.length > 0, "name auto-generated");
+  assert(tasks[0].name !== "", "name is not empty");
+}
+
+// ============================================================
 // MAIN
 // ============================================================
 
@@ -587,6 +833,26 @@ async function main() {
   testDailyTriggerMessageFormat();
   testAlertMessageFormat();
 
+  // Unit tests — parseSchedule
+  testParseScheduleFixedTime();
+  testParseScheduleFixedTimeSingleDigit();
+  testParseScheduleWithDayOfWeek();
+  testParseScheduleWithDayFriday();
+  testParseScheduleWithDaySunday();
+  testParseScheduleInterval();
+  testParseScheduleIntervalShort();
+  testParseScheduleInvalid();
+
+  // Unit tests — TaskStore
+  if (existsSync(TEST_DATA)) rmSync(TEST_DATA, { recursive: true });
+  testTaskStoreAddAndList();
+  testTaskStoreRemove();
+  testTaskStoreRemoveNonExistent();
+  testTaskStorePersistence();
+  testTaskStoreDuplicateName();
+  testTaskStoreAutoName();
+  if (existsSync(TEST_DATA)) rmSync(TEST_DATA, { recursive: true });
+
   // Integration tests (need server)
   try {
     console.log("\nStarting server for integration tests...");
@@ -598,10 +864,24 @@ async function main() {
     await testDutyMonitorTriggerDaily();
     await testDutyMonitorCheck();
 
+    // Dynamic command tests (real duty-monitor process)
+    console.log("\nSpawning duty-monitor process...");
+    await spawnDutyMonitor();
+    console.log("duty-monitor ready.\n");
+
+    await testDynamicAdd();
+    await testDynamicList();
+    await testDynamicRemove();
+    await testDynamicTrigger();
+    await testDynamicAddInvalid();
+
+    stopDutyMonitor();
+
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
     failed++;
   } finally {
+    stopDutyMonitor();
     stopServer();
   }
 
