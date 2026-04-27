@@ -1,13 +1,16 @@
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+import { nanoid } from "nanoid";
 import { WebSocketServer, WebSocket } from "ws";
 import { ChannelManager } from "./channel-manager.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { HttpRouter } from "./http-router.js";
 import { SceneManager } from "./scene-manager.js";
-import type { JsonRpcRequest, JsonRpcMessage } from "./protocol.js";
+import type { JsonRpcRequest, JsonRpcMessage, Message } from "./protocol.js";
 import { handleRpcRequest } from "./request-handler.js";
 import * as log from "./logger.js";
+
+const PROGRAM_LOG_MESSAGE_LIMIT = 5000;
 
 export class Server {
   private cm: ChannelManager;
@@ -395,7 +398,6 @@ export class Server {
         // node.list handled by handleRpcRequest above
 
         case "node.log": {
-          // Program nodes emit log entries — broadcast live only, not replayed on reconnect
           const callerNodeId = this.wsNodeMap.get(ws);
           if (!callerNodeId) { this.sendError(ws, id, -32600, "not registered"); return; }
           const node = this.cm.nodePool.get(callerNodeId);
@@ -412,9 +414,28 @@ export class Server {
             if (!entry.ts) entry.ts = now;
           }
 
-          // Program logs are broadcast live to subscribers only — not stored for replay.
-          // (nerve is a live message router; program logs are stream-shaped, not conversational.
-          // If history is needed, the program should persist to its own file.)
+          const messages: Message[] = entries.map(entry => {
+            const entryTime = Date.parse(entry.ts || now);
+            const ts = Number.isFinite(entryTime) ? entryTime : Date.now();
+            const time = new Date(ts).toISOString().slice(11, 19);
+            const level = (entry.level || "info").toUpperCase();
+            return {
+              id: nanoid(16),
+              nodeId: node.id,
+              role: "system",
+              sender: node.name,
+              text: `[${time}] [${level}] ${entry.message || ""}`,
+              ts,
+            };
+          });
+          for (const message of messages) {
+            node.appendMessage(message);
+          }
+          if (node.messageStore.length > PROGRAM_LOG_MESSAGE_LIMIT) {
+            node.messageStore.splice(0, node.messageStore.length - PROGRAM_LOG_MESSAGE_LIMIT);
+            log.info(`[node.log] trimmed ${node.name} messageStore to ${PROGRAM_LOG_MESSAGE_LIMIT}`);
+          }
+
           const updateParams = { update: { sessionUpdate: "node_log", entries } };
           this.cm.nodePool.emitEvent("node.update", node, updateParams);
           this.sendResult(ws, id, { ok: true });

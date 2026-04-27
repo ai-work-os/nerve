@@ -1836,9 +1836,9 @@ describe("Nerve Integration Tests - Part 1", () => {
       assertEq(entries[1].level, "warn", "node.log batch: second level");
     }
 
-    // 5. Replay semantics — program logs are NOT replayed (live broadcast only).
-    //    New subscribers get an empty message_snapshot. Live logs after subscribe
-    //    still arrive as node.update notifications.
+    // 5. Replay semantics — program logs are replayed through message_snapshot,
+    //    matching AI node history behavior. Live logs after subscribe still
+    //    arrive as node.update notifications.
     const observer2 = new WsClient("log-observer-2");
     await observer2.connect();
     await observer2.request("node.register", { name: "log-observer-2", capabilities: ["ui"] });
@@ -1849,7 +1849,17 @@ describe("Nerve Integration Tests - Part 1", () => {
     const snaps = observer2.getNotifications("message_snapshot");
     assert(snaps.length === 1, "node.log: new subscriber receives snapshot envelope", `got ${snaps.length}`);
     const snapMsgs = (snaps[0]?.params?.messages || []) as Array<any>;
-    assertEq(snapMsgs.length, 0, "node.log: snapshot is empty (logs are not replayed)");
+    assert(snapMsgs.length >= 3, "node.log: snapshot includes previous log entries", `got ${snapMsgs.length}`);
+    assert(
+      snapMsgs.some((m: any) => m.role === "system" && m.text.includes("poll started")),
+      "node.log: snapshot contains first log entry",
+      JSON.stringify(snapMsgs),
+    );
+    assert(
+      snapMsgs.some((m: any) => m.role === "system" && m.text.includes("agent-1 usage 80%")),
+      "node.log: snapshot contains batch log entry",
+      JSON.stringify(snapMsgs),
+    );
 
     // Live log after subscribe still delivered
     observer2.clearNotifications();
@@ -1874,6 +1884,46 @@ describe("Nerve Integration Tests - Part 1", () => {
     await observer.disconnect();
     await observer2.disconnect();
     await stranger.disconnect();
+  });
+
+  it("node.log retains only latest 5000 messages in snapshot", async () => {
+    const plugin = new WsClient("log-limit-plugin");
+    await plugin.connect();
+    await plugin.request("node.register", { name: "log-limit-plugin", capabilities: ["monitor"] });
+
+    const entries = Array.from({ length: 5001 }, (_, i) => ({
+      level: "info",
+      message: `entry-${i}`,
+      ts: new Date(1_700_000_000_000 + i * 1000).toISOString(),
+    }));
+    await plugin.request("node.log", { entries });
+
+    const updates = await plugin.request("node.updates", { nodeName: "log-limit-plugin" });
+    const messages = (updates.messages || []) as Array<any>;
+    assertEq(messages.length, 5000, "node.log limit: keeps latest 5000 messages");
+    assert(!messages[0].text.includes("entry-0"), "node.log limit: trims oldest entry");
+    assert(messages[0].text.includes("entry-1"), "node.log limit: first retained entry is entry-1");
+    assert(messages[4999].text.includes("entry-5000"), "node.log limit: newest entry retained");
+
+    const observer = new WsClient("log-limit-observer");
+    await observer.connect();
+    await observer.request("node.register", { name: "log-limit-observer", capabilities: ["ui"] });
+    const nodes = await observer.request("node.list");
+    const pluginNode = nodes.nodes.find((n: any) => n.name === "log-limit-plugin");
+    assert(!!pluginNode, "node.log limit: plugin node found");
+    observer.clearNotifications();
+    await observer.request("node.subscribe", { nodeId: pluginNode.id });
+    await sleep(200);
+
+    const snaps = observer.getNotifications("message_snapshot");
+    assertEq(snaps.length, 1, "node.log limit: subscriber receives snapshot");
+    const snapMsgs = (snaps[0]?.params?.messages || []) as Array<any>;
+    assertEq(snapMsgs.length, 5000, "node.log limit: snapshot keeps latest 5000");
+    assert(snapMsgs[0].text.includes("entry-1"), "node.log limit: snapshot trims oldest entry");
+    assert(snapMsgs[4999].text.includes("entry-5000"), "node.log limit: snapshot includes newest entry");
+
+    await plugin.disconnect();
+    await observer.disconnect();
   });
 
   it("plugin-base dataDir + activity.log", async () => {
