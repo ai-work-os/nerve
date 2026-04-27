@@ -79,6 +79,18 @@ function testMessageCRUD() {
   s.close();
 }
 
+function testDmMessageCRUD() {
+  console.log("\n▸ Store: insertDmMessage + getDmMessages (sorted)");
+  const s = new Store(":memory:");
+  s.insertDmMessage({ id: "dm-2", nodeId: "n-1", role: "agent", sender: "claude", text: "second", ts: 200 });
+  s.insertDmMessage({ id: "dm-1", nodeId: "n-1", role: "user", sender: "renjinxi", text: "first", ts: 100 });
+  const msgs = s.getDmMessages("n-1");
+  assertEq(msgs.length, 2, "two dm messages");
+  assertEq(msgs[0].role, "user", "first by timestamp is user");
+  assertEq(msgs[1].role, "agent", "second by timestamp is agent");
+  s.close();
+}
+
 function testChannelNodes() {
   console.log("\n\u25b8 Store: addNodeToChannel + getChannelNodes");
   const s = new Store(":memory:");
@@ -146,6 +158,7 @@ function main() {
   testChannelCRUD();
   testNodeCRUD();
   testMessageCRUD();
+  testDmMessageCRUD();
   testChannelNodes();
   testDeleteChannelCascade();
   testMarkAllNodesStopped();
