@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { NerveNode } from "./node.js";
 import { StdioTransport, WebSocketTransport, NullTransport } from "./transport.js";
-import { AcpClient, type McpServerConfig } from "./acp-client.js";
+import { AcpClient, type McpServerConfig, type PromptAttachment } from "./acp-client.js";
 import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
@@ -54,6 +54,12 @@ export class NodePool {
   /** Emit a node event (for use by server when mutating node state externally) */
   emitEvent(event: string, node: NerveNode, detail?: Record<string, unknown>): void {
     this.onEvent(event, node, detail);
+  }
+
+  private appendDmMessage(node: NerveNode, message: Message): void {
+    node.appendMessage(message);
+    this.store.insertDmMessage(message);
+    log.debug(`dm message persisted: ${node.name}, id=${message.id}, role=${message.role}, len=${message.text.length}`);
   }
 
   /** Unified status change — all status mutations converge here.
@@ -538,7 +544,7 @@ export class NodePool {
   }
 
   /** Prompt a Process Node */
-  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }, excludeWs?: WebSocket): Promise<{ stopReason?: string; error?: string }> {
+  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }, excludeWs?: WebSocket, attachments: PromptAttachment[] = []): Promise<{ stopReason?: string; error?: string }> {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
     if (!client || !node) {
@@ -571,12 +577,12 @@ export class NodePool {
       text,
       ts: Date.now(),
     };
-    node.appendMessage(userMessage);
+    this.appendDmMessage(node, userMessage);
     this.onEvent("node.update", node, excludeWs ? { ...userMsgParams, _excludeWs: excludeWs } : userMsgParams);
 
     let result: { stopReason?: string; error?: string };
     try {
-      result = await client.prompt(text);
+      result = await client.prompt(text, attachments);
     } catch (err: any) {
       log.error(`promptNode: ${node.name} rejected: ${err.message}`);
       // DM capture: emit dm.response with error
@@ -586,7 +592,7 @@ export class NodePool {
       const partial = node.inFlightAgent;
       node.inFlightAgent = null;
       if (partial?.text) {
-        node.appendMessage({
+        this.appendDmMessage(node, {
           id: partial.id,
           nodeId,
           role: "agent",
@@ -639,7 +645,7 @@ export class NodePool {
         text: assembledText,
         ts: Date.now(),
       };
-      node.appendMessage(agentMsg);
+      this.appendDmMessage(node, agentMsg);
       log.debug(`agent message finalized: ${node.name}, id=${agentMsg.id} len=${assembledText.length}`);
     }
 

@@ -18,6 +18,7 @@ import {
   type ListSessionsResponse,
   type PromptRequest,
   type PromptResponse,
+  type ContentBlock,
   type SessionNotification,
   type McpServerStdio,
   type ReadTextFileRequest,
@@ -43,6 +44,8 @@ import * as log from "./logger.js";
 
 /** Re-export McpServerStdio as McpServerConfig for backward compatibility */
 export type McpServerConfig = McpServerStdio;
+
+export type PromptAttachment = Extract<ContentBlock, { type: "image" }>;
 
 export interface AcpClientOptions {
   transport: StdioTransport;
@@ -330,7 +333,7 @@ export class AcpClient {
   }
 
   /** Send a prompt to the agent */
-  async prompt(text: string): Promise<{ stopReason?: string; error?: string }> {
+  async prompt(text: string, attachments: PromptAttachment[] = []): Promise<{ stopReason?: string; error?: string }> {
     if (!this.sessionId) {
       return { error: "no session" };
     }
@@ -341,7 +344,7 @@ export class AcpClient {
       const result = await Promise.race([
         this.connection.prompt({
           sessionId: this.sessionId,
-          prompt: [{ type: "text", text }],
+          prompt: [{ type: "text", text }, ...attachments],
         }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`session/prompt timeout after ${this.promptTimeout}ms`)), this.promptTimeout)

@@ -713,6 +713,33 @@ async function testPromptNormalStateManagement() {
   client.cleanup();
 }
 
+async function testPromptImageBlocks() {
+  console.log("\n── prompt image blocks ──");
+
+  const { client, transport } = createMockClient();
+  let promptParams: any;
+  transport.onMethod("session/prompt", (_id, params) => {
+    promptParams = params;
+    return { stopReason: "end_turn" };
+  });
+  await client.handshake();
+  await sleep(50);
+
+  const result = await client.prompt("look", [{ type: "image", mimeType: "image/png", data: "abc123" }]);
+
+  assertEq(result.stopReason, "end_turn", "prompt with image returns end_turn");
+  assertEq(
+    promptParams.prompt,
+    [
+      { type: "text", text: "look" },
+      { type: "image", mimeType: "image/png", data: "abc123" },
+    ],
+    "prompt sends text and image blocks",
+  );
+
+  client.cleanup();
+}
+
 async function testPromptNoSession() {
   console.log("\n── prompt without session ──");
 
@@ -765,6 +792,7 @@ async function main() {
     // 4. prompt timeout state recovery
     await testPromptTimeoutStateRecovery();
     await testPromptNormalStateManagement();
+    await testPromptImageBlocks();
     await testPromptNoSession();
   } catch (err) {
     console.error("\n💥 Fatal error:", err);
