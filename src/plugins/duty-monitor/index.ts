@@ -365,25 +365,14 @@ class DutyMonitor extends PluginBase {
 
   protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
     switch (command) {
-      case "add": {
-        // Reconstruct: positional args "0"="22:00", "1"="@agent", "2"="写日报" → "22:00 @agent 写日报"
-        const positional: string[] = [];
-        for (let i = 0; args[String(i)] !== undefined; i++) positional.push(args[String(i)]);
-        const raw = positional.join(" ");
-        return this.handleAdd(raw, from);
-      }
-      case "remove": {
-        const positional: string[] = [];
-        for (let i = 0; args[String(i)] !== undefined; i++) positional.push(args[String(i)]);
-        return this.handleRemove(positional.join(" "), from);
-      }
+      case "add":
+        return this.handleAdd(args, from);
+      case "remove":
+        return this.handleRemove(args.name, from);
       case "list":
         return this.handleList();
-      case "trigger": {
-        const positional: string[] = [];
-        for (let i = 0; args[String(i)] !== undefined; i++) positional.push(args[String(i)]);
-        return this.handleTrigger(positional.join(" "), from);
-      }
+      case "trigger":
+        return this.handleTrigger(args.name, from);
       case "status":
         return this.handleStatus();
       case "check":
@@ -393,25 +382,16 @@ class DutyMonitor extends PluginBase {
     }
   }
 
-  private handleAdd(raw: string, from?: string): CommandResult {
-    // Parse: "22:00 @duty-agent 写日报" or "--name foo 22:00 @agent msg"
-    let name = "";
-    let input = raw;
+  private handleAdd(args: Record<string, string>, from?: string): CommandResult {
+    const scheduleStr = args.schedule;
+    const message = args.message;
 
-    const nameMatch = input.match(/^--name\s+(\S+)\s+/);
-    if (nameMatch) {
-      name = nameMatch[1];
-      input = input.slice(nameMatch[0].length);
-    }
-
-    const parts = input.match(/^(\S+)\s+(.+)$/);
-    if (!parts) {
-      this.log("error", `add: invalid format "${raw}" from ${from || "unknown"}`);
+    if (!scheduleStr || !message) {
+      this.log("error", `add: missing schedule or message from ${from || "unknown"}`);
       return { reply: "格式：add <schedule> <message>\nschedule: HH:MM | Day:HH:MM | every:Nm" };
     }
 
-    const scheduleStr = parts[1];
-    const message = parts[2];
+    const name = args.name || "";
     const schedule = parseSchedule(scheduleStr);
 
     if (!schedule) {

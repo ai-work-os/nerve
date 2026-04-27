@@ -217,7 +217,7 @@ class AiEarPlugin extends PluginBase {
 
     switch (command) {
       case "start": {
-        const source = (args.source || args["0"] || AUDIO_SOURCE) as AudioSource;
+        const source = (args.source || AUDIO_SOURCE) as AudioSource;
         void this.startRecording(source, from, this.channelId ?? undefined);
         break;
       }
@@ -253,8 +253,8 @@ class AiEarPlugin extends PluginBase {
         this.log("info", `subscribers: [${[...this.subscribers].join(", ")}]`);
         break;
       case "config": {
-        const key = args.key || args["0"];
-        const value = args.value || args["1"];
+        const key = args.key;
+        const value = args.value;
         if (key === "interval" && value) {
           const seconds = parseInt(value);
           if (seconds > 0) {
@@ -302,7 +302,7 @@ class AiEarPlugin extends PluginBase {
 
   /** Resolve subscriber name: explicit name arg > "me" resolves to from > bare from */
   private resolveSubscriberName(args: Record<string, string>, from?: string): string | null {
-    const explicit = args.name || args["0"];
+    const explicit = args.name;
     if (explicit && explicit.toLowerCase() !== "me") return explicit;
     // "me" or no arg — use sender's name
     if (from && from !== "unknown") return from;

@@ -96,7 +96,7 @@ export class UserRecorder extends PluginBase {
         this.handleStatus();
         break;
       case "report":
-        this.handleReport(args.date || args["0"] || localDate());
+        this.handleReport(args.date || localDate());
         break;
       default:
         return `unknown command: ${command}`;

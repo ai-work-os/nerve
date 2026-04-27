@@ -19,6 +19,33 @@ export interface CommandDef {
   args?: Record<string, string>;
 }
 
+/**
+ * Normalize command args: map positional ("0","1",...) to named keys
+ * using CommandDef.args key order. Last declared arg eats remaining positionals.
+ * If any declared arg name already present in rawArgs (MCP path), pass through as-is.
+ */
+export function normalizeArgs(rawArgs: Record<string, string>, argDef?: Record<string, string>): Record<string, string> {
+  if (!argDef) return rawArgs;
+  const argNames = Object.keys(argDef);
+  if (argNames.length === 0) return rawArgs;
+
+  if (argNames.some(name => rawArgs[name] !== undefined)) return rawArgs;
+
+  const positional: string[] = [];
+  for (let i = 0; rawArgs[String(i)] !== undefined; i++) positional.push(rawArgs[String(i)]);
+  if (positional.length === 0) return rawArgs;
+
+  const result: Record<string, string> = {};
+  for (let i = 0; i < argNames.length && i < positional.length; i++) {
+    if (i === argNames.length - 1) {
+      result[argNames[i]] = positional.slice(i).join(" ");
+    } else {
+      result[argNames[i]] = positional[i];
+    }
+  }
+  return result;
+}
+
 export interface PluginOptions {
   port: number;
   name: string;
@@ -197,7 +224,8 @@ export class PluginBase {
       }
     }
 
-    const result = this.onCommand(cmd, args, from);
+    const normalized = normalizeArgs(args, commands[cmd]?.args);
+    const result = this.onCommand(cmd, normalized, from);
     const msgs = formatCommandResponse(result, from);
     if (channelId) {
       for (const m of msgs) this.postToChannel(channelId, m);
@@ -324,7 +352,8 @@ export class PluginBase {
               this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown command "${command}". available: ${available}` } });
               return;
             }
-            const result = this.onCommand(command, args || {}, from);
+            const normalized = normalizeArgs(args || {}, commands[command]?.args);
+            const result = this.onCommand(command, normalized, from);
             const reply = typeof result === "string" ? { error: result } : (result || {});
             this.send({ jsonrpc: "2.0", id: msg.id, result: reply });
             return;

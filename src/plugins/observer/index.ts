@@ -97,7 +97,7 @@ class Observer extends PluginBase {
       case "status":
         return { reply: `${this.eventCount} events, ${this.channelNames.size} channels` };
       case "report":
-        void this.handleReport(args["0"] || "daily");
+        void this.handleReport(args.type || "daily");
         break;
       default:
         return `unknown command: ${command}`;
