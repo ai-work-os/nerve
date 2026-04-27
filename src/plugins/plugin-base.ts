@@ -46,6 +46,16 @@ export function normalizeArgs(rawArgs: Record<string, string>, argDef?: Record<s
   return result;
 }
 
+export interface Subscription {
+  nodeName: string;
+  filter?: string;
+}
+
+export function matchSubscribers(subs: Subscription[], tag?: string): string[] {
+  const matched = subs.filter(s => !s.filter || s.filter === tag);
+  return [...new Set(matched.map(s => s.nodeName))];
+}
+
 export interface PluginOptions {
   port: number;
   name: string;
@@ -69,6 +79,8 @@ export class PluginBase {
   private notificationHandlers = new Map<string, (params: any) => void>();
   private connected = false;
   private stopped = false;
+  private subscriptions = new Map<string, Subscription[]>();
+  protected channelId?: string;
 
   constructor(opts: PluginOptions) {
     // Environment variables take priority when spawned by nerve (NERVE_SPAWNED=1)
@@ -114,6 +126,24 @@ export class PluginBase {
       this.handleChannelMessage(params);
     });
 
+    // Track channel membership
+    this.onNotification("channel.nodeJoined", (params: any) => {
+      if (params?.nodeName === this.options.name) {
+        this.channelId = params.channelId;
+        this.log("info", `joined channel ${this.channelId}`);
+      }
+    });
+    this.onNotification("channel.nodeLeft", (params: any) => {
+      if (params?.nodeName === this.options.name && params?.channelId === this.channelId) {
+        this.log("info", `left channel ${this.channelId}`);
+        this.channelId = undefined;
+      }
+      if (params?.nodeName) this.removeSubscriptionsFor(params.nodeName);
+    });
+    this.onNotification("node.stopped", (params: any) => {
+      if (params?.name) this.removeSubscriptionsFor(params.name);
+    });
+
     // DM capture events (override onDmPrompt/onDmResponse in subclass to handle)
     this.onNotification("dm.prompt", (params: any) => {
       this.onDmPrompt?.(params);
@@ -145,7 +175,7 @@ export class PluginBase {
 
     // Only dispatch known commands and help; ignore agent chatter silently
     const firstWord = stripped.split(/\s+/)[0].toLowerCase();
-    const commands = this.getCommands();
+    const commands = this.getAllCommands();
     if (!commands[firstWord] && firstWord !== "help") return;
 
     this.dispatchCommand(stripped, from, channelId);
@@ -171,7 +201,7 @@ export class PluginBase {
   /** Parse message content into command + args, dispatch to onCommand or log error.
    *  When channelId is provided (called from channel context), errors are posted back to the channel. */
   protected dispatchCommand(content: string, from?: string, channelId?: string): void {
-    const commands = this.getCommands();
+    const commands = this.getAllCommands();
     if (Object.keys(commands).length === 0) {
       // No commands declared — fall through to onMessage
       this.onMessage(content, from);
@@ -225,7 +255,8 @@ export class PluginBase {
     }
 
     const normalized = normalizeArgs(args, commands[cmd]?.args);
-    const result = this.onCommand(cmd, normalized, from);
+    const builtinResult = this.handleBuiltinCommand(cmd, normalized, from);
+    const result = builtinResult !== false ? builtinResult : this.onCommand(cmd, normalized, from);
     const msgs = formatCommandResponse(result, from);
     if (channelId) {
       for (const m of msgs) this.postToChannel(channelId, m);
@@ -246,6 +277,124 @@ export class PluginBase {
     this.request("channel.post", { channelId, content }).catch(err => {
       this.log("warn", `channel reply failed: ${err.message}`);
     });
+  }
+
+  // --- Subscription system ---
+
+  private getAllCommands(): Record<string, CommandDef> {
+    const base: Record<string, CommandDef> = {};
+    if (this.getEvents().length > 0) {
+      base.subscribe = { description: "Subscribe to events", args: { event: "event type", filter: "optional filter" } };
+      base.unsubscribe = { description: "Unsubscribe from events", args: { event: "event type", filter: "optional filter" } };
+      base.subscribers = { description: "List all subscriptions" };
+    }
+    return { ...base, ...this.getCommands() };
+  }
+
+  private handleBuiltinCommand(cmd: string, args: Record<string, string>, from?: string): CommandResult | false {
+    switch (cmd) {
+      case "subscribe": return this.handleSubscribe(args, from);
+      case "unsubscribe": return this.handleUnsubscribe(args, from);
+      case "subscribers": return this.handleListSubscribers();
+      default: return false;
+    }
+  }
+
+  private handleSubscribe(args: Record<string, string>, from?: string): CommandResult {
+    const parsed = this.parseEventArg(args.event);
+    if (!parsed) {
+      this.log("warn", `subscribe: invalid event "${args.event}" from ${from || "unknown"}, available: ${this.getEvents().join(", ")}`);
+      return { reply: `格式：subscribe <event> [filter]\n可用事件: ${this.getEvents().join(", ")}` };
+    }
+    const { event, filter: parsedFilter } = parsed;
+    const filter = args.filter || parsedFilter;
+    const nodeName = args.name || from;
+    if (!nodeName || nodeName === "unknown") {
+      this.log("warn", `subscribe: cannot determine subscriber from=${from}`);
+      return { reply: "无法确定订阅者" };
+    }
+
+    const subs = this.subscriptions.get(event) || [];
+    if (subs.some(s => s.nodeName === nodeName && s.filter === filter)) {
+      this.log("debug", `subscribe: ${nodeName} already subscribed to ${event}${filter ? ":" + filter : ""}`);
+      return { reply: `${nodeName} 已订阅 ${event}${filter ? ":" + filter : ""}` };
+    }
+    subs.push({ nodeName, filter });
+    this.subscriptions.set(event, subs);
+    this.log("info", `subscribed: ${nodeName} → ${event}${filter ? ":" + filter : ""}`);
+    return { reply: `已订阅: ${event}${filter ? ":" + filter : ""}` };
+  }
+
+  private handleUnsubscribe(args: Record<string, string>, from?: string): CommandResult {
+    const parsed = this.parseEventArg(args.event);
+    if (!parsed) return { reply: `格式：unsubscribe <event> [filter]` };
+    const { event, filter: parsedFilter } = parsed;
+    const filter = args.filter || parsedFilter;
+    const nodeName = args.name || from;
+    if (!nodeName) return { reply: "无法确定订阅者" };
+
+    const subs = this.subscriptions.get(event) || [];
+    const idx = subs.findIndex(s => s.nodeName === nodeName && s.filter === filter);
+    if (idx < 0) return { reply: `${nodeName} 未订阅 ${event}${filter ? ":" + filter : ""}` };
+    subs.splice(idx, 1);
+    this.log("info", `unsubscribed: ${nodeName} ← ${event}${filter ? ":" + filter : ""}`);
+    return { reply: `已取消: ${event}${filter ? ":" + filter : ""}` };
+  }
+
+  private handleListSubscribers(): CommandResult {
+    const lines: string[] = [];
+    for (const [event, subs] of this.subscriptions) {
+      for (const s of subs) {
+        lines.push(`${s.nodeName} → ${event}${s.filter ? ":" + s.filter : ""}`);
+      }
+    }
+    return { reply: lines.length > 0 ? lines.join("\n") : "无订阅" };
+  }
+
+  private parseEventArg(raw?: string): { event: string; filter?: string } | null {
+    if (!raw) return null;
+    const events = this.getEvents();
+    if (events.includes(raw)) return { event: raw };
+    const colon = raw.indexOf(":");
+    if (colon > 0) {
+      const event = raw.slice(0, colon);
+      const filter = raw.slice(colon + 1);
+      if (events.includes(event)) return { event, filter };
+    }
+    return null;
+  }
+
+  private removeSubscriptionsFor(nodeName: string): void {
+    let removed = 0;
+    for (const [event, subs] of this.subscriptions) {
+      const before = subs.length;
+      const filtered = subs.filter(s => s.nodeName !== nodeName);
+      if (filtered.length < before) {
+        this.subscriptions.set(event, filtered);
+        removed += before - filtered.length;
+      }
+    }
+    if (removed > 0) this.log("info", `auto-unsubscribed ${nodeName} (${removed} subscriptions)`);
+  }
+
+  protected async emit(event: string, tag: string | undefined, content: string): Promise<void> {
+    if (!this.channelId) {
+      this.log("warn", `emit ${event}: no channel`);
+      return;
+    }
+    const subs = this.subscriptions.get(event) || [];
+    const names = matchSubscribers(subs, tag);
+    if (names.length === 0) {
+      this.log("debug", `emit ${event}${tag ? ":" + tag : ""}: no subscribers`);
+      return;
+    }
+    const mentions = names.map(n => `@${n}`).join(" ");
+    try {
+      await this.request("channel.post", { channelId: this.channelId, content: `${mentions} ${content}` });
+      this.log("info", `emit ${event}${tag ? ":" + tag : ""}: notified [${names.join(",")}]`);
+    } catch (err: any) {
+      this.log("warn", `emit failed: ${err.message}`);
+    }
   }
 
   /** Send a JSON-RPC request and wait for response */
@@ -301,7 +450,7 @@ export class PluginBase {
 
         try {
           // Register as node
-          const commands = this.getCommands();
+          const commands = this.getAllCommands();
           const events = this.getEvents();
           const regParams: Record<string, unknown> = {
             name: this.options.name,
@@ -346,14 +495,15 @@ export class PluginBase {
         if (msg.method && msg.id !== undefined) {
           if (msg.method === "node.command") {
             const { command, args, from } = msg.params || {};
-            const commands = this.getCommands();
+            const commands = this.getAllCommands();
             if (!commands[command]) {
               const available = Object.keys(commands).join(", ");
               this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown command "${command}". available: ${available}` } });
               return;
             }
             const normalized = normalizeArgs(args || {}, commands[command]?.args);
-            const result = this.onCommand(command, normalized, from);
+            const builtinResult = this.handleBuiltinCommand(command, normalized, from);
+            const result = builtinResult !== false ? builtinResult : this.onCommand(command, normalized, from);
             const reply = typeof result === "string" ? { error: result } : (result || {});
             this.send({ jsonrpc: "2.0", id: msg.id, result: reply });
             return;

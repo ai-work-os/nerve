@@ -131,9 +131,7 @@ class AiEarPlugin extends PluginBase {
   private meetingsDir: string;
   private startTime = 0;
   private buffer: TranscriptBuffer | null = null;
-  private channelId: string | null = null;
   private recording = false;
-  private subscribers = new Set<string>();
   private sliceWriter: SliceWriter | null = null;
   private tmpDir: string;
 
@@ -147,40 +145,6 @@ class AiEarPlugin extends PluginBase {
     this.meetingsDir = resolve(this.dataDir, "meetings");
     this.tmpDir = resolve(this.dataDir, "tmp");
     mkdirSync(this.meetingsDir, { recursive: true });
-  }
-
-  protected registerNotifications(): void {
-    super.registerNotifications();
-
-    // Track channel membership — must be registered before node.register
-    // to catch nodeJoined from scene setup
-    this.onNotification("channel.nodeJoined", (params: any) => {
-      if (params?.nodeName === this.options.name) {
-        this.channelId = params.channelId;
-        this.log("info", `joined channel ${this.channelId}`);
-      }
-    });
-    this.onNotification("channel.nodeLeft", (params: any) => {
-      if (params?.nodeName === this.options.name && params?.channelId === this.channelId) {
-        this.channelId = null;
-      }
-      // Auto-unsubscribe nodes that leave the channel
-      if (params?.nodeName && this.subscribers.has(params.nodeName)) {
-        this.subscribers.delete(params.nodeName);
-        this.log("info", `auto-unsubscribed ${params.nodeName} (left channel)`);
-      }
-    });
-
-    // Auto-unsubscribe nodes that stop
-    this.onNotification("node.stopped", (params: any) => {
-      const name = params?.name;
-      if (name && this.subscribers.has(name)) {
-        this.subscribers.delete(name);
-        this.log("info", `auto-unsubscribed ${name} (node stopped)`);
-      }
-    });
-
-    // Note: channel.message handling is in base class (handleChannelMessage)
   }
 
   protected async onReady(): Promise<void> {
@@ -200,9 +164,6 @@ class AiEarPlugin extends PluginBase {
       stop: { description: "Stop recording" },
       continue: { description: "Resume recording" },
       status: { description: "Show current status" },
-      subscribe: { description: "Subscribe to transcript pushes", args: { name: "subscriber name, or 'me' for self" } },
-      unsubscribe: { description: "Unsubscribe from transcript pushes", args: { name: "subscriber name, or 'me' for self" } },
-      subscribers: { description: "List current subscribers" },
       config: { description: "Set config (e.g. config interval 10)", args: { key: "interval", value: "seconds" } },
       flush: { description: "Immediately push buffered transcript to subscribers" },
     };
@@ -232,26 +193,7 @@ class AiEarPlugin extends PluginBase {
         }
         break;
       case "status":
-        return { reply: `recording=${this.recording}, file=${this.meetingFile || "none"}, subscribers=[${[...this.subscribers].join(",")}]` };
-      case "subscribe": {
-        const target = this.resolveSubscriberName(args, from);
-        if (target) {
-          this.subscribers.add(target);
-          this.log("info", `subscribed: ${target}, total=${this.subscribers.size}`);
-        }
-        break;
-      }
-      case "unsubscribe": {
-        const target = this.resolveSubscriberName(args, from);
-        if (target) {
-          this.subscribers.delete(target);
-          this.log("info", `unsubscribed: ${target}, total=${this.subscribers.size}`);
-        }
-        break;
-      }
-      case "subscribers":
-        this.log("info", `subscribers: [${[...this.subscribers].join(", ")}]`);
-        break;
+        return { reply: `recording=${this.recording}, file=${this.meetingFile || "none"}` };
       case "config": {
         const key = args.key;
         const value = args.value;
@@ -294,20 +236,6 @@ class AiEarPlugin extends PluginBase {
     }
   }
 
-  protected override handleChannelMessage(params: any): void {
-    // Track channelId from channel messages
-    if (params?.channelId) this.channelId = params.channelId;
-    super.handleChannelMessage(params);
-  }
-
-  /** Resolve subscriber name: explicit name arg > "me" resolves to from > bare from */
-  private resolveSubscriberName(args: Record<string, string>, from?: string): string | null {
-    const explicit = args.name;
-    if (explicit && explicit.toLowerCase() !== "me") return explicit;
-    // "me" or no arg — use sender's name
-    if (from && from !== "unknown") return from;
-    return null;
-  }
 
   async startRecording(source: AudioSource = AUDIO_SOURCE, from?: string, channelId?: string): Promise<void> {
     if (this.recording) {
@@ -476,29 +404,14 @@ class AiEarPlugin extends PluginBase {
 
   private async pushToChannel(lines: string[]): Promise<void> {
     if (lines.length === 0) return;
-    if (!this.channelId) {
-      this.log("warn", "no channel to push transcript to");
-      return;
-    }
-    if (this.subscribers.size === 0) {
-      this.log("debug", "no subscribers, skipping channel post");
-      return;
-    }
 
-    // Write slice file
     const slicePath = this.sliceWriter?.write(lines);
     if (slicePath) {
       this.log("debug", `slice written: ${slicePath} (${lines.length} lines)`);
     }
     const timeRange = SliceWriter.timeRange(lines);
-    const mentions = [...this.subscribers].map(s => `@${s}`).join(" ");
-    const content = `${mentions} 新增转录 [${timeRange}]，${lines.length}行，文件：${slicePath}`;
-    try {
-      await this.request("channel.post", { channelId: this.channelId, content });
-      this.log("info", `channel push ok: channelId=${this.channelId}, subscribers=[${[...this.subscribers].join(",")}], slice=${slicePath || "none"}, lines=${lines.length}`);
-    } catch (err: any) {
-      this.log("warn", `channel push failed: ${err.message}`);
-    }
+    const content = `新增转录 [${timeRange}]，${lines.length}行，文件：${slicePath}`;
+    await this.emit("transcription", undefined, content);
   }
 
   private createMeetingFile(): string {

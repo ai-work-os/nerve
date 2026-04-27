@@ -6,7 +6,7 @@
  * to unify channel @mention (positional) and MCP nerve_command (named) paths.
  */
 
-import { normalizeArgs } from "../../src/plugins/plugin-base.js";
+import { normalizeArgs, matchSubscribers, type Subscription } from "../../src/plugins/plugin-base.js";
 
 let passed = 0;
 let failed = 0;
@@ -102,6 +102,43 @@ console.log("\n▸ normalizeArgs — single declared arg eats all positionals");
     { name: "写 日 报" },
     "single arg eats all positionals",
   );
+}
+
+// --- matchSubscribers tests ---
+
+console.log("\n▸ matchSubscribers — no filter matches all");
+{
+  const subs: Subscription[] = [
+    { nodeName: "agent-a" },
+    { nodeName: "agent-b", filter: "写日报" },
+  ];
+  assertEq(matchSubscribers(subs, undefined), ["agent-a"], "no tag → only unfiltered match");
+}
+
+console.log("\n▸ matchSubscribers — tag matches unfiltered + exact filter");
+{
+  const subs: Subscription[] = [
+    { nodeName: "agent-a" },
+    { nodeName: "agent-b", filter: "写日报" },
+    { nodeName: "agent-c", filter: "检查服务器" },
+  ];
+  assertEq(matchSubscribers(subs, "写日报"), ["agent-a", "agent-b"], "tag=写日报 matches a (no filter) + b (exact)");
+  assertEq(matchSubscribers(subs, "检查服务器"), ["agent-a", "agent-c"], "tag=检查服务器 matches a + c");
+  assertEq(matchSubscribers(subs, "未知"), ["agent-a"], "tag=未知 matches only unfiltered");
+}
+
+console.log("\n▸ matchSubscribers — deduplicates node names");
+{
+  const subs: Subscription[] = [
+    { nodeName: "agent-a" },
+    { nodeName: "agent-a", filter: "写日报" },
+  ];
+  assertEq(matchSubscribers(subs, "写日报"), ["agent-a"], "same node deduped");
+}
+
+console.log("\n▸ matchSubscribers — empty subs");
+{
+  assertEq(matchSubscribers([], "写日报"), [], "empty subs → empty");
 }
 
 console.log("\n══════════════════════════════════════");

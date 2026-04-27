@@ -294,7 +294,6 @@ class DutyMonitor extends PluginBase {
   private scheduler = new CronScheduler();
   private taskStore!: TaskStore;
   private tickTimer?: ReturnType<typeof setInterval>;
-  private channelId?: string;
   private isChecking = false;
 
   constructor() {
@@ -306,6 +305,10 @@ class DutyMonitor extends PluginBase {
     });
   }
 
+  override getEvents(): string[] {
+    return ["task_fired", "health_alert"];
+  }
+
   override getCommands(): Record<string, CommandDef> {
     return {
       add: { description: "添加定时任务", args: { schedule: "HH:MM | Day:HH:MM | every:Nm", message: "@target 消息内容" } },
@@ -315,29 +318,6 @@ class DutyMonitor extends PluginBase {
       status: { description: "显示运行状态" },
       check: { description: "立即执行健康检查" },
     };
-  }
-
-  protected override registerNotifications(): void {
-    super.registerNotifications();
-
-    this.onNotification("channel.nodeJoined", (params: any) => {
-      if (params?.nodeName === this.options.name) {
-        this.channelId = params.channelId;
-        this.log("info", `joined channel ${this.channelId}`);
-      }
-    });
-
-    this.onNotification("channel.nodeLeft", (params: any) => {
-      if (params?.nodeName === this.options.name && params?.channelId === this.channelId) {
-        this.channelId = undefined;
-        this.log("info", "left channel");
-      }
-    });
-  }
-
-  protected override handleChannelMessage(params: any): void {
-    if (params?.channelId) this.channelId = params.channelId;
-    super.handleChannelMessage(params);
   }
 
   protected override async onReady(): Promise<void> {
@@ -451,7 +431,7 @@ class DutyMonitor extends PluginBase {
       return { reply: `任务 "${name}" 不存在` };
     }
     this.log("info", `trigger: "${name}" by ${from || "unknown"}`);
-    void this.postToChannelSafe(task.message);
+    void this.emit("task_fired", task.name, task.message);
     return { reply: `已触发: ${name}` };
   }
 
@@ -479,34 +459,12 @@ class DutyMonitor extends PluginBase {
         schedule: task.schedule,
         action: () => {
           this.log("info", `cron fired: "${task.name}" → ${task.message.slice(0, 50)}`);
-          void this.postToChannelSafe(task.message);
+          void this.emit("task_fired", task.name, task.message);
         },
       });
     }
   }
 
-  private async postToChannelSafe(content: string): Promise<void> {
-    if (!this.channelId) {
-      try {
-        const result = await this.request("channel.list");
-        const channels: any[] = result.channels || [];
-        if (channels.length > 0) {
-          this.channelId = channels[0].id || channels[0].channelId;
-          this.log("info", `channel discovered lazily: ${this.channelId}`);
-        }
-      } catch (e) { this.log("warn", `channel.list failed: ${e}`); }
-    }
-    if (!this.channelId) {
-      this.log("warn", `no channel, cannot post: ${content}`);
-      return;
-    }
-    try {
-      await this.request("channel.post", { channelId: this.channelId, content });
-      this.log("info", `posted to channel: ${content.slice(0, 50)}`);
-    } catch (err) {
-      this.log("error", `channel post failed: ${err}`);
-    }
-  }
 
   private async runHealthCheck(): Promise<void> {
     if (this.isChecking) {
@@ -536,7 +494,7 @@ class DutyMonitor extends PluginBase {
       if (alerts.length > 0) {
         const detail = alerts.map(a => `${a.metric}: ${a.value}%>${a.threshold}%`).join(", ");
         this.log("warn", `health alerts: ${detail}`);
-        void this.postToChannelSafe(`@duty-agent 分析异常：${detail}`);
+        void this.emit("health_alert", undefined, `分析异常：${detail}`);
       }
 
       const heapThreshold = parseInt(process.env.NERVE_HEAP_THRESHOLD ?? "1500");
@@ -551,7 +509,7 @@ class DutyMonitor extends PluginBase {
       if (processAlerts.length > 0) {
         const detail = processAlerts.map(a => `${a.metric}: ${a.value}MB>${a.threshold}MB`).join(", ");
         this.log("warn", `process health alerts: ${detail}`);
-        void this.postToChannelSafe(`@duty-agent 分析异常：nerve ${detail}`);
+        void this.emit("health_alert", undefined, `分析异常：nerve ${detail}`);
       }
     } catch (err) {
       this.log("error", `health check failed: ${err}`);
