@@ -146,8 +146,8 @@ const adapters: Record<string, AdapterConfig> = {
       "3. 让需要接收转录的节点订阅：nerve_command({ node: \"ear-1\", command: \"subscribe\", args: { name: \"接收者名\" } })",
       "   可以是自己，也可以是其他 agent（如专门的 analyst）",
       "4. nerve_command({ node: \"ear-1\", command: \"start\", args: { source: \"mic\" } })",
-      "转录内容定期推送到频道，@mention 所有订阅者。",
-      "可用 config 调整推送频率：nerve_command({ node: \"ear-1\", command: \"config\", args: { key: \"interval\", value: \"30\" } })",
+      "转录内容定期推送到频道（默认5分钟/300秒），@mention 所有订阅者。",
+      "可用 config 调整推送频率：nerve_command({ node: \"ear-1\", command: \"config\", args: { key: \"interval\", value: \"30\" } })  // 单位：秒",
     ].join("\n"),
   },
   "duty-monitor": {

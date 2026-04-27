@@ -253,8 +253,8 @@ class AiEarPlugin extends PluginBase {
         this.log("info", `subscribers: [${[...this.subscribers].join(", ")}]`);
         break;
       case "config": {
-        const key = args["0"];
-        const value = args["1"];
+        const key = args.key || args["0"];
+        const value = args.value || args["1"];
         if (key === "interval" && value) {
           const seconds = parseInt(value);
           if (seconds > 0) {

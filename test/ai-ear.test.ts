@@ -653,6 +653,65 @@ async function testSpawnMcTranscriber() {
   await tui.disconnect();
 }
 
+async function httpPost(path: string, body: Record<string, unknown>): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const req = http.request({
+      hostname: "localhost",
+      port: TEST_PORT,
+      path,
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) },
+    }, (res) => {
+      let buf = "";
+      res.on("data", (d) => { buf += d; });
+      res.on("end", () => {
+        try { resolve(JSON.parse(buf)); } catch { resolve(buf); }
+      });
+    });
+    req.on("error", reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+async function testConfigCommandNamedArgs() {
+  console.log("\n▸ ai-ear — config command accepts named args (MCP path)");
+
+  const tui = new WsClient("tui");
+  await tui.connect();
+  await tui.request("node.register", { name: "tui-cfg", capabilities: ["ui"] });
+
+  // Spawn ai-ear
+  const sp = await tui.request("node.spawn", { adapter: "ai-ear", name: "ear-cfg", cwd: ROOT });
+  await waitForNotification(tui, "node.statusChanged", p => p.name === "ear-cfg" && p.status === "idle", 10000);
+
+  // Send config command with named args via HTTP (same path as MCP nerve_command)
+  const result = await httpPost("/node/command", {
+    nodeName: "ear-cfg",
+    command: "config",
+    args: { key: "interval", value: "60" },
+    from: "tui-cfg",
+  });
+  assert(!result.error, `config with named args succeeded: ${JSON.stringify(result)}`);
+
+  // Also verify positional args still work
+  const result2 = await httpPost("/node/command", {
+    nodeName: "ear-cfg",
+    command: "config",
+    args: { "0": "interval", "1": "120" },
+    from: "tui-cfg",
+  });
+  assert(!result2.error, `config with positional args succeeded: ${JSON.stringify(result2)}`);
+
+  // Stop
+  await tui.request("node.stop", { nodeId: sp.nodeId });
+  await waitForNotification(tui, "node.stopped", p => p.nodeId === sp.nodeId, 5000);
+  assert(true, "ear-cfg stopped cleanly");
+
+  await tui.disconnect();
+}
+
 async function testChannelMessageNotDispatchedAsCommand() {
   console.log("\n▸ ai-ear — non-command @mc channel messages ignored");
 
@@ -853,6 +912,7 @@ async function main() {
     console.log("  Server started on port", TEST_PORT);
 
     await testSpawnMcTranscriber();
+    await testConfigCommandNamedArgs();
     await testChannelMessageNotDispatchedAsCommand();
 
   } catch (err) {
