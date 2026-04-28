@@ -13,11 +13,15 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { filterNodes, mapNodes } from "./nerve-mcp-node-list.js";
 
 const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NERVE_NODE_NAME = process.env.NERVE_NODE_NAME || "unknown";
+const DEFAULT_AI_ADAPTER = process.env.NERVE_DEFAULT_AI_ADAPTER || readDefaultAiAdapterConfig() || "codex";
 const BASE_URL = `http://127.0.0.1:${NERVE_PORT}`;
 
 // Track the current channel this agent is in (set on create/join)
@@ -25,6 +29,17 @@ let currentChannelId: string | undefined;
 
 function log(msg: string): void {
   process.stderr.write(`[nerve-mcp] ${msg}\n`);
+}
+
+function readDefaultAiAdapterConfig(): string | undefined {
+  try {
+    const raw = readFileSync(join(homedir(), ".nerve", "config.json"), "utf8");
+    const config = JSON.parse(raw) as { default_ai_adapter?: unknown; defaultAiAdapter?: unknown };
+    const value = config.default_ai_adapter ?? config.defaultAiAdapter;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function post(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -81,7 +96,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object" as const,
         properties: {
-          adapter: { type: "string", description: "Adapter name", default: "claude" },
+          adapter: { type: "string", description: "Adapter name", default: DEFAULT_AI_ADAPTER },
           name: { type: "string", description: "Optional node name" },
           cwd: { type: "string", description: "Optional working directory" },
           model: { type: "string", description: "Optional model override for the new node" },
@@ -256,7 +271,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "nerve_spawn") {
     const { adapter, name: agentName, cwd, model, channel_id, standalone } = (args || {}) as { adapter?: string; name?: string; cwd?: string; model?: string; channel_id?: string; standalone?: boolean };
     try {
-      const useAdapter = adapter || "claude";
+      const useAdapter = adapter || DEFAULT_AI_ADAPTER;
       log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${cwd || process.cwd()} model=${model || ""} standalone=${!!standalone}`);
       const result = await post("/node/spawn", {
         adapter: useAdapter,

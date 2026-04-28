@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { MessageInfo } from "./protocol.js";
+import type { Message, MessageInfo } from "./protocol.js";
 
 export class Store {
   private db: Database.Database;
@@ -61,6 +61,18 @@ export class Store {
 
       CREATE INDEX IF NOT EXISTS idx_messages_channel
         ON messages(channel_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS dm_messages (
+        id        TEXT PRIMARY KEY,
+        node_id   TEXT NOT NULL,
+        role      TEXT NOT NULL,
+        sender    TEXT NOT NULL,
+        text      TEXT NOT NULL,
+        ts        INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_dm_messages_node
+        ON dm_messages(node_id, ts);
 
     `);
   }
@@ -219,6 +231,24 @@ export class Store {
       ...r,
       metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
     }));
+  }
+
+  insertDmMessage(msg: Message): void {
+    this.db.prepare(
+      "INSERT INTO dm_messages (id, node_id, role, sender, text, ts) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(msg.id, msg.nodeId, msg.role, msg.sender, msg.text, msg.ts);
+  }
+
+  getDmMessages(nodeId: string, limit = 50, before?: number): Message[] {
+    const rows = before
+      ? this.db.prepare(
+          "SELECT id, node_id as nodeId, role, sender, text, ts FROM dm_messages WHERE node_id = ? AND ts < ? ORDER BY ts DESC LIMIT ?"
+        ).all(nodeId, before, limit)
+      : this.db.prepare(
+          "SELECT id, node_id as nodeId, role, sender, text, ts FROM dm_messages WHERE node_id = ? ORDER BY ts DESC LIMIT ?"
+        ).all(nodeId, limit);
+
+    return (rows as Message[]).reverse();
   }
 
   close(): void {

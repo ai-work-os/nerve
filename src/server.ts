@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { WebSocketServer, WebSocket } from "ws";
+import type { PromptAttachment } from "./acp-client.js";
 import { ChannelManager } from "./channel-manager.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { HttpRouter } from "./http-router.js";
@@ -461,6 +462,11 @@ export class Server {
         case "node.prompt": {
           const nodeId = p.nodeId as string;
           const content = p.content as string;
+          const attachments = Array.isArray(p.attachments)
+            ? (p.attachments as Record<string, unknown>[])
+              .filter(a => a.type === "image" && typeof a.mimeType === "string" && typeof a.data === "string")
+              .map(a => ({ type: "image" as const, mimeType: a.mimeType as string, data: a.data as string }) satisfies PromptAttachment)
+            : [];
           if (!nodeId || !content) { this.sendError(ws, id, -32602, "nodeId and content required"); return; }
           const node = this.cm.nodePool.get(nodeId);
           if (!node) { this.sendError(ws, id, -32602, `node not found`); return; }
@@ -469,7 +475,8 @@ export class Server {
           const callerNodeId = this.wsNodeMap.get(ws);
           const callerNode = callerNodeId ? this.cm.nodePool.get(callerNodeId) : undefined;
           const from = callerNode ? { nodeId: callerNode.id, name: callerNode.name } : undefined;
-          this.cm.nodePool.promptNode(nodeId, content, from, ws).then(result => {
+          log.debug(`node.prompt: nodeId=${nodeId} attachments=${attachments.length}`);
+          this.cm.nodePool.promptNode(nodeId, content, from, ws, attachments).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));

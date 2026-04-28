@@ -20,6 +20,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { rmSync, existsSync } from "node:fs";
 import WebSocket from "ws";
+import Database from "better-sqlite3";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -237,7 +238,7 @@ async function testObserverReceivesDmPrompt() {
   // Prompt the AI — mock-agent will process and reply
   const promptPromise = sender.request("node.prompt", {
     nodeId: ai.nodeId,
-    text: "Hello AI, what's the weather?",
+    content: "Hello AI, what's the weather?",
   });
 
   try {
@@ -275,7 +276,7 @@ async function testObserverReceivesDmResponseWithText() {
   try {
     await sender.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "Tell me a joke",
+      content: "Tell me a joke",
     });
   } catch {
     // May timeout, but dm events should still fire
@@ -320,7 +321,7 @@ async function testNonObserverDoesNotReceiveDm() {
   try {
     await regular.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "test prompt for permission check",
+      content: "test prompt for permission check",
     });
   } catch {
     // Expected
@@ -355,7 +356,7 @@ async function testDmResponseOnPromptError() {
   try {
     await sender.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "fail this prompt please",
+      content: "fail this prompt please",
     });
   } catch {
     // Expected
@@ -396,7 +397,7 @@ async function testDmResponseBufferCleanup() {
   try {
     await sender.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "first unique message alpha",
+      content: "first unique message alpha",
     });
   } catch {
     // Expected
@@ -410,7 +411,7 @@ async function testDmResponseBufferCleanup() {
   try {
     await sender.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "second unique message beta",
+      content: "second unique message beta",
     });
   } catch {
     // Expected
@@ -445,7 +446,7 @@ async function testDmPromptResponsePairing() {
   try {
     await sender.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "pairing test",
+      content: "pairing test",
     });
   } catch {
     // Expected
@@ -472,6 +473,37 @@ async function testDmPromptResponsePairing() {
   await sender.disconnect();
 }
 
+async function testDmMessagesPersistedToSqlite() {
+  console.log("\n▸ DM capture: node.prompt persists assembled DM messages to SQLite");
+
+  const sender = await registerRegularNode("sender-db");
+  const ai = await spawnMockAi(sender, "mock-ai-db");
+
+  try {
+    await sender.request("node.prompt", {
+      nodeId: ai.nodeId,
+      content: "persist this dm",
+    });
+  } catch {
+    // Existing mock timing can race, but persistence should still happen.
+  }
+
+  await sleep(1000);
+
+  const db = new Database(resolve(TEST_DATA, "nerve.db"), { readonly: true });
+  const rows = db.prepare(
+    "SELECT node_id as nodeId, role, sender, text FROM dm_messages WHERE node_id = ? ORDER BY ts ASC"
+  ).all(ai.nodeId) as Array<{ nodeId: string; role: string; sender: string; text: string }>;
+  db.close();
+
+  assert(rows.length >= 2, "dm_messages has user and agent rows");
+  assert(rows.some(r => r.role === "user" && r.text === "persist this dm"), "user DM text persisted");
+  assert(rows.some(r => r.role === "agent" && r.text.includes("mock processing")), "agent DM text persisted");
+
+  await stopMockAi(sender, ai.nodeId);
+  await sender.disconnect();
+}
+
 async function testMultipleObserversReceiveDm() {
   console.log("\n▸ DM capture: multiple observers all receive dm.* events");
 
@@ -486,7 +518,7 @@ async function testMultipleObserversReceiveDm() {
   try {
     await sender.request("node.prompt", {
       nodeId: ai.nodeId,
-      text: "multi observer test",
+      content: "multi observer test",
     });
   } catch {
     // Expected
@@ -525,6 +557,7 @@ async function main() {
     await testDmResponseOnPromptError();
     await testDmResponseBufferCleanup();
     await testDmPromptResponsePairing();
+    await testDmMessagesPersistedToSqlite();
     await testMultipleObserversReceiveDm();
   } catch (err) {
     console.error("Test runner error:", err);
