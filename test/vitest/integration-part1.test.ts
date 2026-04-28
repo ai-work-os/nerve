@@ -1305,6 +1305,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     assert(toolNames.includes("nerve_remove"), "mcp-tools: nerve_remove listed");
     const spawnTool = tools.find((t: any) => t.name === "nerve_spawn");
     assert(!!spawnTool?.inputSchema?.properties?.model, "mcp-tools: nerve_spawn exposes model");
+    assertEq(spawnTool?.inputSchema?.properties?.adapter?.default, process.env.NERVE_DEFAULT_AI_ADAPTER || "codex", "mcp-tools: nerve_spawn default adapter is configured value or codex");
 
     const createResult = await mcp.callTool("nerve_create_channel", { name: "orch-test" });
     assert(!createResult.isError, "mcp-tools: create channel succeeds");
@@ -1579,6 +1580,43 @@ describe("Nerve Integration Tests - Part 1", () => {
     await sleep(500);
     await mcp.close();
     await c.disconnect();
+  });
+
+  it("nerve_spawn uses ~/.nerve/config.json default adapter when adapter is omitted", async () => {
+    const c = new WsClient("spawn-default-test");
+    await c.connect();
+    await c.request("node.register", { name: "spawn-default-test", capabilities: ["ui"] });
+
+    const previousDefault = process.env.NERVE_DEFAULT_AI_ADAPTER;
+    const previousHome = process.env.HOME;
+    delete process.env.NERVE_DEFAULT_AI_ADAPTER;
+    const testHome = `/tmp/nerve-home-${Date.now()}`;
+    mkdirSync(resolve(testHome, ".nerve"), { recursive: true });
+    writeFileSync(resolve(testHome, ".nerve", "config.json"), JSON.stringify({ default_ai_adapter: "mock" }));
+    process.env.HOME = testHome;
+
+    const mcp = new McpToolClient("spawn-default-test");
+    await mcp.connect();
+
+    const spawnRes = await mcp.callTool("nerve_spawn", { name: "default-mock-agent", cwd: ROOT, standalone: true });
+    assert(!spawnRes.isError, "spawn-default: spawn succeeds without adapter");
+    await sleep(3000);
+
+    const nodes = await c.request("node.list", {});
+    const agent = nodes.nodes.find((n: any) => n.name === "default-mock-agent");
+    assert(!!agent, "spawn-default: spawned agent visible");
+    assertEq(agent?.adapter, "mock", "spawn-default: configurable default adapter used");
+
+    if (agent) await httpPost("/node/stop", { nodeId: agent.id });
+    await sleep(500);
+    await mcp.close();
+    await c.disconnect();
+
+    if (previousDefault === undefined) delete process.env.NERVE_DEFAULT_AI_ADAPTER;
+    else process.env.NERVE_DEFAULT_AI_ADAPTER = previousDefault;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    rmSync(testHome, { recursive: true, force: true });
   });
 
   it("channel.created/closed WS notifications", async () => {
