@@ -13,13 +13,15 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { resolve } from "node:path";
-import { readNerveConfig, readStringConfig, getDefaultAgentCwd } from "./nerve-config.js";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+
 import { filterNodes, mapNodes } from "./nerve-mcp-node-list.js";
 
 const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NERVE_NODE_NAME = process.env.NERVE_NODE_NAME || "unknown";
-const MCP_CONFIG = readNerveConfig();
+const MCP_CONFIG = readMcpConfig();
 const DEFAULT_AI_ADAPTER = process.env.NERVE_DEFAULT_AI_ADAPTER || readStringConfig(MCP_CONFIG, "default_ai_adapter", "defaultAiAdapter") || "codex";
 const BASE_URL = `http://127.0.0.1:${NERVE_PORT}`;
 
@@ -28,6 +30,21 @@ let currentChannelId: string | undefined;
 
 function log(msg: string): void {
   process.stderr.write(`[nerve-mcp] ${msg}\n`);
+}
+
+function readMcpConfig(): Record<string, unknown> {
+  try {
+    const raw = readFileSync(join(homedir(), ".nerve", "config.json"), "utf8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    return config && typeof config === "object" ? config : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStringConfig(config: Record<string, unknown>, snakeKey: string, camelKey: string): string | undefined {
+  const value = config[snakeKey] ?? config[camelKey];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 async function post(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -101,7 +118,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           adapter: { type: "string", description: "Adapter name", default: DEFAULT_AI_ADAPTER },
           name: { type: "string", description: "Optional node name" },
-          cwd: { type: "string", description: "Optional working directory. Defaults to NERVE_DEFAULT_AGENT_CWD or ~/.nerve/config.json default_agent_cwd when configured." },
+          cwd: { type: "string", description: "Optional working directory. Defaults to this MCP process cwd if omitted." },
           model: { type: "string", description: "Optional model override for the new node" },
           channel_id: { type: "string", description: "Optional channel id to auto-join after spawn" },
           standalone: { type: "boolean", description: "If true, do not auto-join any channel after spawn" },
@@ -275,7 +292,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { adapter, name: agentName, cwd, model, channel_id, standalone } = (args || {}) as { adapter?: string; name?: string; cwd?: string; model?: string; channel_id?: string; standalone?: boolean };
     try {
       const useAdapter = adapter || DEFAULT_AI_ADAPTER;
-      const effectiveCwd = resolve(cwd || getDefaultAgentCwd() || process.cwd());
+      const effectiveCwd = resolve(cwd || process.cwd());
       log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${effectiveCwd} model=${model || ""} standalone=${!!standalone}`);
       const result = await post("/node/spawn", {
         adapter: useAdapter,
