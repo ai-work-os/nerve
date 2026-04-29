@@ -466,6 +466,10 @@ describe("Nerve Integration Tests - Part 1", () => {
   });
 
   it("Spawn with cwd parameter", async () => {
+    const suffix = Date.now();
+    const name1 = `cwd-agent-1-${suffix}`;
+    const name2 = `cwd-agent-2-${suffix}`;
+    const name3 = `cwd-agent-3-${suffix}`;
     const c = new WsClient("cwd-test");
     await c.connect();
     await c.request("node.register", { name: "cwd-test", capabilities: ["ui"] });
@@ -473,24 +477,32 @@ describe("Nerve Integration Tests - Part 1", () => {
     // Spawn with explicit cwd
     const r1 = await c.request("node.spawn", {
       adapter: "mock",
-      name: "cwd-agent-1",
+      name: name1,
       cwd: "/tmp",
     });
     assert(!!r1.nodeId, "spawn with cwd: returns nodeId");
-    assert(r1.name === "cwd-agent-1", "spawn with cwd: correct name");
+    assert(r1.name === name1, "spawn with cwd: correct name");
 
-    // Spawn without cwd (should default to server's process.cwd)
+    // Spawn without cwd falls back to server process.cwd when no default cwd is configured.
     const r2 = await c.request("node.spawn", {
       adapter: "mock",
-      name: "cwd-agent-2",
+      name: name2,
     });
     assert(!!r2.nodeId, "spawn without cwd: returns nodeId");
+
+    const r3 = await httpPost("/node/spawn", {
+      adapter: "mock",
+      name: name3,
+      cwd: ROOT,
+    });
+    assert(!!r3.nodeId, "http spawn with cwd: returns nodeId");
+    assertEq(r3.cwd, ROOT, "http spawn with cwd: returns effective cwd");
 
     // Spawn with duplicate name should fail
     try {
       await c.request("node.spawn", {
         adapter: "mock",
-        name: "cwd-agent-1",
+        name: name1,
         cwd: "/tmp",
       });
       assert(false, "duplicate name should fail");
@@ -501,6 +513,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     // Cleanup
     await httpPost("/node/stop", { nodeId: r1.nodeId });
     await httpPost("/node/stop", { nodeId: r2.nodeId });
+    await httpPost("/node/stop", { nodeId: r3.nodeId });
     await sleep(500);
     await c.disconnect();
   });

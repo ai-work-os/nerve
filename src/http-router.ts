@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { ChannelManager } from "./channel-manager.js";
 import type { SceneManager } from "./scene-manager.js";
+import { resolveSpawnCwd } from "./nerve-config.js";
 import * as log from "./logger.js";
 
 /**
@@ -118,7 +119,7 @@ export class HttpRouter {
     switch (url) {
       // --- Channel management ---
       case "/channel/create": {
-        const cwd = resolve((data.cwd as string) || process.cwd());
+        const cwd = resolveSpawnCwd(data.cwd as string | undefined);
         const ch = this.cm.createChannel(cwd, data.name as string);
         // Auto-join the calling node if identified
         if (from) {
@@ -286,7 +287,7 @@ export class HttpRouter {
           this.cm.addNodeToChannel(channelId, nodeId, name);
         }
 
-        return { nodeId, name, status: "connecting" };
+        return { nodeId, name, cwd, status: "connecting" };
       }
 
       case "/node/join": {

@@ -9,6 +9,7 @@ import { HttpRouter } from "./http-router.js";
 import { SceneManager } from "./scene-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage, Message } from "./protocol.js";
 import { handleRpcRequest } from "./request-handler.js";
+import { resolveSpawnCwd } from "./nerve-config.js";
 import * as log from "./logger.js";
 
 const PROGRAM_LOG_MESSAGE_LIMIT = 5000;
@@ -348,7 +349,7 @@ export class Server {
 
         case "node.spawn": {
           const adapter = p.adapter as string;
-          const cwd = resolve((p.cwd as string) || process.cwd());
+          const cwd = resolveSpawnCwd(p.cwd as string | undefined);
           const name = (p.name as string) || this.httpRouter.generateNodeName(adapter, cwd);
           const standalone = p.standalone as boolean | undefined;
           const model = typeof p.model === "string" && p.model.trim() ? p.model.trim() : undefined;
@@ -380,7 +381,7 @@ export class Server {
             if (channelId) {
               this.cm.addNodeToChannel(channelId, node.id, node.name);
             }
-            this.sendResult(ws, id, { nodeId: node.id, name: node.name });
+            this.sendResult(ws, id, { nodeId: node.id, name: node.name, cwd });
           }).catch(err => {
             this.sendError(ws, id, -32000, String(err));
           });
