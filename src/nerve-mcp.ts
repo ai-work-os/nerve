@@ -13,14 +13,17 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { resolve } from "node:path";
-import { readNerveConfig, readStringConfig, getDefaultAgentCwd } from "./nerve-config.js";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+
 import { filterNodes, mapNodes } from "./nerve-mcp-node-list.js";
 
 const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NERVE_NODE_NAME = process.env.NERVE_NODE_NAME || "unknown";
-const MCP_CONFIG = readNerveConfig();
+const MCP_CONFIG = readMcpConfig();
 const DEFAULT_AI_ADAPTER = process.env.NERVE_DEFAULT_AI_ADAPTER || readStringConfig(MCP_CONFIG, "default_ai_adapter", "defaultAiAdapter") || "codex";
+const DEFAULT_AGENT_CWD = process.env.NERVE_DEFAULT_AGENT_CWD || readStringConfig(MCP_CONFIG, "default_agent_cwd", "defaultAgentCwd");
 const BASE_URL = `http://127.0.0.1:${NERVE_PORT}`;
 
 // Track the current channel this agent is in (set on create/join)
@@ -28,6 +31,21 @@ let currentChannelId: string | undefined;
 
 function log(msg: string): void {
   process.stderr.write(`[nerve-mcp] ${msg}\n`);
+}
+
+function readMcpConfig(): Record<string, unknown> {
+  try {
+    const raw = readFileSync(join(homedir(), ".nerve", "config.json"), "utf8");
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    return config && typeof config === "object" ? config : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStringConfig(config: Record<string, unknown>, snakeKey: string, camelKey: string): string | undefined {
+  const value = config[snakeKey] ?? config[camelKey];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 async function post(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -275,7 +293,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { adapter, name: agentName, cwd, model, channel_id, standalone } = (args || {}) as { adapter?: string; name?: string; cwd?: string; model?: string; channel_id?: string; standalone?: boolean };
     try {
       const useAdapter = adapter || DEFAULT_AI_ADAPTER;
-      const effectiveCwd = resolve(cwd || getDefaultAgentCwd() || process.cwd());
+      const effectiveCwd = resolve(cwd || DEFAULT_AGENT_CWD || process.cwd());
       log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${effectiveCwd} model=${model || ""} standalone=${!!standalone}`);
       const result = await post("/node/spawn", {
         adapter: useAdapter,
