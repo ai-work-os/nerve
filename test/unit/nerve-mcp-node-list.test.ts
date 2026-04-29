@@ -145,15 +145,14 @@ function main() {
   console.log("  nerve_node_list Tests (TDD Red Phase)");
   console.log("═══════════════════════════════════════");
 
-  // Case 1: 无参数 → 只返回有 commands 的程序节点，不含 AI 节点，不含 stopped
-  console.log("\n▸ Case 1: default (no args) → program nodes only, exclude stopped");
+  // Case 1: 无参数 → 返回全部非 stopped 节点，包含 AI 节点
+  console.log("\n▸ Case 1: default (no args) → all non-stopped nodes");
   try {
     const result = filterNodes(allNodes);
-    // 应返回 programNode1, programNode2, errorNode（有 commands 且非 stopped）
-    assertEq(result.length, 3, "returns 3 program nodes");
-    assert(result.every(n => n.commands && Object.keys(n.commands).length > 0), "all have commands");
+    assertEq(result.length, 5, "returns 5 nodes (all except stopped)");
     assert(!result.some(n => n.status === "stopped"), "no stopped nodes");
-    assert(!result.some(n => n.name === "coder-agent" || n.name === "reviewer-agent"), "no agent nodes");
+    assert(result.some(n => n.name === "coder-agent"), "includes agent nodes");
+    assert(result.some(n => n.name === "git-tool"), "includes program nodes");
   } catch (e) {
     assert(false, "default filter", String(e));
   }
