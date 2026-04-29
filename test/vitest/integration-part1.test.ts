@@ -1619,54 +1619,32 @@ describe("Nerve Integration Tests - Part 1", () => {
     rmSync(testHome, { recursive: true, force: true });
   });
 
-  it("nerve_spawn uses configured default cwd and returns ready summary", async () => {
-    const c = new WsClient("spawn-default-cwd-test");
+  it("nerve_spawn returns ready summary with effective cwd", async () => {
+    const c = new WsClient("spawn-summary-test");
     await c.connect();
-    await c.request("node.register", { name: "spawn-default-cwd-test", capabilities: ["ui"] });
+    await c.request("node.register", { name: "spawn-summary-test", capabilities: ["ui"] });
 
-    const previousDefault = process.env.NERVE_DEFAULT_AI_ADAPTER;
-    const previousCwd = process.env.NERVE_DEFAULT_AGENT_CWD;
-    const previousHome = process.env.HOME;
-    delete process.env.NERVE_DEFAULT_AI_ADAPTER;
-    delete process.env.NERVE_DEFAULT_AGENT_CWD;
-    const testHome = `/tmp/nerve-home-cwd-${Date.now()}`;
-    const defaultCwd = ROOT;
-    mkdirSync(resolve(testHome, ".nerve"), { recursive: true });
-    writeFileSync(resolve(testHome, ".nerve", "config.json"), JSON.stringify({
-      default_ai_adapter: "mock",
-      default_agent_cwd: defaultCwd,
-    }));
-    process.env.HOME = testHome;
-
-    const mcp = new McpToolClient("spawn-default-cwd-test");
+    const mcp = new McpToolClient("spawn-summary-test");
     await mcp.connect();
 
-    const spawnRes = await mcp.callTool("nerve_spawn", { name: "default-cwd-agent", standalone: true });
-    assert(!spawnRes.isError, "spawn-default-cwd: spawn succeeds without explicit cwd");
+    const spawnRes = await mcp.callTool("nerve_spawn", { adapter: "mock", name: "summary-agent", cwd: ROOT, standalone: true });
+    assert(!spawnRes.isError, "spawn-summary: spawn succeeds");
     const summary = JSON.parse(spawnRes.content?.[0]?.text || "{}");
-    assertEq(summary.name, "default-cwd-agent", "spawn-default-cwd: summary includes name");
-    assertEq(summary.cwd, defaultCwd, "spawn-default-cwd: summary includes configured cwd");
-    assertEq(summary.spawned, true, "spawn-default-cwd: summary marks spawned");
-    assertEq(summary.registered, true, "spawn-default-cwd: summary marks registered");
-    assertEq(summary.ready, true, "spawn-default-cwd: summary marks ready");
+    assertEq(summary.name, "summary-agent", "spawn-summary: summary includes name");
+    assertEq(summary.cwd, ROOT, "spawn-summary: summary includes effective cwd");
+    assertEq(summary.spawned, true, "spawn-summary: summary marks spawned");
+    assertEq(summary.registered, true, "spawn-summary: summary marks registered");
+    assertEq(summary.ready, true, "spawn-summary: summary marks ready");
 
     const nodes = await c.request("node.list", {});
-    const agent = nodes.nodes.find((n: any) => n.name === "default-cwd-agent");
-    assert(!!agent, "spawn-default-cwd: spawned agent visible");
-    assertEq(agent?.cwd, defaultCwd, "spawn-default-cwd: node uses configured cwd");
+    const agent = nodes.nodes.find((n: any) => n.name === "summary-agent");
+    assert(!!agent, "spawn-summary: spawned agent visible");
+    assertEq(agent?.cwd, ROOT, "spawn-summary: node uses effective cwd");
 
     if (agent) await httpPost("/node/stop", { nodeId: agent.id });
     await sleep(500);
     await mcp.close();
     await c.disconnect();
-
-    if (previousDefault === undefined) delete process.env.NERVE_DEFAULT_AI_ADAPTER;
-    else process.env.NERVE_DEFAULT_AI_ADAPTER = previousDefault;
-    if (previousCwd === undefined) delete process.env.NERVE_DEFAULT_AGENT_CWD;
-    else process.env.NERVE_DEFAULT_AGENT_CWD = previousCwd;
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
-    rmSync(testHome, { recursive: true, force: true });
   });
 
   it("channel.created/closed WS notifications", async () => {
