@@ -15,13 +15,15 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { filterNodes, mapNodes } from "./nerve-mcp-node-list.js";
 
 const NERVE_PORT = process.env.NERVE_PORT || "4800";
 const NERVE_NODE_NAME = process.env.NERVE_NODE_NAME || "unknown";
-const DEFAULT_AI_ADAPTER = process.env.NERVE_DEFAULT_AI_ADAPTER || readDefaultAiAdapterConfig() || "codex";
+const MCP_CONFIG = readMcpConfig();
+const DEFAULT_AI_ADAPTER = process.env.NERVE_DEFAULT_AI_ADAPTER || readStringConfig(MCP_CONFIG, "default_ai_adapter", "defaultAiAdapter") || "codex";
+const DEFAULT_AGENT_CWD = process.env.NERVE_DEFAULT_AGENT_CWD || readStringConfig(MCP_CONFIG, "default_agent_cwd", "defaultAgentCwd");
 const BASE_URL = `http://127.0.0.1:${NERVE_PORT}`;
 
 // Track the current channel this agent is in (set on create/join)
@@ -31,15 +33,19 @@ function log(msg: string): void {
   process.stderr.write(`[nerve-mcp] ${msg}\n`);
 }
 
-function readDefaultAiAdapterConfig(): string | undefined {
+function readMcpConfig(): Record<string, unknown> {
   try {
     const raw = readFileSync(join(homedir(), ".nerve", "config.json"), "utf8");
-    const config = JSON.parse(raw) as { default_ai_adapter?: unknown; defaultAiAdapter?: unknown };
-    const value = config.default_ai_adapter ?? config.defaultAiAdapter;
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    const config = JSON.parse(raw) as Record<string, unknown>;
+    return config && typeof config === "object" ? config : {};
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+function readStringConfig(config: Record<string, unknown>, snakeKey: string, camelKey: string): string | undefined {
+  const value = config[snakeKey] ?? config[camelKey];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 async function post(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -63,11 +69,26 @@ function fail(text: string) {
   return { content: [{ type: "text" as const, text: `error: ${text}` }], isError: true };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 async function findNodeByName(name: string): Promise<Record<string, unknown>> {
   const result = await post("/node/list", {});
   const node = (result.nodes as Record<string, unknown>[] | undefined)?.find((n) => n.name === name);
   if (!node) throw new Error(`node not found: ${name}`);
   return node;
+}
+
+async function waitForNodeReady(name: string, timeoutMs = 8000): Promise<Record<string, unknown> | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await post("/node/list", {});
+    const node = (result.nodes as Record<string, unknown>[] | undefined)?.find((n) => n.name === name);
+    if (node && node.status !== "connecting") return node;
+    await sleep(250);
+  }
+  return undefined;
 }
 
 const server = new Server(
@@ -98,7 +119,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           adapter: { type: "string", description: "Adapter name", default: DEFAULT_AI_ADAPTER },
           name: { type: "string", description: "Optional node name" },
-          cwd: { type: "string", description: "Optional working directory" },
+          cwd: { type: "string", description: "Optional working directory. Defaults to NERVE_DEFAULT_AGENT_CWD or ~/.nerve/config.json default_agent_cwd when configured." },
           model: { type: "string", description: "Optional model override for the new node" },
           channel_id: { type: "string", description: "Optional channel id to auto-join after spawn" },
           standalone: { type: "boolean", description: "If true, do not auto-join any channel after spawn" },
@@ -183,14 +204,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "nerve_node_list",
-      description: "List program nodes and their commands. Returns name, status, and command signatures for each active program node.",
+      description: "List active nodes. Defaults to all node types; program nodes include commands, AI agents usually do not.",
       inputSchema: {
         type: "object" as const,
         properties: {
           type: {
             type: "string",
             enum: ["program", "agent", "all"],
-            description: "Filter by node type (default: program)",
+            description: "Filter by node type (default: all)",
           },
           status: {
             type: "string",
@@ -213,7 +234,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "nerve_command",
-      description: "Send a structured command to a program node. Returns the command result.",
+      description: "Send a structured command to a program node. AI agent nodes do not expose program commands; use nerve_post or nerve_members for agent communication checks.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -272,11 +293,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const { adapter, name: agentName, cwd, model, channel_id, standalone } = (args || {}) as { adapter?: string; name?: string; cwd?: string; model?: string; channel_id?: string; standalone?: boolean };
     try {
       const useAdapter = adapter || DEFAULT_AI_ADAPTER;
-      log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${cwd || process.cwd()} model=${model || ""} standalone=${!!standalone}`);
+      const effectiveCwd = resolve(cwd || DEFAULT_AGENT_CWD || process.cwd());
+      log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${effectiveCwd} model=${model || ""} standalone=${!!standalone}`);
       const result = await post("/node/spawn", {
         adapter: useAdapter,
         name: agentName,
-        cwd: cwd || process.cwd(),
+        cwd: effectiveCwd,
         model,
       });
       const spawnedName = String(result.name || agentName || "agent");
@@ -285,6 +307,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       // Auto-join spawned agent to explicit channel_id or caller's current channel (unless standalone)
       const targetChannel = standalone ? undefined : (channel_id || currentChannelId);
       let joinNote = "";
+      let joined = false;
       if (targetChannel && spawnedId !== "?") {
         try {
           await post("/channel/addNode", {
@@ -294,6 +317,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           });
           log(`nerve_spawn: auto-joined ${spawnedName} to channel ${targetChannel}`);
           joinNote = `, joined channel ${targetChannel}`;
+          joined = true;
         } catch (joinErr) {
           const errStr = String(joinErr);
           log(`nerve_spawn: auto-join failed: ${errStr}`);
@@ -305,7 +329,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
       }
 
-      return ok(`spawned ${spawnedName} (${spawnedId})${joinNote}`);
+      const readyNode = await waitForNodeReady(spawnedName);
+      const registered = !!readyNode;
+      const summary = {
+        spawned: true,
+        registered,
+        ready: registered && (!targetChannel || joined),
+        ...(registered ? {} : { reason: "handshake timeout" }),
+        name: spawnedName,
+        nodeId: spawnedId,
+        cwd: effectiveCwd,
+        status: typeof readyNode?.status === "string" ? readyNode.status : String(result.status || "connecting"),
+        channel: targetChannel ? { id: targetChannel, joined } : null,
+        message: `spawned ${spawnedName} (${spawnedId})${joinNote}`,
+      };
+      return ok(JSON.stringify(summary));
     } catch (err) {
       log(`nerve_spawn failed: ${err}`);
       return fail(String(err));
@@ -457,7 +495,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       status?: string;
     };
     try {
-      log(`nerve_node_list type=${nodeType || "program"} status=${statusFilter || "all"}`);
+      log(`nerve_node_list type=${nodeType || "all"} status=${statusFilter || "all"}`);
       const result = await post("/node/list", { cwd: process.cwd() });
       const nodes = (result.nodes as Array<{ id: string; name: string; status: string; commands?: Record<string, { description: string; args?: Record<string, string> }>; events?: string[]; channels: string[] }>) || [];
 

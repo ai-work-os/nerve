@@ -22,13 +22,14 @@ interface MappedNode {
 
 /**
  * Filter nodes by type and status.
- * - type "program" (default): nodes with non-empty commands
+ * - type "all" (default): no type filter
+ * - type "program": nodes with non-empty commands
  * - type "agent": nodes without commands
  * - type "all": no type filter
  * - Stopped nodes excluded unless status explicitly set to "stopped"
  */
 export function filterNodes(nodes: NodeLike[], type?: string, status?: string): NodeLike[] {
-  const filterType = type || "program";
+  const filterType = type || "all";
   let result = nodes;
 
   // Filter by type
