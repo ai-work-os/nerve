@@ -2,7 +2,7 @@
   "name": "duty",
   "nodes": [
     { "adapter": "duty-monitor", "name": "duty-monitor" },
-    { "adapter": "claude", "name": "duty-agent" }
+    { "adapter": "codex", "name": "duty-agent" }
   ],
   "channel": {
     "name": "duty",

@@ -36,6 +36,10 @@ export class Server {
     this.httpRouter.setSceneManager(this.scenes);
   }
 
+  async startScene(name: string): Promise<void> {
+    await this.scenes.start(name);
+  }
+
   start(): void {
     this.httpServer = createServer((req, res) => this.httpRouter.handle(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
