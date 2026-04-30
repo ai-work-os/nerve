@@ -87,6 +87,7 @@ async function cmdServe(args: string[]) {
 
   const { ChannelManager } = await import("./channel-manager.js");
   const { Server } = await import("./server.js");
+  const { startStartupScenes } = await import("./startup.js");
 
   const nerve = new ChannelManager({ dataDir, port, eventLogPath });
   const server = new Server(nerve, port);
@@ -160,6 +161,12 @@ async function cmdServe(args: string[]) {
 
     startDuty();
   }
+
+  void startStartupScenes({
+    dataDir,
+    startScene: (name: string) => server.startScene(name),
+    log: info,
+  });
 
   const shutdown = async () => {
     try {

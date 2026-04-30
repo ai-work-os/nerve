@@ -1,0 +1,10 @@
+{
+  "name": "work",
+  "nodes": [
+    { "adapter": "claude", "name": "work-agent" }
+  ],
+  "channel": {
+    "name": "work",
+    "auto_create": true
+  }
+}
