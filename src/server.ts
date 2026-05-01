@@ -62,6 +62,14 @@ export class Server {
       });
     };
 
+    this.cm.onSpawnEvent = (event, detail) => {
+      this.broadcastToAllWsClients({
+        jsonrpc: "2.0",
+        method: event,
+        params: detail,
+      });
+    };
+
     // Hook into node events for direct subscriber push
     this.cm.onNodeEvent = (event, node, detail) => {
       if (event === "node.update" || event === "node.statusChanged") {
@@ -383,6 +391,18 @@ export class Server {
             // Auto-join channel if resolved (explicit or inherited)
             if (channelId) {
               this.cm.addNodeToChannel(channelId, node.id, node.name);
+            }
+            const callerNodeId = this.wsNodeMap.get(ws);
+            const callerNode = callerNodeId ? this.cm.nodePool.get(callerNodeId) : undefined;
+            if (callerNode) {
+              this.cm.notifyNodeSpawned({
+                nodeId: node.id,
+                name: node.name,
+                adapter,
+                spawnedByNodeId: callerNode.id,
+                spawnedByNodeName: callerNode.name,
+                channelId: channelId ?? null,
+              });
             }
             this.sendResult(ws, id, { nodeId: node.id, name: node.name });
           }).catch(err => {

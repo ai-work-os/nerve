@@ -63,6 +63,16 @@ export class ChannelManager {
   // External hook for channel member changes (join/leave) — broadcast globally
   onMemberEvent?: (event: string, channelId: string, nodeId: string, nodeName: string) => void;
 
+  // External hook for node spawn actions — broadcast globally for clients with DM actions.
+  onSpawnEvent?: (event: string, detail: {
+    nodeId: string;
+    name: string;
+    adapter?: string | null;
+    spawnedByNodeId: string;
+    spawnedByNodeName: string;
+    channelId?: string | null;
+  }) => void;
+
   constructor(opts: ChannelManagerOptions) {
     this.port = opts.port;
     this.dataDir = opts.dataDir;
@@ -158,6 +168,26 @@ export class ChannelManager {
   spawnNodeSync(adapter: string, name: string, cwd: string, options: SpawnOptions = {}): string {
     const node = this.nodePool.spawnProcessSync(adapter, name, cwd, this.port, options);
     return node.id;
+  }
+
+  notifyNodeSpawned(detail: {
+    nodeId: string;
+    name: string;
+    adapter?: string | null;
+    spawnedByNodeId: string;
+    spawnedByNodeName: string;
+    channelId?: string | null;
+  }): void {
+    const parent = this.nodePool.get(detail.spawnedByNodeId);
+    if (parent) {
+      this.nodePool.appendSystemMessage(parent, `已创建 ${detail.name}`, {
+        type: "open_dm",
+        nodeId: detail.nodeId,
+        nodeName: detail.name,
+      });
+    }
+    this.onSpawnEvent?.("node.spawned", detail);
+    this.eventLogger.log("node.spawned", detail);
   }
 
   async stopNode(nodeId: string): Promise<void> {

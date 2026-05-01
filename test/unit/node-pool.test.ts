@@ -33,6 +33,7 @@ const mockStore = {
   markAllNodesStopped() {},
   addNodeToChannel() {},
   removeNodeFromChannel() {},
+  insertDmMessage() {},
 } as any;
 
 function makePool() {
@@ -84,6 +85,33 @@ function testIsProgramNodeFalse() {
   assertEq(pool.isProgramNode("nonexistent"), false, "returns false");
 }
 
+function testAppendSystemMessageAction() {
+  console.log("\n▸ appendSystemMessage stores action in messageStore");
+  const pool = makePool();
+  const node = {
+    id: "parent-1",
+    name: "parent",
+    messageStore: [],
+    appendMessage(msg: any) {
+      this.messageStore.push(msg);
+    },
+  } as any;
+
+  pool.appendSystemMessage(node, "已创建 worker", {
+    type: "open_dm",
+    nodeId: "child-1",
+    nodeName: "worker",
+  });
+
+  assertEq(node.messageStore.length, 1, "one system message stored");
+  assertEq(node.messageStore[0].role, "system", "role is system");
+  assertEq(node.messageStore[0].action, {
+    type: "open_dm",
+    nodeId: "child-1",
+    nodeName: "worker",
+  }, "action is preserved");
+}
+
 // --- Main ---
 
 function main() {
@@ -98,6 +126,7 @@ function main() {
   testListAllEmpty();
   testClaimPendingProgramUndefined();
   testIsProgramNodeFalse();
+  testAppendSystemMessageAction();
 
   console.log("\n══════════════════════════════════════");
   console.log(`  ${passed} passed, ${failed} failed`);

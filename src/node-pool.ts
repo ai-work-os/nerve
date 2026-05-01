@@ -10,7 +10,7 @@ import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientp
 import { getAdapter } from "./adapter.js";
 import * as log from "./logger.js";
 import type { Store } from "./store.js";
-import type { NodeStatus, PermissionLevel, Message } from "./protocol.js";
+import type { NodeStatus, PermissionLevel, Message, MessageAction } from "./protocol.js";
 import type { WebSocket } from "ws";
 
 export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
@@ -60,6 +60,20 @@ export class NodePool {
     node.appendMessage(message);
     this.store.insertDmMessage(message);
     log.debug(`dm message persisted: ${node.name}, id=${message.id}, role=${message.role}, len=${message.text.length}`);
+  }
+
+  appendSystemMessage(node: NerveNode, text: string, action?: MessageAction): Message {
+    const message: Message = {
+      id: nanoid(16),
+      nodeId: node.id,
+      role: "system",
+      sender: node.name,
+      text,
+      ts: Date.now(),
+      action,
+    };
+    this.appendDmMessage(node, message);
+    return message;
   }
 
   /** Unified status change — all status mutations converge here.

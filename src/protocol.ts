@@ -125,6 +125,13 @@ export interface MessageInfo {
 // replayed via message_snapshot on subscribe.
 export type MessageRole = "user" | "agent" | "system";
 
+export type MessageAction =
+  | {
+      type: "open_dm";
+      nodeId: string;
+      nodeName: string;
+    };
+
 export interface Message {
   id: string;        // nerve-generated, stable within one nerve process lifetime
   nodeId: string;
@@ -132,4 +139,5 @@ export interface Message {
   sender: string;    // display name (e.g., "claude", "renjinxi")
   text: string;      // full assembled text
   ts: number;        // unix ms
+  action?: MessageAction;
 }

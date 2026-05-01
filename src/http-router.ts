@@ -274,6 +274,7 @@ export class HttpRouter {
         const name = (data.name as string) || this.generateNodeName(adapter, cwd);
         const channelId = data.channelId as string | undefined;
         const standalone = data.standalone as boolean | undefined;
+        const from = typeof data.from === "string" ? data.from : undefined;
         if (data.model !== undefined && typeof data.model !== "string") {
           throw new Error("model must be a string");
         }
@@ -284,6 +285,20 @@ export class HttpRouter {
         // Auto-join channel if requested and not standalone
         if (channelId && !standalone) {
           this.cm.addNodeToChannel(channelId, nodeId, name);
+        }
+
+        if (from) {
+          const caller = this.cm.nodePool.getByName(from);
+          if (caller) {
+            this.cm.notifyNodeSpawned({
+              nodeId,
+              name,
+              adapter,
+              spawnedByNodeId: caller.id,
+              spawnedByNodeName: caller.name,
+              channelId: channelId ?? null,
+            });
+          }
         }
 
         return { nodeId, name, status: "connecting" };

@@ -293,18 +293,21 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
       const useAdapter = adapter || DEFAULT_AI_ADAPTER;
       const effectiveCwd = resolve(cwd || process.cwd());
+      const targetChannel = standalone ? undefined : (channel_id || currentChannelId);
       log(`nerve_spawn adapter=${useAdapter} name=${agentName || "auto"} cwd=${effectiveCwd} model=${model || ""} standalone=${!!standalone}`);
       const result = await post("/node/spawn", {
         adapter: useAdapter,
         name: agentName,
         cwd: effectiveCwd,
         model,
+        from: NERVE_NODE_NAME,
+        channelId: targetChannel,
+        standalone,
       });
       const spawnedName = String(result.name || agentName || "agent");
       const spawnedId = String(result.nodeId || "?");
 
       // Auto-join spawned agent to explicit channel_id or caller's current channel (unless standalone)
-      const targetChannel = standalone ? undefined : (channel_id || currentChannelId);
       let joinNote = "";
       let joined = false;
       if (targetChannel && spawnedId !== "?") {
