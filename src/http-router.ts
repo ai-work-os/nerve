@@ -155,6 +155,18 @@ export class HttpRouter {
         return { nodeId, name, channelId: channel.id };
       }
 
+      case "/peer/remote-prompt": {
+        const remoteNode = data.remoteNode as string;
+        const content = data.content as string;
+        const localChannelId = data.localChannelId as string;
+        if (!remoteNode || !content || !localChannelId) throw new Error("remoteNode, content, localChannelId required");
+        const node = this.cm.nodePool.getByName(remoteNode);
+        if (!node) throw new Error(`node not found: ${remoteNode}`);
+        const result = await this.cm.nodePool.promptNode(node.id, content);
+        if (result.error) throw new Error(result.error);
+        return { ok: true };
+      }
+
       // --- Channel management ---
       case "/channel/create": {
         const cwd = resolve((data.cwd as string) || process.cwd());

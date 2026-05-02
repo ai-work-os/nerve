@@ -11,7 +11,8 @@ import type { WebSocket } from "ws";
 import { EventLogger } from "./event-logger.js";
 import { PeerClient } from "./peer-client.js";
 import { loadPeerConfig } from "./peer-config.js";
-import { RemoteRegistry } from "./remote-registry.js";
+import { isRemoteMemberId } from "./channel-member.js";
+import { RemoteRegistry, type RemoteMemberRecord } from "./remote-registry.js";
 import * as log from "./logger.js";
 
 /**
@@ -373,6 +374,14 @@ export class ChannelManager {
       log.info(`route: ${msg.from} → [${targets.map(t => t.nodeName).join(", ")}] in channel ${channelId}`);
     }
     for (const target of targets) {
+      if (isRemoteMemberId(target.nodeId)) {
+        const remote = this.remoteRegistry.getRemoteMember(target.nodeName);
+        if (remote) {
+          void this.dispatchRemote(remote, msg.content, msg.id, msg.from);
+        }
+        continue;
+      }
+
       const node = this.nodePool.get(target.nodeId);
       if (!node) continue;
 
@@ -430,6 +439,41 @@ export class ChannelManager {
     }
 
     return msg;
+  }
+
+  private async dispatchRemote(remote: RemoteMemberRecord, content: string, messageId: string, from: string): Promise<void> {
+    try {
+      const config = loadPeerConfig();
+      const peer = config.peers[remote.peer];
+      if (!peer) throw new Error(`peer not configured: ${remote.peer}`);
+
+      const client = new PeerClient(peer);
+      await client.post("/peer/remote-prompt", {
+        remoteNode: remote.remoteNode,
+        content,
+        localChannelId: remote.remoteChannelId,
+        originPeer: config.name || "local",
+        originChannelId: remote.localChannelId,
+        messageId,
+        from,
+      });
+      this.eventLogger.log("remote.mention", {
+        peer: remote.peer,
+        remoteNode: remote.remoteNode,
+        localChannelId: remote.localChannelId,
+        messageId,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage(remote.localChannelId, "系统", `@${from} [error] ${remote.peer} ${message.slice(0, 80)}`);
+      this.eventLogger.log("remote.mention.error", {
+        peer: remote.peer,
+        remoteNode: remote.remoteNode,
+        localChannelId: remote.localChannelId,
+        messageId,
+        error: message,
+      });
+    }
   }
 
   /** Post from a Process Node (via MCP tool / HTTP endpoint) */
