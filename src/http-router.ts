@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { ChannelManager } from "./channel-manager.js";
 import type { SceneManager } from "./scene-manager.js";
+import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
 import * as log from "./logger.js";
 
 /**
@@ -98,6 +99,16 @@ export class HttpRouter {
       return;
     }
 
+    if (req.url?.startsWith("/peer/")) {
+      const config = loadPeerConfig();
+      const remoteAddress = req.socket.remoteAddress;
+      if (!isLocalRequest(remoteAddress) && !hasValidToken(req.headers, config.token)) {
+        res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "invalid peer token" }));
+        log.warn(`peer auth failed: url=${req.url} remote=${remoteAddress || ""}`);
+        return;
+      }
+    }
+
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", async () => {
@@ -116,6 +127,10 @@ export class HttpRouter {
     const from = data.from as string;
 
     switch (url) {
+      case "/peer/health": {
+        return { ok: true, port: this.port };
+      }
+
       // --- Channel management ---
       case "/channel/create": {
         const cwd = resolve((data.cwd as string) || process.cwd());
