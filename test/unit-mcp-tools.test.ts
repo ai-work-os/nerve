@@ -103,6 +103,15 @@ async function run() {
     const toolNames = tools.map((t: any) => t.name);
     assert(toolNames.includes("nerve_command"), "nerve_command listed");
     assert(toolNames.includes("nerve_capabilities"), "nerve_capabilities listed");
+    assert(toolNames.includes("nerve_remote_spawn"), "nerve_remote_spawn listed");
+    const remoteSpawn = tools.find((t: any) => t.name === "nerve_remote_spawn");
+    const remoteProps = remoteSpawn?.inputSchema?.properties || {};
+    assert(!!remoteProps.peer, "nerve_remote_spawn has peer field");
+    assert(!!remoteProps.adapter, "nerve_remote_spawn has adapter field");
+    assert(!!remoteProps.name, "nerve_remote_spawn has name field");
+    assert(!!remoteProps.channel_id, "nerve_remote_spawn has channel_id field");
+    assert(!!remoteProps.cwd, "nerve_remote_spawn has cwd field");
+    assert(!!remoteProps.model, "nerve_remote_spawn has model field");
 
     // Test nerve_capabilities
     const capResult = await mcp.callTool("nerve_capabilities");
