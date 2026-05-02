@@ -9,6 +9,9 @@ import { BlobStore } from "./blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "./protocol.js";
 import type { WebSocket } from "ws";
 import { EventLogger } from "./event-logger.js";
+import { PeerClient } from "./peer-client.js";
+import { loadPeerConfig } from "./peer-config.js";
+import { RemoteRegistry } from "./remote-registry.js";
 import * as log from "./logger.js";
 
 /**
@@ -51,6 +54,7 @@ export class ChannelManager {
   readonly blobStore: BlobStore;
   readonly channelStore: ChannelStore;
   readonly eventLogger: EventLogger;
+  readonly remoteRegistry = new RemoteRegistry();
   readonly dataDir: string;
   private port: number;
 
@@ -162,6 +166,43 @@ export class ChannelManager {
 
   async spawnNode(adapter: string, name: string, cwd: string, options: SpawnOptions = {}): Promise<NerveNode> {
     return this.nodePool.spawnProcess(adapter, name, cwd, this.port, options);
+  }
+
+  async spawnRemoteNode(input: { peer: string; adapter: string; name: string; cwd: string; channelId: string; model?: string }): Promise<{ nodeId: string; name: string }> {
+    const config = loadPeerConfig();
+    const peer = config.peers[input.peer];
+    if (!peer) throw new Error(`peer not configured: ${input.peer}`);
+
+    const client = new PeerClient(peer);
+    const result = await client.post("/peer/remote-spawn", {
+      adapter: input.adapter,
+      name: input.name,
+      cwd: input.cwd,
+      originPeer: config.name || "local",
+      originChannelId: input.channelId,
+      model: input.model,
+    }) as { nodeId: string; name: string; channelId: string };
+
+    const proxy = this.remoteRegistry.registerRemoteMember({
+      localChannelId: input.channelId,
+      remoteChannelId: result.channelId,
+      peer: input.peer,
+      remoteNode: result.name,
+    });
+    const ch = this.channelStore.get(input.channelId);
+    if (!ch) throw new Error(`channel not found: ${input.channelId}`);
+
+    this.store.insertNode(proxy.localId, proxy.localName, "remote", "remote", ["remote"], input.cwd);
+    this.store.updateNodeStatus(proxy.localId, "idle");
+    ch.addNode(proxy.localId, proxy.localName, this.store);
+    this.broadcastToChannel(input.channelId, {
+      jsonrpc: "2.0",
+      method: "channel.nodeJoined",
+      params: { channelId: input.channelId, nodeId: proxy.localId, nodeName: proxy.localName },
+    });
+    this.onMemberEvent?.("channel.nodeJoined", input.channelId, proxy.localId, proxy.localName);
+    this.eventLogger.log("remote.spawn", { peer: input.peer, remoteNode: result.name, localChannelId: input.channelId });
+    return { nodeId: proxy.localId, name: proxy.localName };
   }
 
   /** Spawn node and return ID immediately (handshake runs in background) */

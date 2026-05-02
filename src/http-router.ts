@@ -131,6 +131,30 @@ export class HttpRouter {
         return { ok: true, port: this.port };
       }
 
+      case "/remote/spawn": {
+        const peer = data.peer as string;
+        const adapter = data.adapter as string;
+        const name = data.name as string;
+        const channelId = data.channelId as string;
+        const cwd = resolve((data.cwd as string) || process.cwd());
+        if (!peer || !adapter || !name || !channelId) throw new Error("peer, adapter, name, channelId required");
+        return await this.cm.spawnRemoteNode({ peer, adapter, name, cwd, channelId, model: data.model as string | undefined });
+      }
+
+      case "/peer/remote-spawn": {
+        const adapter = data.adapter as string;
+        const name = data.name as string;
+        const cwd = resolve((data.cwd as string) || process.cwd());
+        const originPeer = data.originPeer as string;
+        const originChannelId = data.originChannelId as string;
+        if (!adapter || !name || !originPeer || !originChannelId) throw new Error("adapter, name, originPeer, originChannelId required");
+        const channel = this.cm.createChannel(cwd, `remote:${originPeer}:${originChannelId}`);
+        const nodeId = this.cm.spawnNodeSync(adapter, name, cwd, { model: data.model as string | undefined });
+        this.cm.addNodeToChannel(channel.id, nodeId, name);
+        this.cm.remoteRegistry.registerRemoteOrigin({ localChannelId: channel.id, originPeer, originChannelId, localNode: name });
+        return { nodeId, name, channelId: channel.id };
+      }
+
       // --- Channel management ---
       case "/channel/create": {
         const cwd = resolve((data.cwd as string) || process.cwd());
