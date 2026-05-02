@@ -12,7 +12,7 @@ import { EventLogger } from "./event-logger.js";
 import { PeerClient } from "./peer-client.js";
 import { loadPeerConfig } from "./peer-config.js";
 import { isRemoteMemberId } from "./channel-member.js";
-import { RemoteRegistry, type RemoteMemberRecord } from "./remote-registry.js";
+import { RemoteRegistry, type RemoteMemberRecord, type RemoteOriginRecord } from "./remote-registry.js";
 import * as log from "./logger.js";
 
 /**
@@ -438,7 +438,44 @@ export class ChannelManager {
       }
     }
 
+    const origin = this.remoteRegistry.getRemoteOrigin(channelId, from);
+    if (origin) {
+      void this.bridgeRemoteReply(origin, content, msg.id);
+    }
+
     return msg;
+  }
+
+  private async bridgeRemoteReply(origin: RemoteOriginRecord, content: string, messageId: string): Promise<void> {
+    try {
+      const config = loadPeerConfig();
+      const peer = config.peers[origin.originPeer];
+      if (!peer) throw new Error(`peer not configured: ${origin.originPeer}`);
+
+      const client = new PeerClient(peer);
+      await client.post("/peer/remote-reply", {
+        originChannelId: origin.originChannelId,
+        fromPeer: config.name || "local",
+        fromNode: origin.localNode,
+        content,
+        messageId,
+      });
+      this.eventLogger.log("remote.reply", {
+        peer: origin.originPeer,
+        localChannelId: origin.localChannelId,
+        originChannelId: origin.originChannelId,
+        messageId,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.eventLogger.log("remote.reply.error", {
+        peer: origin.originPeer,
+        localChannelId: origin.localChannelId,
+        originChannelId: origin.originChannelId,
+        messageId,
+        error: message,
+      });
+    }
   }
 
   private async dispatchRemote(remote: RemoteMemberRecord, content: string, messageId: string, from: string): Promise<void> {

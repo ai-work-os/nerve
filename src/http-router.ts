@@ -167,6 +167,17 @@ export class HttpRouter {
         return { ok: true };
       }
 
+      case "/peer/remote-reply": {
+        const originChannelId = data.originChannelId as string;
+        const fromPeer = data.fromPeer as string;
+        const fromNode = data.fromNode as string;
+        const content = data.content as string;
+        if (!originChannelId || !fromPeer || !fromNode || !content) throw new Error("originChannelId, fromPeer, fromNode, content required");
+        const msg = this.cm.postMessage(originChannelId, `${fromPeer}:${fromNode}`, content);
+        if (!msg) throw new Error(`channel not found: ${originChannelId}`);
+        return { ok: true, message: msg };
+      }
+
       // --- Channel management ---
       case "/channel/create": {
         const cwd = resolve((data.cwd as string) || process.cwd());
