@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChannelManager } from "../src/channel-manager.js";
@@ -65,6 +65,17 @@ async function main() {
     });
 
     assert(ready, "startup scene creates work channel and joins work-agent");
+
+    const dutyScene = JSON.parse(readFileSync(join(process.cwd(), "scenes", "duty.json"), "utf8"));
+    const commands = (dutyScene.on_ready || []).map((cmd: { to?: string; command?: string }) => `${cmd.to || ""}:${cmd.command || ""}`);
+    assert(
+      commands.includes("duty-monitor:subscribe task_fired:daily-audit name=duty-agent"),
+      "duty scene subscribes duty-agent to daily-audit task events",
+    );
+    assert(
+      commands.includes("duty-monitor:subscribe health_alert name=duty-agent"),
+      "duty scene subscribes duty-agent to health alerts",
+    );
   } finally {
     await server.shutdown();
     rmSync(dataDir, { recursive: true, force: true });
