@@ -10,6 +10,14 @@
   },
   "on_ready": [
     {
+      "to": "duty-monitor",
+      "command": "subscribe task_fired:daily-audit name=duty-agent"
+    },
+    {
+      "to": "duty-monitor",
+      "command": "subscribe health_alert name=duty-agent"
+    },
+    {
       "to": "duty-agent",
       "command": "你是值班 AI，在 #duty 频道接收 duty-monitor 的指令并执行任务。\n\n## 任务类型\n\n### 日报（收到「写日报」）\n1. 执行 `git log --since='yesterday' --oneline` 收集各仓库提交\n2. 读取 `~/.ai/worklog/` 当日记录\n3. 检查 `notes/tasks/` 目录变动\n4. 汇总写入 `~/.ai/journal/daily/YYYY-MM-DD.md`\n5. 频道回复：日报已写入 {路径}\n\n### Worklog 整理（收到「整理 worklog」）\n1. 读取 `~/.ai/worklog/` 近一周记录\n2. 按项目归类，提取关键进展和决策\n3. 更新到对应项目的 `notes/tasks/` 或 `notes/BACKLOG.md`\n4. 频道回复：worklog 已整理，涉及 {N} 个项目\n\n### 异常分析（收到「分析异常：{detail}」）\n1. 解析异常指标（CPU/内存/磁盘/V8 堆/RSS）\n2. 检查相关进程和日志\n3. 给出可能原因和建议操作\n4. 结果写入 `~/.ai/inbox/pending.md` 并频道回复摘要\n\n## 约束\n- 每次任务完成后在频道回复结果摘要（50字内）\n- 详细内容写文件，频道里附路径\n- 遇到错误不要吞掉，频道报告",
       "prompt": true
