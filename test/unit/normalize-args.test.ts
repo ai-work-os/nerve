@@ -52,6 +52,16 @@ console.log("\n▸ normalizeArgs — positional → named (single arg)");
   assertEq(normalizeArgs({ "0": "写日报" }, argDef), { name: "写日报" }, "single positional → named");
 }
 
+console.log("\n▸ normalizeArgs — positional args preserve extra named args");
+{
+  const argDef = { event: "event type", filter: "optional filter" };
+  assertEq(
+    normalizeArgs({ "0": "task_fired:daily-audit", name: "duty-agent" }, argDef),
+    { name: "duty-agent", event: "task_fired:daily-audit" },
+    "extra named subscriber preserved",
+  );
+}
+
 console.log("\n▸ normalizeArgs — positional → named (two args)");
 {
   const argDef = { key: "config key", value: "config value" };

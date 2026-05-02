@@ -36,6 +36,9 @@ export function normalizeArgs(rawArgs: Record<string, string>, argDef?: Record<s
   if (positional.length === 0) return rawArgs;
 
   const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(rawArgs)) {
+    if (!/^\d+$/.test(key)) result[key] = value;
+  }
   for (let i = 0; i < argNames.length && i < positional.length; i++) {
     if (i === argNames.length - 1) {
       result[argNames[i]] = positional.slice(i).join(" ");
