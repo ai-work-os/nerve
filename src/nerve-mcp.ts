@@ -134,7 +134,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           peer: { type: "string", description: "Configured peer name, e.g. home" },
           adapter: { type: "string", description: "Adapter name on the peer", default: DEFAULT_AI_ADAPTER },
           name: { type: "string", description: "Remote node name" },
-          cwd: { type: "string", description: "Working directory on the peer. Defaults to this MCP process cwd if omitted." },
+          cwd: { type: "string", description: "Working directory on the peer. If omitted, the peer uses its own service cwd." },
           model: { type: "string", description: "Optional model override for the remote node" },
           channel_id: { type: "string", description: "Local channel id to add the remote proxy into. Defaults to current channel if omitted." },
         },
@@ -375,13 +375,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (!targetChannel) return fail("channel_id is required when current channel is unknown");
     try {
       const useAdapter = adapter || DEFAULT_AI_ADAPTER;
-      const effectiveCwd = resolve(cwd || process.cwd());
       log(`nerve_remote_spawn peer=${peer} adapter=${useAdapter} name=${agentName} channel=${targetChannel}`);
       const result = await post("/remote/spawn", {
         peer,
         adapter: useAdapter,
         name: agentName,
-        cwd: effectiveCwd,
+        ...(cwd ? { cwd: resolve(cwd) } : {}),
         model,
         channelId: targetChannel,
       });

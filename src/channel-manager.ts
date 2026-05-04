@@ -169,7 +169,7 @@ export class ChannelManager {
     return this.nodePool.spawnProcess(adapter, name, cwd, this.port, options);
   }
 
-  async spawnRemoteNode(input: { peer: string; adapter: string; name: string; cwd: string; channelId: string; model?: string }): Promise<{ nodeId: string; name: string }> {
+  async spawnRemoteNode(input: { peer: string; adapter: string; name: string; cwd?: string; channelId: string; model?: string }): Promise<{ nodeId: string; name: string }> {
     const config = loadPeerConfig();
     const peer = config.peers[input.peer];
     if (!peer) throw new Error(`peer not configured: ${input.peer}`);
@@ -178,7 +178,7 @@ export class ChannelManager {
     const result = await client.post("/peer/remote-spawn", {
       adapter: input.adapter,
       name: input.name,
-      cwd: input.cwd,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
       originPeer: config.name || "local",
       originChannelId: input.channelId,
       model: input.model,
