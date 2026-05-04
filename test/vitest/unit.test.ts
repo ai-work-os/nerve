@@ -18,16 +18,25 @@ describe("EventLogger", () => {
     if (existsSync(badPath)) rmSync(badPath, { recursive: true, force: true });
     mkdirSync(badPath, { recursive: true });
 
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: any, ...args: any[]) => {
+      if (String(chunk).includes("event log disabled")) return true;
+      return originalWrite.call(process.stdout, chunk, ...args);
+    }) as typeof process.stdout.write;
+
     let logger: EventLogger | null = null;
-    assertNoThrow(() => {
-      logger = new EventLogger(badPath);
-    }, "event logger constructor does not throw on invalid path");
+    try {
+      assertNoThrow(() => {
+        logger = new EventLogger(badPath);
+      }, "event logger constructor does not throw on invalid path");
 
-    assertNoThrow(() => {
-      logger?.log("channel.created", { channelId: "ch-test" });
-    }, "event logger log() does not throw on invalid path");
-
-    rmSync(badPath, { recursive: true, force: true });
+      assertNoThrow(() => {
+        logger?.log("channel.created", { channelId: "ch-test" });
+      }, "event logger log() does not throw on invalid path");
+    } finally {
+      process.stdout.write = originalWrite;
+      rmSync(badPath, { recursive: true, force: true });
+    }
   });
 });
 

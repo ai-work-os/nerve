@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { ChannelManager } from "./channel-manager.js";
 import type { SceneManager } from "./scene-manager.js";
+import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
 import * as log from "./logger.js";
 
 /**
@@ -98,6 +99,16 @@ export class HttpRouter {
       return;
     }
 
+    if (req.url?.startsWith("/peer/")) {
+      const config = loadPeerConfig();
+      const remoteAddress = req.socket.remoteAddress;
+      if (!isLocalRequest(remoteAddress) && !hasValidToken(req.headers, config.token)) {
+        res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "invalid peer token" }));
+        log.warn(`peer auth failed: url=${req.url} remote=${remoteAddress || ""}`);
+        return;
+      }
+    }
+
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
     req.on("end", async () => {
@@ -116,6 +127,57 @@ export class HttpRouter {
     const from = data.from as string;
 
     switch (url) {
+      case "/peer/health": {
+        return { ok: true, port: this.port };
+      }
+
+      case "/remote/spawn": {
+        const peer = data.peer as string;
+        const adapter = data.adapter as string;
+        const name = data.name as string;
+        const channelId = data.channelId as string;
+        const cwd = resolve((data.cwd as string) || process.cwd());
+        if (!peer || !adapter || !name || !channelId) throw new Error("peer, adapter, name, channelId required");
+        return await this.cm.spawnRemoteNode({ peer, adapter, name, cwd, channelId, model: data.model as string | undefined });
+      }
+
+      case "/peer/remote-spawn": {
+        const adapter = data.adapter as string;
+        const name = data.name as string;
+        const cwd = resolve((data.cwd as string) || process.cwd());
+        const originPeer = data.originPeer as string;
+        const originChannelId = data.originChannelId as string;
+        if (!adapter || !name || !originPeer || !originChannelId) throw new Error("adapter, name, originPeer, originChannelId required");
+        const channel = this.cm.createChannel(cwd, `remote:${originPeer}:${originChannelId}`);
+        const nodeId = this.cm.spawnNodeSync(adapter, name, cwd, { model: data.model as string | undefined });
+        this.cm.addNodeToChannel(channel.id, nodeId, name);
+        this.cm.remoteRegistry.registerRemoteOrigin({ localChannelId: channel.id, originPeer, originChannelId, localNode: name });
+        return { nodeId, name, channelId: channel.id };
+      }
+
+      case "/peer/remote-prompt": {
+        const remoteNode = data.remoteNode as string;
+        const content = data.content as string;
+        const localChannelId = data.localChannelId as string;
+        if (!remoteNode || !content || !localChannelId) throw new Error("remoteNode, content, localChannelId required");
+        const node = this.cm.nodePool.getByName(remoteNode);
+        if (!node) throw new Error(`node not found: ${remoteNode}`);
+        const result = await this.cm.nodePool.promptNode(node.id, content);
+        if (result.error) throw new Error(result.error);
+        return { ok: true };
+      }
+
+      case "/peer/remote-reply": {
+        const originChannelId = data.originChannelId as string;
+        const fromPeer = data.fromPeer as string;
+        const fromNode = data.fromNode as string;
+        const content = data.content as string;
+        if (!originChannelId || !fromPeer || !fromNode || !content) throw new Error("originChannelId, fromPeer, fromNode, content required");
+        const msg = this.cm.postMessage(originChannelId, `${fromPeer}:${fromNode}`, content);
+        if (!msg) throw new Error(`channel not found: ${originChannelId}`);
+        return { ok: true, message: msg };
+      }
+
       // --- Channel management ---
       case "/channel/create": {
         const cwd = resolve((data.cwd as string) || process.cwd());
