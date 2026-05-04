@@ -88,7 +88,14 @@ async function main(): Promise<void> {
     return history.messages.some((m: any) => m.from === "home:bob" && m.content.includes("mock回复"));
   }, "remote reply bridged to Mac channel");
 
-  console.log("1 passed, 0 failed");
+  await post(MAC_PORT, "/channel/post", { channelId: ch.channelId, from: "renjinxi", content: "@home:bob dm-only" });
+
+  await waitFor(async () => {
+    const history = await post(MAC_PORT, "/channel/history", { channelId: ch.channelId, limit: 30 });
+    return history.messages.some((m: any) => m.from === "home:bob" && m.content.includes("dm-only reply"));
+  }, "remote ACP DM reply bridged to Mac channel");
+
+  console.log("2 passed, 0 failed");
 }
 
 main().catch(err => {
