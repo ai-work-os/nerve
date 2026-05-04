@@ -513,6 +513,28 @@ export class ChannelManager {
     }
   }
 
+  async promptRemoteOriginNode(localChannelId: string, remoteNode: string, content: string): Promise<{ ok: true }> {
+    const node = this.nodePool.getByName(remoteNode);
+    if (!node) throw new Error(`node not found: ${remoteNode}`);
+
+    const beforeIds = new Set(this.store.getMessages(localChannelId, 100).map(m => m.id));
+    const result = await this.nodePool.promptNode(node.id, content);
+    if (result.error) throw new Error(result.error);
+
+    const postedDuringPrompt = this.store
+      .getMessages(localChannelId, 100)
+      .some(m => m.from === remoteNode && !beforeIds.has(m.id));
+    const dmText = result.text?.trim();
+    if (!postedDuringPrompt && dmText) {
+      const origin = this.remoteRegistry.getRemoteOrigin(localChannelId, remoteNode);
+      if (origin) {
+        await this.bridgeRemoteReply(origin, dmText, `dm:${Date.now()}`);
+      }
+    }
+
+    return { ok: true };
+  }
+
   /** Post from a Process Node (via MCP tool / HTTP endpoint) */
   postFromProcess(nodeName: string, content: string): MessageInfo {
     const node = this.nodePool.getByName(nodeName);
