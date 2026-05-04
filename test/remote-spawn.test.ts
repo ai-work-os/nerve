@@ -34,9 +34,9 @@ async function waitHealth(port: number): Promise<void> {
   throw new Error(`server ${port} did not start`);
 }
 
-function startServer(port: number, dataDir: string, peerFile: string): ChildProcess {
-  return spawn("npx", ["tsx", "src/index.ts", "--port", String(port), "--data", dataDir], {
-    cwd: ROOT,
+function startServer(port: number, dataDir: string, peerFile: string, cwd = ROOT): ChildProcess {
+  return spawn("npx", ["tsx", join(ROOT, "src/index.ts"), "--port", String(port), "--data", dataDir], {
+    cwd,
     env: { ...process.env, NERVE_PEERS_FILE: peerFile },
     stdio: "ignore",
   });
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     peers: { mac: { url: `http://127.0.0.1:${MAC_PORT}`, token: "mac-token" } },
   }));
 
-  macProc = startServer(MAC_PORT, macData, macPeers);
+  macProc = startServer(MAC_PORT, macData, macPeers, macData);
   homeProc = startServer(HOME_PORT, homeData, homePeers);
   await Promise.all([waitHealth(MAC_PORT), waitHealth(HOME_PORT)]);
 
@@ -77,7 +77,20 @@ async function main(): Promise<void> {
   const homeNodes = await post(HOME_PORT, "/node/list", {});
   assert(homeNodes.nodes.some((n: any) => n.name === "bob"), "home spawned bob");
 
-  console.log("3 passed, 0 failed");
+  const defaultCwdCh = await post(MAC_PORT, "/channel/create", { name: "mac-default-cwd", cwd: ROOT });
+  await post(MAC_PORT, "/remote/spawn", {
+    peer: "home",
+    adapter: "mock",
+    name: "bob-default-cwd",
+    channelId: defaultCwdCh.channelId,
+  });
+
+  const homeChannels = await post(HOME_PORT, "/channel/list", {});
+  const remoteChannel = homeChannels.channels.find((c: any) => c.name === `remote:mac:${defaultCwdCh.channelId}`);
+  assert(remoteChannel, "home created remote-origin channel");
+  assert.equal(remoteChannel.cwd, ROOT, "home uses its own cwd when remote spawn cwd is omitted");
+
+  console.log("4 passed, 0 failed");
 }
 
 main().catch(err => {

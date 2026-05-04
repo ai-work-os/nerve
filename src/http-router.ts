@@ -136,7 +136,7 @@ export class HttpRouter {
         const adapter = data.adapter as string;
         const name = data.name as string;
         const channelId = data.channelId as string;
-        const cwd = resolve((data.cwd as string) || process.cwd());
+        const cwd = typeof data.cwd === "string" && data.cwd ? resolve(data.cwd) : undefined;
         if (!peer || !adapter || !name || !channelId) throw new Error("peer, adapter, name, channelId required");
         return await this.cm.spawnRemoteNode({ peer, adapter, name, cwd, channelId, model: data.model as string | undefined });
       }
