@@ -11,22 +11,37 @@
 
 ## 模型
 
-启动时按以下顺序查找 SenseVoice：
+需要两个本地模型文件：sherpa-onnx 官方 SenseVoice + silero-vad。
+
+### SenseVoice
+
+启动时按以下顺序查找包含 `model.onnx` 与 `tokens.txt`（或 `tokens.json`）的目录：
 
 1. `$AI_LIFE_LOG_MODEL_DIR`
-2. `~/Library/Application Support/Shandianshuo/models/sensevoice-small/`
-3. `~/.nerve/plugins/ai-life-log/models/sensevoice-small/`
+2. `~/Library/Application Support/Shandianshuo/models/sensevoice-small/`（闪电说预置目录）
+3. `~/.nerve/plugins/ai-life-log/models/sensevoice-small/`（推荐：sherpa-onnx 官方模型）
 
-silero_vad.onnx 默认从 `~/.nerve/plugins/ai-life-log/models/silero_vad.onnx`
-读取，可用 `$AI_LIFE_LOG_VAD_MODEL` 覆盖。
+注意：闪电说 0.6.x 自带的 `model.onnx` 元数据不完整（缺 `vocab_size`），
+不能直接被 sherpa-onnx 1.13.0 加载。**推荐下载 sherpa-onnx 官方 int8 版本**：
 
-下载 silero-vad：
+```bash
+mkdir -p ~/.nerve/plugins/ai-life-log/models/sensevoice-small
+cd ~/.nerve/plugins/ai-life-log/models/sensevoice-small
+curl -LO https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+tar xjf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2 --strip-components=1
+rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
 ```
+
+### silero-vad
+
+```bash
 curl -L -o ~/.nerve/plugins/ai-life-log/models/silero_vad.onnx \
   https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 ```
 
-模型缺失时节点不崩溃，进入 `error: model not found` 的 idle 状态。
+可用 `$AI_LIFE_LOG_VAD_MODEL` 覆盖路径。
+
+模型缺失或格式不符时节点不崩溃，进入 `error: ...` 的 idle 状态。
 
 ## 平台
 
