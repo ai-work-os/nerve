@@ -70,6 +70,15 @@ describe("DailyFileWriter", () => {
     expect(s.chars).toBe(4); // "hi"(2) + "世界"(2)
     expect(s.file.endsWith("2026-05-06.txt")).toBe(true);
   });
+
+  it("ignores empty or whitespace-only text without creating a file", () => {
+    const w = new DailyFileWriter(dir);
+    const ts = new Date("2026-05-06T10:00:00+08:00");
+    w.append("", ts);
+    w.append("   ", ts);
+    w.append("\n\t  ", ts);
+    expect(readdirSync(dir).length).toBe(0);
+  });
 });
 
 describe("int16ToFloat32", () => {

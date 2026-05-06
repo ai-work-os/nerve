@@ -55,6 +55,7 @@ class AiLifeLogPlugin extends PluginBase {
   private running = false;
   private startTime = Date.now();
   private errorReason: string | null = null;
+  private rssTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({
@@ -123,6 +124,12 @@ class AiLifeLogPlugin extends PluginBase {
     });
 
     await this.startCapture();
+
+    // Log RSS every 10 min for long-run memory observability
+    this.rssTimer = setInterval(() => {
+      const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
+      this.log("info", `rss=${rss}MB`);
+    }, 600_000);
   }
 
   protected onDisconnect(): void {
@@ -171,6 +178,7 @@ class AiLifeLogPlugin extends PluginBase {
     this.capture.on("exit", (code: number | null) => {
       this.log("warn", `capture exited code=${code}`);
       this.running = false;
+      this.errorReason = `capture exited (code=${code})`;
       void this.setActivity("error: capture exited");
     });
 
@@ -189,6 +197,7 @@ class AiLifeLogPlugin extends PluginBase {
   private async stopCapture(): Promise<void> {
     try { this.capture?.stop(); } catch (err: any) { this.log("warn", `capture.stop: ${err.message}`); }
     try { this.pipeline?.stop(); } catch (err: any) { this.log("warn", `pipeline.stop: ${err.message}`); }
+    if (this.rssTimer) { clearInterval(this.rssTimer); this.rssTimer = null; }
     this.capture = null;
     this.running = false;
   }
