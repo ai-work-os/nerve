@@ -9,8 +9,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { rmSync, existsSync } from "node:fs";
-import http from "node:http";
+import { rmSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import WebSocket from "ws";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -50,7 +49,14 @@ async function sleep(ms: number): Promise<void> {
 // ============================================================
 
 // Import from real production module (green phase)
-import { CronScheduler, type CronJob, parseSchedule, TaskStore, type TaskDef } from "../src/plugins/duty-monitor/index.js";
+import {
+  CronScheduler,
+  parseSchedule,
+  TaskStore,
+  extractReferencedPaths,
+  validateReferencedPaths,
+  normalizeLegacyAiWorkspacePaths,
+} from "../src/plugins/duty-monitor/index.js";
 
 // --- CronScheduler unit tests ---
 
@@ -128,6 +134,23 @@ function testTickLastRunDedup() {
   assertEq(count, 1, "only fires once per minute");
 }
 
+function testTickFixedTimeFiresAgainNextDay() {
+  console.log("\n▸ CronScheduler: fixed-time jobs fire again on the next day");
+  const scheduler = new CronScheduler();
+  let count = 0;
+  scheduler.addJob({
+    name: "daily-audit",
+    schedule: { hour: 1, minute: 0 },
+    action: () => { count++; },
+  });
+
+  scheduler.tick(new Date(2026, 4, 5, 1, 0, 0));
+  scheduler.tick(new Date(2026, 4, 5, 1, 0, 30));
+  scheduler.tick(new Date(2026, 4, 6, 1, 0, 0));
+
+  assertEq(count, 2, "fires once per matching day");
+}
+
 function testTickDayOfWeek() {
   console.log("\n▸ CronScheduler: dayOfWeek matching");
   const scheduler = new CronScheduler();
@@ -156,6 +179,23 @@ function testTickDayOfWeek() {
   assert(tuesday.getDay() === 2, "sanity: date is Tuesday");
   scheduler2.tick(tuesday);
   assert(!triggered, "does not fire on Tuesday");
+}
+
+function testTickWeeklyFiresAgainNextWeek() {
+  console.log("\n▸ CronScheduler: weekly jobs fire again on the next matching week");
+  const scheduler = new CronScheduler();
+  let count = 0;
+  scheduler.addJob({
+    name: "weekly-worklog",
+    schedule: { hour: 8, minute: 0, dayOfWeek: 1 },
+    action: () => { count++; },
+  });
+
+  scheduler.tick(new Date(2026, 3, 6, 8, 0, 0));
+  scheduler.tick(new Date(2026, 3, 6, 8, 0, 30));
+  scheduler.tick(new Date(2026, 3, 13, 8, 0, 0));
+
+  assertEq(count, 2, "fires once per matching Monday");
 }
 
 function testTickMultipleJobsIndependent() {
@@ -781,6 +821,24 @@ function testTaskStorePersistence() {
   assertEq(tasks[0].schedule, { intervalMinutes: 30 }, "correct schedule after reload");
 }
 
+function testTaskStoreReloadReadsExternalChanges() {
+  console.log("\n▸ TaskStore: reload reads external tasks.json changes");
+  const dir = resolve(TEST_DATA, "task-store-test-reload");
+  const store = new TaskStore(dir);
+  store.add({ name: "before", schedule: { hour: 10, minute: 0 }, message: "@agent before" });
+
+  writeFileSync(resolve(dir, "tasks.json"), JSON.stringify([
+    { name: "after", schedule: { hour: 11, minute: 0 }, message: "@agent after" },
+  ], null, 2));
+
+  const ok = store.reload();
+  const tasks = store.list();
+  assert(ok, "reload returns true");
+  assertEq(tasks.length, 1, "one externally written task");
+  assertEq(tasks[0].name, "after", "task name updated from disk");
+  assertEq(tasks[0].message, "@agent after", "message updated from disk");
+}
+
 function testTaskStoreDuplicateName() {
   console.log("\n▸ TaskStore: adding duplicate name overwrites");
   const store = new TaskStore(resolve(TEST_DATA, "task-store-test-5"));
@@ -800,6 +858,35 @@ function testTaskStoreAutoName() {
   assert(tasks[0].name !== "", "name is not empty");
 }
 
+function testMessagePathValidationFindsMissingTaskFile() {
+  console.log("\n▸ Task message: referenced absolute task files are validated before emit");
+  const missing = resolve(TEST_DATA, "missing-task.md");
+  const message = `读取 ${missing} 并执行`;
+  const paths = extractReferencedPaths(message);
+  const result = validateReferencedPaths(message);
+
+  assertEq(paths, [missing], "absolute .md path extracted");
+  assert(!result.ok, "validation fails");
+  assertEq(result.missing, [missing], "missing file is reported");
+}
+
+function testLegacyAiWorkspacePathNormalization() {
+  console.log("\n▸ Task message: legacy ~/.ai/projects path normalizes to workspace path when present");
+  const legacyRoot = resolve(TEST_DATA, "home/.ai/projects");
+  const workspaceRoot = resolve(TEST_DATA, "home/.ai/workspace/projects");
+  const relative = "ai-work-os/notes/tasks/duty/daily-audit-task.md";
+  const newPath = resolve(workspaceRoot, relative);
+  mkdirSync(dirname(newPath), { recursive: true });
+  writeFileSync(newPath, "# task\n");
+
+  const oldPath = resolve(legacyRoot, relative);
+  const message = `读取 ${oldPath} 并执行`;
+  const normalized = normalizeLegacyAiWorkspacePaths(message);
+
+  assertEq(normalized.changed, true, "message changed");
+  assert(normalized.message.includes(newPath), "message contains workspace path");
+}
+
 // ============================================================
 // MAIN
 // ============================================================
@@ -814,7 +901,9 @@ async function main() {
   testTickNonMatchingTime();
   testTickIntervalMinutes();
   testTickLastRunDedup();
+  testTickFixedTimeFiresAgainNextDay();
   testTickDayOfWeek();
+  testTickWeeklyFiresAgainNextWeek();
   testTickMultipleJobsIndependent();
   testTickIntervalMidnightWrap();
 
@@ -849,8 +938,11 @@ async function main() {
   testTaskStoreRemove();
   testTaskStoreRemoveNonExistent();
   testTaskStorePersistence();
+  testTaskStoreReloadReadsExternalChanges();
   testTaskStoreDuplicateName();
   testTaskStoreAutoName();
+  testMessagePathValidationFindsMissingTaskFile();
+  testLegacyAiWorkspacePathNormalization();
   if (existsSync(TEST_DATA)) rmSync(TEST_DATA, { recursive: true });
 
   // Integration tests (need server)
