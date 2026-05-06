@@ -37,7 +37,7 @@ export interface AsrPipelineConfig {
 }
 
 export interface AsrPipelineFactoryConfig {
-  /** Directory containing model.onnx, tokens.json, config.yaml. */
+  /** Directory containing model.onnx and either tokens.txt (sherpa-onnx) or tokens.json (Shandianshuo). */
   senseVoiceDir: string;
   /** Path to silero_vad.onnx. */
   sileroVadPath: string;
