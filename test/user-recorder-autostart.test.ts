@@ -1,11 +1,11 @@
 #!/usr/bin/env npx tsx
 /**
- * Test: user-recorder auto-start with nerve server
+ * Test: user-recorder does not auto-start with nerve server
  *
  * Verifies:
- * 1. user-recorder appears in node.list after server starts
- * 2. --no-recorder flag prevents auto-start
- * 3. shutdown cleanly stops user-recorder (exit code 0)
+ * 1. user-recorder does not appear in node.list after server starts
+ * 2. --no-recorder flag remains accepted and also does not start it
+ * 3. shutdown exits cleanly without user-recorder
  * 4. cleanupStaleGuardian works for user-recorder (unit test)
  *
  * Run: npx tsx test/user-recorder-autostart.test.ts
@@ -148,7 +148,7 @@ function stopServer(): Promise<number | null> {
 // --- Tests ---
 
 async function test1_autoStart() {
-  console.log("\n▸ Test 1: server 启动后 user-recorder 自动出现在 node.list 中");
+  console.log("\n▸ Test 1: server 启动后 user-recorder 不会自动出现在 node.list 中");
 
   await startServer(["--no-guardian"]);
   // Give user-recorder time to spawn and connect
@@ -162,15 +162,15 @@ async function test1_autoStart() {
   const nodes: any[] = result.nodes || [];
   const recorder = nodes.find((n: any) => n.name === "user-recorder");
 
-  assert(!!recorder, "user-recorder exists in node.list",
-    recorder ? undefined : `nodes: ${nodes.map((n: any) => n.name).join(", ")}`);
+  assert(!recorder, "user-recorder does not auto-start by default",
+    recorder ? `user-recorder found but should not exist` : undefined);
 
   await c.disconnect();
   await stopServer();
 }
 
 async function test2_noRecorderFlag() {
-  console.log("\n▸ Test 2: --no-recorder 标志禁止自动启动");
+  console.log("\n▸ Test 2: --no-recorder 标志保持兼容且不启动");
 
   await startServer(["--no-guardian", "--no-recorder"]);
   await sleep(2000);
@@ -191,7 +191,7 @@ async function test2_noRecorderFlag() {
 }
 
 async function test3_shutdownClean() {
-  console.log("\n▸ Test 3: shutdown 时 user-recorder 被 stop，server 正常退出");
+  console.log("\n▸ Test 3: 没有 user-recorder 时 server shutdown 正常退出");
 
   await startServer(["--no-guardian"]);
   await sleep(3000);
@@ -200,12 +200,11 @@ async function test3_shutdownClean() {
   await c.connect();
   await c.request("node.register", { name: "test-client", capabilities: ["ui"] });
 
-  // Verify user-recorder is running
   const result = await c.request("node.list");
   const nodes: any[] = result.nodes || [];
   const recorder = nodes.find((n: any) => n.name === "user-recorder");
-  assert(!!recorder, "shutdown: user-recorder running before shutdown",
-    recorder ? undefined : `nodes: ${nodes.map((n: any) => n.name).join(", ")}`);
+  assert(!recorder, "shutdown: user-recorder is not running before shutdown",
+    recorder ? `user-recorder found but should not exist` : undefined);
 
   await c.disconnect();
 
