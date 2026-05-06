@@ -7,7 +7,7 @@ import type { MessageInfo } from "./protocol.js";
  */
 export function parseMentions(content: string): string[] {
   const padded = " " + content;
-  const matches = padded.matchAll(/\s@([\w._-]+)/g);
+  const matches = padded.matchAll(/\s@([\w._-]+(?::[\w._-]+)?)/g);
   const names = new Set<string>();
   for (const m of matches) {
     let name = m[1];

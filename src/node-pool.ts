@@ -558,7 +558,7 @@ export class NodePool {
   }
 
   /** Prompt a Process Node */
-  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }, excludeWs?: WebSocket, attachments: PromptAttachment[] = []): Promise<{ stopReason?: string; error?: string }> {
+  async promptNode(nodeId: string, text: string, from?: { nodeId: string; name: string }, excludeWs?: WebSocket, attachments: PromptAttachment[] = []): Promise<{ stopReason?: string; error?: string; text?: string }> {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
     if (!client || !node) {
@@ -626,7 +626,7 @@ export class NodePool {
       });
       log.debug(`dm.response emitted (error): ${node.name}, error=${err.message}`);
       this._setNodeStatus(node, "idle");
-      return { error: err.message };
+      return { error: err.message, text: responseText };
     }
 
     // DM capture: emit dm.response with accumulated text
@@ -666,7 +666,7 @@ export class NodePool {
     this._setNodeStatus(node, "idle");
     log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
 
-    return result;
+    return { ...result, text: responseText };
   }
 
   /** Cancel a running prompt on a Process Node */

@@ -374,6 +374,37 @@ async function cmdNode(sub: string, args: string[]) {
   }
 }
 
+async function cmdRemote(sub: string, args: string[]) {
+  try {
+    switch (sub) {
+      case "spawn": {
+        const peer = args[0];
+        const adapter = args[1];
+        if (!peer || !adapter) die("Usage: nerve remote spawn <peer> <adapter> --name NAME --channel CHANNEL [--cwd DIR] [--model MODEL]");
+        let name: string | undefined;
+        let channelId: string | undefined;
+        let cwd: string | undefined;
+        let model: string | undefined;
+        for (let i = 2; i < args.length; i++) {
+          if (args[i] === "--name" && args[i + 1]) { name = args[i + 1]; i++; }
+          else if (args[i] === "--channel" && args[i + 1]) { channelId = args[i + 1]; i++; }
+          else if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
+          else if (args[i] === "--model" && args[i + 1]) { model = args[i + 1]; i++; }
+        }
+        if (!name || !channelId) die("Usage: nerve remote spawn <peer> <adapter> --name NAME --channel CHANNEL [--cwd DIR] [--model MODEL]");
+        const r = await post("/remote/spawn", { peer, adapter, name, channelId, cwd, model });
+        if (r.error) die(r.error);
+        console.log(r.name);
+        break;
+      }
+      default:
+        die(`Unknown: nerve remote ${sub}\nCommands: spawn`);
+    }
+  } catch (e: any) {
+    die(e.message);
+  }
+}
+
 async function cmdScene(sub: string, args: string[]) {
   try {
     switch (sub) {
@@ -436,6 +467,9 @@ Commands:
   node leave <name> <channelId>          Remove agent from channel
   node stop <ID|name>                    Stop a node
 
+  remote spawn <peer> <adapter> --name N --channel ID
+                                         Spawn an agent on a peer
+
   scene list                             List available scenes
   scene start <name> [--cwd DIR]         Start a scene
   scene stop <name>                      Stop a running scene
@@ -468,6 +502,10 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
   const sub = argv[1];
   if (!sub) die("Usage: nerve node <list|spawn|stop>");
   void cmdNode(sub, argv.slice(2));
+} else if (cmd === "remote" || cmd === "r") {
+  const sub = argv[1];
+  if (!sub) die("Usage: nerve remote <spawn>");
+  void cmdRemote(sub, argv.slice(2));
 } else if (cmd === "post") {
   // Shortcut: nerve post <channelId> <message> [--from X]
   void cmdChannel("post", argv.slice(1));

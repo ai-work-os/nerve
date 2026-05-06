@@ -13,7 +13,7 @@
 
 import * as os from "node:os";
 import { statfs } from "node:fs/promises";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, watch, type FSWatcher } from "node:fs";
 import { resolve } from "node:path";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 
@@ -43,6 +43,7 @@ export interface CronJob {
   schedule: { hour?: number; minute?: number; dayOfWeek?: number; intervalMinutes?: number };
   action: () => void | Promise<void>;
   lastRun?: number;
+  lastRunKey?: string;
 }
 
 export interface HealthAlert {
@@ -111,6 +112,10 @@ export class TaskStore {
     this.load();
   }
 
+  get path(): string {
+    return this.filePath;
+  }
+
   add(task: TaskDef): void {
     if (!task.name) {
       task.name = task.message.replace(/^@\S+\s*/, "").slice(0, 20).trim() || `task-${Date.now()}`;
@@ -136,18 +141,60 @@ export class TaskStore {
     return [...this.tasks];
   }
 
-  private load(): void {
-    if (!existsSync(this.filePath)) { this.tasks = []; return; }
+  reload(): boolean {
+    return this.load();
+  }
+
+  normalizeMessages(): string[] {
+    const changed: string[] = [];
+    for (const task of this.tasks) {
+      const normalized = normalizeLegacyAiWorkspacePaths(task.message);
+      if (normalized.changed) {
+        task.message = normalized.message;
+        changed.push(task.name);
+      }
+    }
+    if (changed.length > 0) this.save();
+    return changed;
+  }
+
+  private load(): boolean {
+    if (!existsSync(this.filePath)) { this.tasks = []; return true; }
     try {
       this.tasks = JSON.parse(readFileSync(this.filePath, "utf-8"));
+      return true;
     } catch {
       this.tasks = [];
+      return false;
     }
   }
 
   private save(): void {
     writeFileSync(this.filePath, JSON.stringify(this.tasks, null, 2));
   }
+}
+
+export function extractReferencedPaths(message: string): string[] {
+  const matches = message.match(/\/[^\s`"'，。；:]+?\.(?:md|json|ya?ml)\b/g) ?? [];
+  return [...new Set(matches)];
+}
+
+export function validateReferencedPaths(message: string): { ok: boolean; missing: string[] } {
+  const missing = extractReferencedPaths(message).filter(path => !existsSync(path));
+  return { ok: missing.length === 0, missing };
+}
+
+export function normalizeLegacyAiWorkspacePaths(message: string): { message: string; changed: boolean } {
+  const paths = extractReferencedPaths(message);
+  let normalized = message;
+  for (const path of paths) {
+    if (!path.includes("/.ai/projects/") || existsSync(path)) continue;
+    const candidate = path.replace("/.ai/projects/", "/.ai/workspace/projects/");
+    if (existsSync(candidate)) {
+      normalized = normalized.split(path).join(candidate);
+    }
+  }
+  return { message: normalized, changed: normalized !== message };
 }
 
 // --- CronScheduler ---
@@ -168,15 +215,15 @@ export class CronScheduler {
     const minute = now.getMinutes();
     const dayOfWeek = now.getDay(); // 0=Sun
     const minuteKey = hour * 60 + minute;
+    const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const fired: string[] = [];
 
     for (const job of this.jobs) {
       const s = job.schedule;
 
-      // Same-minute dedup
-      if (job.lastRun === minuteKey) continue;
-
       if (s.intervalMinutes !== undefined) {
+        // Same-minute dedup for interval jobs
+        if (job.lastRun === minuteKey) continue;
         // Interval-based: fire if enough time has passed since lastRun
         if (job.lastRun === undefined) {
           // First run
@@ -200,7 +247,11 @@ export class CronScheduler {
       if (s.minute !== undefined && s.minute !== minute) continue;
       if (s.dayOfWeek !== undefined && s.dayOfWeek !== dayOfWeek) continue;
 
+      const runKey = `${dateKey}:${minuteKey}`;
+      if (job.lastRunKey === runKey) continue;
+
       job.lastRun = minuteKey;
+      job.lastRunKey = runKey;
       void job.action();
       fired.push(job.name);
     }
@@ -294,6 +345,7 @@ class DutyMonitor extends PluginBase {
   private scheduler = new CronScheduler();
   private taskStore!: TaskStore;
   private tickTimer?: ReturnType<typeof setInterval>;
+  private watchers: FSWatcher[] = [];
   private isChecking = false;
 
   constructor() {
@@ -324,7 +376,9 @@ class DutyMonitor extends PluginBase {
     this.taskStore = new TaskStore(this.dataDir);
     this.log("info", `tick interval: ${TICK_INTERVAL_MS}ms, data: ${this.dataDir}`);
 
+    this.normalizeStoredTaskMessages("startup");
     this.syncTasksToScheduler();
+    this.refreshWatchers();
     this.log("info", `loaded ${this.taskStore.list().length} tasks from disk`);
 
     this.tickTimer = setInterval(() => {
@@ -341,6 +395,7 @@ class DutyMonitor extends PluginBase {
       clearInterval(this.tickTimer);
       this.tickTimer = undefined;
     }
+    this.closeWatchers();
   }
 
   protected override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
@@ -381,9 +436,13 @@ class DutyMonitor extends PluginBase {
 
     const task: TaskDef = { name, schedule, message };
     this.taskStore.add(task);
+    this.normalizeStoredTaskMessages("add");
     this.syncTasksToScheduler();
-    const finalName = this.taskStore.list().find(t => t.message === message)?.name || name;
-    this.log("info", `add: task "${finalName}" schedule=${formatSchedule(schedule)} message="${message}" by ${from || "unknown"}`);
+    this.refreshWatchers();
+    const finalTask = this.taskStore.list().find(t => t.name === task.name);
+    const finalName = finalTask?.name || task.name || name;
+    const finalMessage = finalTask?.message || message;
+    this.log("info", `add: task "${finalName}" schedule=${formatSchedule(schedule)} message="${finalMessage}" by ${from || "unknown"}`);
     return { reply: `已添加: ${finalName} (${formatSchedule(schedule)})` };
   }
 
@@ -395,6 +454,7 @@ class DutyMonitor extends PluginBase {
     const ok = this.taskStore.remove(name);
     if (ok) {
       this.syncTasksToScheduler();
+      this.refreshWatchers();
       this.log("info", `removed task "${name}" by ${from || "unknown"}`);
       return { reply: `已删除: ${name}` };
     }
@@ -425,10 +485,17 @@ class DutyMonitor extends PluginBase {
       this.log("error", `trigger: no task name from ${from || "unknown"}`);
       return { reply: "格式：trigger <任务名>" };
     }
+    this.reloadTasksFromDisk("manual-trigger");
     const task = this.taskStore.list().find(t => t.name === name);
     if (!task) {
       this.log("warn", `trigger: task "${name}" not found, from ${from || "unknown"}`);
       return { reply: `任务 "${name}" 不存在` };
+    }
+    const validation = validateReferencedPaths(task.message);
+    if (!validation.ok) {
+      const detail = validation.missing.join(", ");
+      this.log("error", `trigger: task "${name}" missing referenced file(s): ${detail}`);
+      return { reply: `任务 "${name}" 引用文件不存在: ${detail}` };
     }
     this.log("info", `trigger: "${name}" by ${from || "unknown"}`);
     void this.emit("task_fired", task.name, task.message);
@@ -452,19 +519,96 @@ class DutyMonitor extends PluginBase {
   }
 
   private syncTasksToScheduler(): void {
+    const previous = new Map(this.scheduler.jobs.map(job => [job.name, { lastRun: job.lastRun, lastRunKey: job.lastRunKey }]));
     this.scheduler.jobs = [];
     for (const task of this.taskStore.list()) {
+      const lastRun = previous.get(task.name);
       this.scheduler.addJob({
         name: task.name,
         schedule: task.schedule,
+        lastRun: lastRun?.lastRun,
+        lastRunKey: lastRun?.lastRunKey,
         action: () => {
-          this.log("info", `cron fired: "${task.name}" → ${task.message.slice(0, 50)}`);
-          void this.emit("task_fired", task.name, task.message);
+          this.fireTask(task.name, "cron");
         },
       });
     }
   }
 
+  private fireTask(name: string, reason: string): void {
+    this.reloadTasksFromDisk(`before-${reason}`);
+    const task = this.taskStore.list().find(t => t.name === name);
+    if (!task) {
+      this.log("error", `${reason}: task "${name}" disappeared before trigger`);
+      return;
+    }
+
+    const validation = validateReferencedPaths(task.message);
+    if (!validation.ok) {
+      this.log("error", `${reason}: task "${name}" missing referenced file(s): ${validation.missing.join(", ")}`);
+      return;
+    }
+
+    this.log("info", `${reason} fired: "${task.name}" → ${task.message.slice(0, 50)}`);
+    void this.emit("task_fired", task.name, task.message);
+  }
+
+  private reloadTasksFromDisk(reason: string): void {
+    const ok = this.taskStore.reload();
+    if (!ok) {
+      this.log("error", `reload failed (${reason}): ${this.taskStore.path}`);
+      return;
+    }
+    this.normalizeStoredTaskMessages(reason);
+    this.syncTasksToScheduler();
+    this.refreshWatchers();
+    this.log("info", `reload ok (${reason}): ${this.taskStore.list().length} tasks`);
+  }
+
+  private normalizeStoredTaskMessages(reason: string): void {
+    const changed = this.taskStore.normalizeMessages();
+    for (const name of changed) {
+      this.log("info", `normalized legacy task path (${reason}): ${name}`);
+    }
+  }
+
+  private refreshWatchers(): void {
+    this.closeWatchers();
+    const paths = new Set<string>([this.taskStore.path]);
+    for (const task of this.taskStore.list()) {
+      for (const path of extractReferencedPaths(task.message)) paths.add(path);
+    }
+
+    for (const path of paths) {
+      if (!existsSync(path)) {
+        this.log("warn", `watch skipped missing file: ${path}`);
+        continue;
+      }
+      try {
+        const watcher = watch(path, { persistent: false }, () => {
+          this.log("info", `watch reload requested: ${path}`);
+          this.reloadTasksFromDisk(`watch:${path}`);
+        });
+        watcher.on("error", err => {
+          this.log("error", `watch failed for ${path}: ${err.message}`);
+        });
+        this.watchers.push(watcher);
+      } catch (err) {
+        this.log("error", `watch failed for ${path}: ${err}`);
+      }
+    }
+  }
+
+  private closeWatchers(): void {
+    for (const watcher of this.watchers) {
+      try {
+        watcher.close();
+      } catch {
+        // ignore close races during reload
+      }
+    }
+    this.watchers = [];
+  }
 
   private async runHealthCheck(): Promise<void> {
     if (this.isChecking) {

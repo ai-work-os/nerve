@@ -9,6 +9,10 @@ import { BlobStore } from "./blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "./protocol.js";
 import type { WebSocket } from "ws";
 import { EventLogger } from "./event-logger.js";
+import { PeerClient } from "./peer-client.js";
+import { loadPeerConfig } from "./peer-config.js";
+import { isRemoteMemberId } from "./channel-member.js";
+import { RemoteRegistry, type RemoteMemberRecord, type RemoteOriginRecord } from "./remote-registry.js";
 import * as log from "./logger.js";
 
 /**
@@ -51,6 +55,7 @@ export class ChannelManager {
   readonly blobStore: BlobStore;
   readonly channelStore: ChannelStore;
   readonly eventLogger: EventLogger;
+  readonly remoteRegistry = new RemoteRegistry();
   readonly dataDir: string;
   private port: number;
 
@@ -162,6 +167,43 @@ export class ChannelManager {
 
   async spawnNode(adapter: string, name: string, cwd: string, options: SpawnOptions = {}): Promise<NerveNode> {
     return this.nodePool.spawnProcess(adapter, name, cwd, this.port, options);
+  }
+
+  async spawnRemoteNode(input: { peer: string; adapter: string; name: string; cwd?: string; channelId: string; model?: string }): Promise<{ nodeId: string; name: string }> {
+    const config = loadPeerConfig();
+    const peer = config.peers[input.peer];
+    if (!peer) throw new Error(`peer not configured: ${input.peer}`);
+
+    const client = new PeerClient(peer);
+    const result = await client.post("/peer/remote-spawn", {
+      adapter: input.adapter,
+      name: input.name,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      originPeer: config.name || "local",
+      originChannelId: input.channelId,
+      model: input.model,
+    }) as { nodeId: string; name: string; channelId: string };
+
+    const proxy = this.remoteRegistry.registerRemoteMember({
+      localChannelId: input.channelId,
+      remoteChannelId: result.channelId,
+      peer: input.peer,
+      remoteNode: result.name,
+    });
+    const ch = this.channelStore.get(input.channelId);
+    if (!ch) throw new Error(`channel not found: ${input.channelId}`);
+
+    this.store.insertNode(proxy.localId, proxy.localName, "remote", "remote", ["remote"], input.cwd);
+    this.store.updateNodeStatus(proxy.localId, "idle");
+    ch.addNode(proxy.localId, proxy.localName, this.store);
+    this.broadcastToChannel(input.channelId, {
+      jsonrpc: "2.0",
+      method: "channel.nodeJoined",
+      params: { channelId: input.channelId, nodeId: proxy.localId, nodeName: proxy.localName },
+    });
+    this.onMemberEvent?.("channel.nodeJoined", input.channelId, proxy.localId, proxy.localName);
+    this.eventLogger.log("remote.spawn", { peer: input.peer, remoteNode: result.name, localChannelId: input.channelId });
+    return { nodeId: proxy.localId, name: proxy.localName };
   }
 
   /** Spawn node and return ID immediately (handshake runs in background) */
@@ -332,6 +374,14 @@ export class ChannelManager {
       log.info(`route: ${msg.from} → [${targets.map(t => t.nodeName).join(", ")}] in channel ${channelId}`);
     }
     for (const target of targets) {
+      if (isRemoteMemberId(target.nodeId)) {
+        const remote = this.remoteRegistry.getRemoteMember(target.nodeName);
+        if (remote) {
+          void this.dispatchRemote(remote, msg.content, msg.id, msg.from);
+        }
+        continue;
+      }
+
       const node = this.nodePool.get(target.nodeId);
       if (!node) continue;
 
@@ -388,7 +438,101 @@ export class ChannelManager {
       }
     }
 
+    const origin = this.remoteRegistry.getRemoteOrigin(channelId, from);
+    if (origin) {
+      void this.bridgeRemoteReply(origin, content, msg.id);
+    }
+
     return msg;
+  }
+
+  private async bridgeRemoteReply(origin: RemoteOriginRecord, content: string, messageId: string): Promise<void> {
+    try {
+      const config = loadPeerConfig();
+      const peer = config.peers[origin.originPeer];
+      if (!peer) throw new Error(`peer not configured: ${origin.originPeer}`);
+
+      const client = new PeerClient(peer);
+      await client.post("/peer/remote-reply", {
+        originChannelId: origin.originChannelId,
+        fromPeer: config.name || "local",
+        fromNode: origin.localNode,
+        content,
+        messageId,
+      });
+      this.eventLogger.log("remote.reply", {
+        peer: origin.originPeer,
+        localChannelId: origin.localChannelId,
+        originChannelId: origin.originChannelId,
+        messageId,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.eventLogger.log("remote.reply.error", {
+        peer: origin.originPeer,
+        localChannelId: origin.localChannelId,
+        originChannelId: origin.originChannelId,
+        messageId,
+        error: message,
+      });
+    }
+  }
+
+  private async dispatchRemote(remote: RemoteMemberRecord, content: string, messageId: string, from: string): Promise<void> {
+    try {
+      const config = loadPeerConfig();
+      const peer = config.peers[remote.peer];
+      if (!peer) throw new Error(`peer not configured: ${remote.peer}`);
+
+      const client = new PeerClient(peer);
+      await client.post("/peer/remote-prompt", {
+        remoteNode: remote.remoteNode,
+        content,
+        localChannelId: remote.remoteChannelId,
+        originPeer: config.name || "local",
+        originChannelId: remote.localChannelId,
+        messageId,
+        from,
+      });
+      this.eventLogger.log("remote.mention", {
+        peer: remote.peer,
+        remoteNode: remote.remoteNode,
+        localChannelId: remote.localChannelId,
+        messageId,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.postMessage(remote.localChannelId, "系统", `@${from} [error] ${remote.peer} ${message.slice(0, 80)}`);
+      this.eventLogger.log("remote.mention.error", {
+        peer: remote.peer,
+        remoteNode: remote.remoteNode,
+        localChannelId: remote.localChannelId,
+        messageId,
+        error: message,
+      });
+    }
+  }
+
+  async promptRemoteOriginNode(localChannelId: string, remoteNode: string, content: string): Promise<{ ok: true }> {
+    const node = this.nodePool.getByName(remoteNode);
+    if (!node) throw new Error(`node not found: ${remoteNode}`);
+
+    const beforeIds = new Set(this.store.getMessages(localChannelId, 100).map(m => m.id));
+    const result = await this.nodePool.promptNode(node.id, content);
+    if (result.error) throw new Error(result.error);
+
+    const postedDuringPrompt = this.store
+      .getMessages(localChannelId, 100)
+      .some(m => m.from === remoteNode && !beforeIds.has(m.id));
+    const dmText = result.text?.trim();
+    if (!postedDuringPrompt && dmText) {
+      const origin = this.remoteRegistry.getRemoteOrigin(localChannelId, remoteNode);
+      if (origin) {
+        await this.bridgeRemoteReply(origin, dmText, `dm:${Date.now()}`);
+      }
+    }
+
+    return { ok: true };
   }
 
   /** Post from a Process Node (via MCP tool / HTTP endpoint) */

@@ -138,6 +138,18 @@ rl.on("line", (line) => {
         break;
       }
 
+      if (text.includes("dm-only")) {
+        sendNotification("session/update", {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "dm-only reply" },
+          },
+        });
+        sendResponse(id, { stopReason: "end_turn" });
+        break;
+      }
+
       // Generate reply
       const reply = `@main mock回复: 收到 "${text.slice(0, 80)}"`;
 

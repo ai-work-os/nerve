@@ -126,6 +126,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: "nerve_remote_spawn",
+      description: "Spawn a worker node on a configured peer and add it to a local channel as peer:node.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          peer: { type: "string", description: "Configured peer name, e.g. home" },
+          adapter: { type: "string", description: "Adapter name on the peer", default: DEFAULT_AI_ADAPTER },
+          name: { type: "string", description: "Remote node name" },
+          cwd: { type: "string", description: "Working directory on the peer. If omitted, the peer uses its own service cwd." },
+          model: { type: "string", description: "Optional model override for the remote node" },
+          channel_id: { type: "string", description: "Local channel id to add the remote proxy into. Defaults to current channel if omitted." },
+        },
+        required: ["peer", "name"],
+      },
+    },
+    {
       name: "nerve_create_channel",
       description: "Create a new collaboration channel and auto-join the calling node.",
       inputSchema: {
@@ -348,6 +364,36 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return ok(JSON.stringify(summary));
     } catch (err) {
       log(`nerve_spawn failed: ${err}`);
+      return fail(String(err));
+    }
+  }
+
+  if (name === "nerve_remote_spawn") {
+    const { peer, adapter, name: agentName, cwd, model, channel_id } = (args || {}) as { peer?: string; adapter?: string; name?: string; cwd?: string; model?: string; channel_id?: string };
+    if (!peer || !agentName) return fail("peer and name are required");
+    const targetChannel = channel_id || currentChannelId;
+    if (!targetChannel) return fail("channel_id is required when current channel is unknown");
+    try {
+      const useAdapter = adapter || DEFAULT_AI_ADAPTER;
+      log(`nerve_remote_spawn peer=${peer} adapter=${useAdapter} name=${agentName} channel=${targetChannel}`);
+      const result = await post("/remote/spawn", {
+        peer,
+        adapter: useAdapter,
+        name: agentName,
+        ...(cwd ? { cwd: resolve(cwd) } : {}),
+        model,
+        channelId: targetChannel,
+      });
+      return ok(JSON.stringify({
+        spawned: true,
+        name: String(result.name || `${peer}:${agentName}`),
+        nodeId: String(result.nodeId || "?"),
+        peer,
+        channel: targetChannel,
+        message: `spawned ${String(result.name || `${peer}:${agentName}`)}`,
+      }));
+    } catch (err) {
+      log(`nerve_remote_spawn failed: ${err}`);
       return fail(String(err));
     }
   }
