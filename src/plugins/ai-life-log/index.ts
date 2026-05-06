@@ -32,9 +32,9 @@ function findSenseVoiceDir(): string | null {
     resolve(homedir(), ".nerve/plugins/ai-life-log/models/sensevoice-small"),
   ].filter((p): p is string => !!p);
   for (const dir of candidates) {
-    if (existsSync(resolve(dir, "model.onnx")) && existsSync(resolve(dir, "tokens.json"))) {
-      return dir;
-    }
+    const hasModel = existsSync(resolve(dir, "model.onnx"));
+    const hasTokens = existsSync(resolve(dir, "tokens.txt")) || existsSync(resolve(dir, "tokens.json"));
+    if (hasModel && hasTokens) return dir;
   }
   return null;
 }

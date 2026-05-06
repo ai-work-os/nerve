@@ -8,6 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 /** Minimal subset of sherpa-onnx-node Vad we depend on. */
 export interface VadAdapter {
@@ -80,7 +81,7 @@ export class AsrPipeline extends EventEmitter {
   }
 
   private drain(): void {
-    while (this.vad.isDetected()) {
+    while (!this.vad.isEmpty()) {
       const seg = this.vad.front();
       this.vad.pop();
       if (!seg.samples || seg.samples.length === 0) continue;
@@ -115,13 +116,16 @@ export function int16ToFloat32(buf: Buffer): Float32Array {
  * Throws with a descriptive message if either model is missing.
  */
 export async function createRealAsrPipeline(cfg: AsrPipelineFactoryConfig): Promise<AsrPipeline> {
-  const senseVoiceModel = `${cfg.senseVoiceDir}/model.onnx`;
-  const tokens = `${cfg.senseVoiceDir}/tokens.json`;
+  const senseVoiceModel = join(cfg.senseVoiceDir, "model.onnx");
   if (!existsSync(senseVoiceModel)) {
     throw new Error(`SenseVoice model not found: ${senseVoiceModel}`);
   }
+  // sherpa-onnx models ship as tokens.txt; some repos use tokens.json
+  const tokensTxt = join(cfg.senseVoiceDir, "tokens.txt");
+  const tokensJson = join(cfg.senseVoiceDir, "tokens.json");
+  const tokens = existsSync(tokensTxt) ? tokensTxt : tokensJson;
   if (!existsSync(tokens)) {
-    throw new Error(`SenseVoice tokens not found: ${tokens}`);
+    throw new Error(`SenseVoice tokens not found in: ${cfg.senseVoiceDir}`);
   }
   if (!existsSync(cfg.sileroVadPath)) {
     throw new Error(`silero-vad model not found: ${cfg.sileroVadPath}`);
@@ -145,7 +149,7 @@ export async function createRealAsrPipeline(cfg: AsrPipelineFactoryConfig): Prom
   } as any, 60);
 
   const recognizer = new sherpa.OfflineRecognizer({
-    model: {
+    modelConfig: {
       senseVoice: {
         model: senseVoiceModel,
         language: cfg.language ?? "auto",
