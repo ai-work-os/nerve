@@ -9,6 +9,7 @@
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 
 /** Minimal subset of sherpa-onnx-node Vad we depend on. */
 export interface VadAdapter {
@@ -131,8 +132,12 @@ export async function createRealAsrPipeline(cfg: AsrPipelineFactoryConfig): Prom
     throw new Error(`silero-vad model not found: ${cfg.sileroVadPath}`);
   }
 
-  // dynamic import keeps unit tests free of the native addon
-  const sherpa = await import("sherpa-onnx-node");
+  // sherpa-onnx-node is CJS; ESM dynamic-import only puts class exports on .default
+  // (Node's CJS interop), so use createRequire to get them directly. This also
+  // keeps unit tests free of the native addon since this branch is only reached
+  // by the integration test / production runtime.
+  const sherpaRequire = createRequire(import.meta.url);
+  const sherpa = sherpaRequire("sherpa-onnx-node");
   const sampleRate = cfg.sampleRate ?? 16000;
 
   const vad = new sherpa.Vad({

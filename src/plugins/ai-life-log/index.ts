@@ -26,10 +26,14 @@ function getArg(flag: string, def: string): string {
 const PORT = parseInt(getArg("--port", "4800"));
 
 function findSenseVoiceDir(): string | null {
+  // Order: env override → official sherpa-onnx model in node data dir → 闪电说目录。
+  // Shandianshuo 0.6.x 的 model.onnx 缺 vocab_size 元数据，sherpa-onnx 1.13 加载
+  // 会 SIGABRT，所以放最后；将来若闪电说升级兼容版可零成本切回（用户也可用
+  // AI_LIFE_LOG_MODEL_DIR 强制指定）。
   const candidates = [
     process.env.AI_LIFE_LOG_MODEL_DIR,
-    resolve(homedir(), "Library/Application Support/Shandianshuo/models/sensevoice-small"),
     resolve(homedir(), ".nerve/plugins/ai-life-log/models/sensevoice-small"),
+    resolve(homedir(), "Library/Application Support/Shandianshuo/models/sensevoice-small"),
   ].filter((p): p is string => !!p);
   for (const dir of candidates) {
     const hasModel = existsSync(resolve(dir, "model.onnx"));
