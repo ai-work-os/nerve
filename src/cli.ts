@@ -69,6 +69,7 @@ async function cmdServe(args: string[]) {
   let eventLogPath: string | undefined;
   let noGuardian = false;
   let noDuty = false;
+  let noLifeLog = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -77,6 +78,7 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-guardian") { noGuardian = true; }
     else if (args[i] === "--no-recorder") { /* deprecated no-op: user-recorder no longer auto-starts */ }
     else if (args[i] === "--no-duty") { noDuty = true; }
+    else if (args[i] === "--no-life-log") { noLifeLog = true; }
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
@@ -138,6 +140,29 @@ async function cmdServe(args: string[]) {
     startDuty();
   }
 
+  // Auto-start ai-life-log plugin (macOS only; silently skips otherwise)
+  let lifeLogNodeId: string | undefined;
+
+  if (!noLifeLog && process.platform === "darwin") {
+    const startLifeLog = () => {
+      const result = nerve.cleanupStaleGuardian("ai-life-log");
+      if (result === "alive") {
+        info("ai-life-log already running, skipping spawn");
+        return;
+      }
+      try {
+        const node = nerve.nodePool.spawnProcessSync("ai-life-log", "ai-life-log", resolve(dataDir), port);
+        lifeLogNodeId = node.id;
+        info(`ai-life-log spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`ai-life-log spawn failed: ${err.message}`);
+      }
+    };
+    startLifeLog();
+  } else if (!noLifeLog) {
+    info(`ai-life-log skipped (platform=${process.platform}, requires darwin)`);
+  }
+
   void startStartupScenes({
     dataDir,
     startScene: (name: string) => server.startScene(name),
@@ -154,6 +179,10 @@ async function cmdServe(args: string[]) {
       if (dutyNodeId) {
         try { await nerve.nodePool.stopNode(dutyNodeId); } catch (e) { info(`duty-monitor stop failed: ${e}`); }
         info("duty-monitor stopped");
+      }
+      if (lifeLogNodeId) {
+        try { await nerve.nodePool.stopNode(lifeLogNodeId); } catch (e) { info(`ai-life-log stop failed: ${e}`); }
+        info("ai-life-log stopped");
       }
       await server.shutdown();
       closeLog();
