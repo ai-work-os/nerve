@@ -13,7 +13,14 @@ import { fileURLToPath } from "node:url";
 import { platform } from "node:os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_BINARY = resolve(__dirname, "native/AudioCapture/.build/release/AudioCapture");
+const NATIVE_DIR = resolve(__dirname, "native/AudioCapture/.build/release");
+const APP_BINARY = resolve(NATIVE_DIR, "AudioCapture.app/Contents/MacOS/AudioCapture");
+const RAW_BINARY = resolve(NATIVE_DIR, "AudioCapture");
+
+// Prefer the .app bundle binary: it has a stable bundle id that macOS TCC
+// can attach mic permission to, so launchd-spawned children (e.g. ai-life-log)
+// can actually capture audio. Falls back to the raw binary for older builds.
+const DEFAULT_BINARY = existsSync(APP_BINARY) ? APP_BINARY : RAW_BINARY;
 
 export type AudioSource = "mic" | "system" | "both";
 

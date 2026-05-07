@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>cc.ai-work-os.audio-capture</string>
+    <key>CFBundleName</key>
+    <string>AudioCapture</string>
+    <key>CFBundleDisplayName</key>
+    <string>nerve AudioCapture</string>
+    <key>CFBundleExecutable</key>
+    <string>AudioCapture</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>nerve / ai-life-log 需要麦克风以本地转录你的日常对话作为生活日志。</string>
+</dict>
+</plist>
