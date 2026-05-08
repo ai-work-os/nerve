@@ -1,5 +1,6 @@
 import { mkdirSync, createWriteStream, type WriteStream } from "node:fs";
 import { dirname } from "node:path";
+import { localIso } from "./time-util.js";
 
 let logStream: WriteStream | null = null;
 let logPath: string | null = null;
@@ -16,14 +17,8 @@ export function getLogPath(): string | null {
   return logPath;
 }
 
-function ts(): string {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-
 function write(level: string, msg: string): void {
-  const line = `${ts()} [${level}] ${msg}`;
+  const line = `${localIso()} [${level}] ${msg}`;
   if (logStream) logStream.write(line + "\n");
   if (level === "ERROR") {
     process.stderr.write(line + "\n");

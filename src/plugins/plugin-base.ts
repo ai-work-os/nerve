@@ -12,6 +12,7 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 
 import { CommandResult, formatCommandResponse, formatHelpText, formatUnknownCommand, formatReportError } from "../command-feedback.js";
+import { localIso } from "../time-util.js";
 export type { CommandResult };
 
 export interface CommandDef {
@@ -423,7 +424,9 @@ export class PluginBase {
 
   /** Structured log: stdout + activity.log file + node.log RPC (DM observability). */
   log(level: "info" | "warn" | "error" | "debug", msg: string): void {
-    const ts = new Date().toISOString();
+    // Local-time ISO 8601 (with offset) so log lines match wall-clock readers
+    // see on `date` / shell prompt. Still valid ISO 8601 parseable.
+    const ts = localIso();
     const line = `${ts} [${level.toUpperCase()}] ${msg}`;
     console.log(`${ts} [${this.options.name}] [${level.toUpperCase()}] ${msg}`);
     // Append to persistent activity.log
