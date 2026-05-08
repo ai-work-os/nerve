@@ -10,6 +10,7 @@ import { SceneManager } from "./scene-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage, Message } from "./protocol.js";
 import { handleRpcRequest } from "./request-handler.js";
 import * as log from "./logger.js";
+import { localIso, localTimeOnly } from "./time-util.js";
 
 const PROGRAM_LOG_MESSAGE_LIMIT = 5000;
 
@@ -433,8 +434,10 @@ export class Server {
             this.sendError(ws, id, -32602, "entries must be a non-empty array");
             return;
           }
-          // Fill in timestamps for entries missing them
-          const now = new Date().toISOString();
+          // Fill in timestamps for entries missing them. Use localIso so the
+          // ts field on the wire is human-readable in local TZ + still valid
+          // ISO 8601 (clients can parse it as a Date round-trip).
+          const now = localIso();
           for (const entry of entries) {
             if (!entry.ts) entry.ts = now;
           }
@@ -442,7 +445,9 @@ export class Server {
           const messages: Message[] = entries.map(entry => {
             const entryTime = Date.parse(entry.ts || now);
             const ts = Number.isFinite(entryTime) ? entryTime : Date.now();
-            const time = new Date(ts).toISOString().slice(11, 19);
+            // localTimeOnly (NOT toISOString().slice(11,19)) — the latter forces
+            // UTC and made local-time cron fires display as if 8h earlier.
+            const time = localTimeOnly(new Date(ts));
             const level = (entry.level || "info").toUpperCase();
             return {
               id: nanoid(16),

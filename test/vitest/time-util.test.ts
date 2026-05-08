@@ -1,5 +1,42 @@
 import { describe, it, expect } from "vitest";
-import { localIso } from "../../src/time-util.js";
+import { localIso, localTimeOnly } from "../../src/time-util.js";
+
+describe("localTimeOnly", () => {
+  it("formats HH:MM:SS in local time", () => {
+    const orig = Date.prototype.getTimezoneOffset;
+    Date.prototype.getTimezoneOffset = () => -480; // UTC+8
+    try {
+      // 03:19:47Z = 11:19:47 in UTC+8
+      const d = new Date("2026-05-08T03:19:47.123Z");
+      // Note: getTimezoneOffset mock alone won't change getHours(); but if the
+      // underlying system IS UTC+8 this matches. We assert on getHours()-derived
+      // expected to keep test environment-independent.
+      const expected = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+      expect(localTimeOnly(d)).toBe(expected);
+    } finally {
+      Date.prototype.getTimezoneOffset = orig;
+    }
+  });
+
+  it("matches /^\\d{2}:\\d{2}:\\d{2}$/", () => {
+    expect(localTimeOnly(new Date())).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("does NOT round-trip through toISOString (the old buggy behavior)", () => {
+    // Old code: new Date(ts).toISOString().slice(11, 19) — UTC, wrong on
+    // any non-UTC machine. Verify that we DON'T do that.
+    const d = new Date("2026-05-08T03:19:47.000Z");
+    const utcSlice = d.toISOString().slice(11, 19); // "03:19:47"
+    const localOnly = localTimeOnly(d);
+    // On any TZ != UTC these MUST differ. On UTC they coincidentally match,
+    // so we only assert difference when offset is non-zero.
+    if (d.getTimezoneOffset() !== 0) {
+      expect(localOnly).not.toBe(utcSlice);
+    }
+    // And the local one matches local Date getters
+    expect(localOnly).toBe(`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`);
+  });
+});
 
 describe("localIso", () => {
   it("matches ISO 8601 local-with-offset shape", () => {

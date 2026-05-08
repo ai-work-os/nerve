@@ -1958,6 +1958,69 @@ describe("Nerve Integration Tests - Part 1", () => {
     await stranger.disconnect();
   });
 
+  it("node.log formats message text with LOCAL HH:MM:SS (regression: was UTC)", async () => {
+    // Bug: server.ts formatted entry text with `new Date(ts).toISOString().slice(11,19)`
+    // which forces UTC. A 01:00 local cron fire showed up in TUI as `[17:00:00]`.
+    // Fix: use local Date getters. This test pins the local-time format.
+    const plugin = new WsClient("log-tz-plugin");
+    await plugin.connect();
+    await plugin.request("node.register", { name: "log-tz-plugin", capabilities: ["monitor"] });
+
+    const observer = new WsClient("log-tz-observer");
+    await observer.connect();
+    await observer.request("node.register", { name: "log-tz-observer", capabilities: ["ui"] });
+
+    const nodes = await observer.request("node.list");
+    const pluginNode = nodes.nodes.find((n: any) => n.name === "log-tz-plugin");
+    assert(!!pluginNode, "log-tz: plugin node found");
+    if (!pluginNode) { await plugin.disconnect(); await observer.disconnect(); return; }
+
+    // Use a deterministic UTC timestamp; assert the SAME instant displayed in
+    // local time. Pick midnight UTC — translated to local on any TZ != UTC,
+    // the local hour MUST differ from "00".
+    const fixedTs = "2026-05-08T17:00:00.000Z"; // = 01:00 CST next day (UTC+8)
+    const expected = (() => {
+      const d = new Date(fixedTs);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    })();
+
+    await plugin.request("node.log", {
+      entries: [{ level: "info", message: "fired @ chosen instant", ts: fixedTs }],
+    });
+    await sleep(200);
+
+    // Subscribe new observer to receive snapshot containing the formatted text
+    const observer2 = new WsClient("log-tz-observer-2");
+    await observer2.connect();
+    await observer2.request("node.register", { name: "log-tz-observer-2", capabilities: ["ui"] });
+    observer2.clearNotifications();
+    await observer2.request("node.subscribe", { nodeId: pluginNode.id });
+    await sleep(200);
+
+    const snaps = observer2.getNotifications("message_snapshot");
+    assert(snaps.length === 1, "log-tz: snapshot received");
+    const msgs = (snaps[0]?.params?.messages || []) as Array<any>;
+    const our = msgs.find((m: any) => typeof m.text === "string" && m.text.includes("fired @ chosen instant"));
+    assert(!!our, "log-tz: our entry present in snapshot", JSON.stringify(msgs));
+    if (our) {
+      assert(our.text.startsWith(`[${expected}] [INFO]`),
+        "log-tz: text starts with local HH:MM:SS",
+        `expected start [${expected}] [INFO], got: ${our.text}`);
+      // Negative: must NOT contain the UTC slice "[17:00:00]" unless test happens
+      // to run in a UTC environment (in which case expected == "17:00:00" anyway).
+      if (expected !== "17:00:00") {
+        assert(!our.text.startsWith("[17:00:00]"),
+          "log-tz: must not display UTC time on non-UTC host",
+          our.text);
+      }
+    }
+
+    await plugin.disconnect();
+    await observer.disconnect();
+    await observer2.disconnect();
+  });
+
   it("node.log retains only latest 5000 messages in snapshot", async () => {
     const plugin = new WsClient("log-limit-plugin");
     await plugin.connect();
