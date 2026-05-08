@@ -1354,7 +1354,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     await c.disconnect();
   });
 
-  it("logger uses local time", async () => {
+  it("logger uses local time with explicit offset (ISO 8601)", async () => {
     const logFile = resolve(getTestData(), "logger-local-time.log");
     if (existsSync(logFile)) rmSync(logFile);
 
@@ -1368,14 +1368,20 @@ describe("Nerve Integration Tests - Part 1", () => {
     assert(!!line, "log-time: log line written");
 
     if (line) {
-      const match = line.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})/);
-      assert(!!match, "log-time: timestamp format valid");
+      // Format: 2026-05-08T11:19:47.123+08:00 [INFO] local-time-test
+      const match = line.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d{3}([+-]\d{2}:\d{2})/);
+      assert(!!match, "log-time: ISO local-with-offset format valid", `line=${line}`);
       if (match) {
         const now = new Date();
         const expectedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
         const expectedHour = String(now.getHours()).padStart(2, "0");
         assert(match[1] === expectedDate, "log-time: uses local date", `got ${match[1]}, expected ${expectedDate}`);
         assert(match[2] === expectedHour, "log-time: uses local hour", `got ${match[2]}, expected ${expectedHour}`);
+        // Round-trip: parsing the timestamp must give a Date close to now
+        const tsStr = line.split(" ")[0];
+        const parsed = new Date(tsStr);
+        assert(!isNaN(parsed.getTime()), "log-time: timestamp parses as Date");
+        assert(Math.abs(parsed.getTime() - now.getTime()) < 5000, "log-time: parsed instant within 5s of now");
       }
     }
   });
