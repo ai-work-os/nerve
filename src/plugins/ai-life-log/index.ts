@@ -52,6 +52,14 @@ function findSileroVad(): string | null {
   return null;
 }
 
+// Watchdog interval: how often we tick to detect timer drift (= system sleep).
+const WATCHDOG_TICK_MS = 30_000;
+// If wall-clock advanced more than this between ticks, we infer the system slept
+// and the AVAudioEngine is likely stuck — restart capture.
+const SLEEP_DRIFT_MS = 60_000;
+// Backoff for capture exit auto-restart, ms.
+const RESTART_BACKOFF_MS = [1_000, 3_000, 10_000, 30_000];
+
 class AiLifeLogPlugin extends PluginBase {
   private capture: AudioCapture | null = null;
   private pipeline: AsrPipeline | null = null;
@@ -60,6 +68,10 @@ class AiLifeLogPlugin extends PluginBase {
   private startTime = Date.now();
   private errorReason: string | null = null;
   private rssTimer: ReturnType<typeof setInterval> | null = null;
+  private wakeTimer: ReturnType<typeof setInterval> | null = null;
+  private lastTick = 0;
+  private restartAttempt = 0;
+  private restarting = false;
 
   constructor() {
     super({
@@ -134,6 +146,45 @@ class AiLifeLogPlugin extends PluginBase {
       const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
       this.log("info", `rss=${rss}MB`);
     }, 600_000);
+
+    // Wake watchdog: detect macOS sleep via timer drift. AVAudioEngine inside the
+    // AudioCapture binary often gets stuck across system sleep — process stays
+    // alive and stdout pipe is open, but no PCM samples flow. Drift detection
+    // catches this without needing OS-specific notifications.
+    this.lastTick = Date.now();
+    this.wakeTimer = setInterval(() => this.wakeTick(), WATCHDOG_TICK_MS);
+  }
+
+  private wakeTick(): void {
+    const now = Date.now();
+    const drift = now - this.lastTick - WATCHDOG_TICK_MS;
+    this.lastTick = now;
+    if (drift > SLEEP_DRIFT_MS && this.running && !this.restarting) {
+      this.log("warn", `wake watchdog: detected ${Math.round(drift / 1000)}s drift, restarting capture`);
+      void this.restartCapture("sleep-wake");
+    }
+  }
+
+  private async restartCapture(reason: string): Promise<void> {
+    if (this.restarting) return;
+    this.restarting = true;
+    this.log("info", `restart capture (reason=${reason}, attempt=${this.restartAttempt + 1})`);
+    try {
+      try { this.capture?.stop(); } catch (err: any) { this.log("warn", `capture.stop in restart: ${err.message}`); }
+      this.capture = null;
+      this.running = false;
+      // Drop any in-flight VAD state so post-restart audio doesn't get glued
+      // to pre-sleep audio (would create one giant utterance + bad ASR).
+      try { this.pipeline?.stop(); } catch { /* best effort */ }
+      await this.startCapture();
+      if (this.running) {
+        this.restartAttempt = 0;
+        this.errorReason = null;
+        this.log("info", `capture restart succeeded (reason=${reason})`);
+      }
+    } finally {
+      this.restarting = false;
+    }
   }
 
   protected onDisconnect(): void {
@@ -182,8 +233,23 @@ class AiLifeLogPlugin extends PluginBase {
     this.capture.on("exit", (code: number | null) => {
       this.log("warn", `capture exited code=${code}`);
       this.running = false;
-      this.errorReason = `capture exited (code=${code})`;
-      void this.setActivity("error: capture exited");
+      if (this.restarting) return; // 我们正在主动重启，不再触发新一轮
+      // Auto-restart with backoff. Most exits we'd see in the wild are transient
+      // (sleep-wake, audio device hot-unplug). Cap retries to avoid tight loops
+      // when something is fundamentally broken (mic permission revoked, etc).
+      const attempt = this.restartAttempt;
+      if (attempt >= RESTART_BACKOFF_MS.length) {
+        this.errorReason = `capture exited (code=${code}); ${attempt} restarts failed, giving up`;
+        this.log("error", this.errorReason);
+        void this.setActivity("error: capture exited (give up)");
+        return;
+      }
+      const delay = RESTART_BACKOFF_MS[attempt];
+      this.restartAttempt = attempt + 1;
+      this.errorReason = `capture exited (code=${code}); restarting in ${delay}ms (attempt ${this.restartAttempt})`;
+      this.log("warn", this.errorReason);
+      void this.setActivity(`error: capture exited, restart in ${delay}ms`);
+      setTimeout(() => { void this.restartCapture(`capture-exit-code-${code}`); }, delay);
     });
 
     try {
@@ -202,6 +268,7 @@ class AiLifeLogPlugin extends PluginBase {
     try { this.capture?.stop(); } catch (err: any) { this.log("warn", `capture.stop: ${err.message}`); }
     try { this.pipeline?.stop(); } catch (err: any) { this.log("warn", `pipeline.stop: ${err.message}`); }
     if (this.rssTimer) { clearInterval(this.rssTimer); this.rssTimer = null; }
+    if (this.wakeTimer) { clearInterval(this.wakeTimer); this.wakeTimer = null; }
     this.capture = null;
     this.running = false;
   }
