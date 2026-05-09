@@ -18,6 +18,7 @@ import { AsrPipeline, createRealAsrPipeline } from "./asr-pipeline.js";
 import { DailyFileWriter } from "./daily-file-writer.js";
 import { MacMicSource } from "./sources/mac-mic-source.js";
 import { RemoteUploadSource } from "./sources/remote-upload-source.js";
+import { cleanOldAudio } from "./audio-cleaner.js";
 
 function getArg(flag: string, def: string): string {
   const i = process.argv.indexOf(flag);
@@ -61,6 +62,7 @@ class AiLifeLogPlugin extends PluginBase {
   private startTime = Date.now();
   private errorReason: string | null = null;
   private rssTimer: ReturnType<typeof setInterval> | null = null;
+  private cleanerTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({
@@ -176,6 +178,16 @@ class AiLifeLogPlugin extends PluginBase {
       const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
       this.log("info", `rss=${rss}MB`);
     }, 600_000);
+
+    // Daily audio retention sweep (covers audio/, corrupt/, failed/)
+    const retainDays = parseInt(process.env.AI_LIFE_LOG_AUDIO_RETAIN_DAYS ?? "7", 10);
+    const audioDir = resolve(this.dataDir, "audio");
+    const initStats = cleanOldAudio(audioDir, retainDays);
+    this.log("info", `cleaner: initial sweep removed ${initStats.deleted} files (retain=${retainDays}d)`);
+    this.cleanerTimer = setInterval(() => {
+      const stats = cleanOldAudio(audioDir, retainDays);
+      if (stats.deleted > 0) this.log("info", `cleaner: deleted ${stats.deleted} old .opus files`);
+    }, 86400_000);
   }
 
   protected onDisconnect(): void {
@@ -220,6 +232,7 @@ class AiLifeLogPlugin extends PluginBase {
     try { await this.remoteSource?.stop(); } catch (err: any) { this.log("warn", `remoteSource.stop: ${err.message}`); }
     try { this.pipeline?.stop(); } catch (err: any) { this.log("warn", `pipeline.stop: ${err.message}`); }
     if (this.rssTimer) { clearInterval(this.rssTimer); this.rssTimer = null; }
+    if (this.cleanerTimer) { clearInterval(this.cleanerTimer); this.cleanerTimer = null; }
     this.macSource = null;
     this.remoteSource = null;
   }
