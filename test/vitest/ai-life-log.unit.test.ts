@@ -16,7 +16,7 @@ describe("DailyFileWriter", () => {
     w.append("早上好", ts);
     const expected = join(dir, "2026-05-06.txt");
     expect(existsSync(expected)).toBe(true);
-    expect(readFileSync(expected, "utf8")).toBe("[09:14:05] 早上好\n");
+    expect(readFileSync(expected, "utf8")).toBe("[09:14:05][mac] 早上好\n");
   });
 
   it("appends a second line in the same day to the same file", () => {
@@ -26,7 +26,7 @@ describe("DailyFileWriter", () => {
     w.append("第一句", t1);
     w.append("第二句", t2);
     const f = join(dir, "2026-05-06.txt");
-    expect(readFileSync(f, "utf8")).toBe("[09:14:05] 第一句\n[09:14:32] 第二句\n");
+    expect(readFileSync(f, "utf8")).toBe("[09:14:05][mac] 第一句\n[09:14:32][mac] 第二句\n");
   });
 
   it("rolls to a new file when the day changes", () => {
@@ -34,8 +34,8 @@ describe("DailyFileWriter", () => {
     w.append("昨夜", new Date("2026-05-06T23:59:50+08:00"));
     w.append("今晨", new Date("2026-05-07T00:00:10+08:00"));
     expect(readdirSync(dir).sort()).toEqual(["2026-05-06.txt", "2026-05-07.txt"]);
-    expect(readFileSync(join(dir, "2026-05-06.txt"), "utf8")).toBe("[23:59:50] 昨夜\n");
-    expect(readFileSync(join(dir, "2026-05-07.txt"), "utf8")).toBe("[00:00:10] 今晨\n");
+    expect(readFileSync(join(dir, "2026-05-06.txt"), "utf8")).toBe("[23:59:50][mac] 昨夜\n");
+    expect(readFileSync(join(dir, "2026-05-07.txt"), "utf8")).toBe("[00:00:10][mac] 今晨\n");
   });
 
   it("preserves existing file content when re-instantiated mid-day", () => {
@@ -44,7 +44,7 @@ describe("DailyFileWriter", () => {
     const w2 = new DailyFileWriter(dir);
     w2.append("追加", new Date("2026-05-06T11:00:00+08:00"));
     const f = join(dir, "2026-05-06.txt");
-    expect(readFileSync(f, "utf8")).toBe("[10:00:00] 原有\n[11:00:00] 追加\n");
+    expect(readFileSync(f, "utf8")).toBe("[10:00:00][mac] 原有\n[11:00:00][mac] 追加\n");
   });
 
   it("creates the directory if missing", () => {
@@ -58,7 +58,7 @@ describe("DailyFileWriter", () => {
     const w = new DailyFileWriter(dir);
     w.append("第一行\n第二行", new Date("2026-05-06T10:00:00+08:00"));
     const f = join(dir, "2026-05-06.txt");
-    expect(readFileSync(f, "utf8")).toBe("[10:00:00] 第一行 第二行\n");
+    expect(readFileSync(f, "utf8")).toBe("[10:00:00][mac] 第一行 第二行\n");
   });
 
   it("counts written lines and characters via stats()", () => {
