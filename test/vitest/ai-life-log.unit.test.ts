@@ -190,3 +190,43 @@ describe("AsrPipeline", () => {
     expect(acceptedCount).toBe(1);
   });
 });
+
+describe("AsrPipeline.recognizeChunk", () => {
+  it("整段 PCM 一次过 recognizer，跳过 VAD", () => {
+    const decodeCalls: number[] = [];
+    const stream = { acceptWaveform: () => {} };
+    const recognizer = {
+      createStream: () => stream,
+      decode: () => decodeCalls.push(1),
+      getResult: () => ({ text: "你好世界" }),
+    };
+    const vad = {
+      acceptWaveform: () => { throw new Error("vad must not be called"); },
+      isEmpty: () => true,
+      isDetected: () => false,
+      front: () => ({ samples: new Float32Array() }),
+      pop: () => {},
+      flush: () => {},
+      reset: () => {},
+    };
+    const pipeline = new AsrPipeline({ vad: vad as any, recognizer: recognizer as any, sampleRate: 16000 });
+    const pcm = Buffer.alloc(32000); // 1s silence at 16kHz mono int16
+    const text = pipeline.recognizeChunk(pcm);
+    expect(text).toBe("你好世界");
+    expect(decodeCalls.length).toBe(1);
+  });
+
+  it("空 PCM 返回空串", () => {
+    const recognizer = {
+      createStream: () => ({ acceptWaveform: () => {} }),
+      decode: () => {},
+      getResult: () => ({ text: "should not be called" }),
+    };
+    const vad = {
+      acceptWaveform: () => {}, isEmpty: () => true, isDetected: () => false,
+      front: () => ({ samples: new Float32Array() }), pop: () => {}, flush: () => {}, reset: () => {},
+    };
+    const pipeline = new AsrPipeline({ vad: vad as any, recognizer: recognizer as any, sampleRate: 16000 });
+    expect(pipeline.recognizeChunk(Buffer.alloc(0))).toBe("");
+  });
+});
