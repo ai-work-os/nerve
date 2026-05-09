@@ -68,3 +68,38 @@ describe("LifeLogHttpServer upload", () => {
     expect(r.status).toBe(400);
   });
 });
+
+describe("LifeLogHttpServer auth", () => {
+  let dir: string; let srv: LifeLogHttpServer; let port: number;
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "lifelog-http-auth-"));
+    srv = new LifeLogHttpServer({
+      port: 0, audioDir: join(dir, "audio"),
+      onChunk: async () => {},
+      authToken: "secret123",
+    });
+    port = await srv.start();
+  });
+  afterEach(async () => { await srv.stop(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("缺 token 返回 401", async () => {
+    const r = await postOpus(port, Buffer.from("x"), {
+      deviceId: "p", recordedAtMs: 1, durationMs: 60000, chunkId: "c1",
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it("错 token 返回 401", async () => {
+    const r = await postOpus(port, Buffer.from("x"), {
+      deviceId: "p", recordedAtMs: 1, durationMs: 60000, chunkId: "c1",
+    }, { "X-LifeLog-Token": "wrong" });
+    expect(r.status).toBe(401);
+  });
+
+  it("正确 token 返回 200", async () => {
+    const r = await postOpus(port, Buffer.from("x"), {
+      deviceId: "p", recordedAtMs: 1, durationMs: 60000, chunkId: "c2",
+    }, { "X-LifeLog-Token": "secret123" });
+    expect(r.status).toBe(200);
+  });
+});
