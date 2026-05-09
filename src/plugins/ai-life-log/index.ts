@@ -17,6 +17,7 @@ import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.
 import { AsrPipeline, createRealAsrPipeline } from "./asr-pipeline.js";
 import { DailyFileWriter } from "./daily-file-writer.js";
 import { MacMicSource } from "./sources/mac-mic-source.js";
+import { RemoteUploadSource } from "./sources/remote-upload-source.js";
 
 function getArg(flag: string, def: string): string {
   const i = process.argv.indexOf(flag);
@@ -54,6 +55,7 @@ function findSileroVad(): string | null {
 
 class AiLifeLogPlugin extends PluginBase {
   private macSource: MacMicSource | null = null;
+  private remoteSource: RemoteUploadSource | null = null;
   private pipeline: AsrPipeline | null = null;
   private writer: DailyFileWriter;
   private startTime = Date.now();
@@ -138,6 +140,37 @@ class AiLifeLogPlugin extends PluginBase {
       await this.setActivity(`error: ${this.errorReason}`);
     }
 
+    // Optional remote upload server (mobile clients post Opus chunks here).
+    const enableRemote = process.env.AI_LIFE_LOG_REMOTE_UPLOAD === "true";
+    if (enableRemote) {
+      const remotePort = parseInt(process.env.AI_LIFE_LOG_HTTP_PORT ?? "4810", 10);
+      const audioDir = resolve(this.dataDir, "audio");
+      this.remoteSource = new RemoteUploadSource({
+        port: remotePort,
+        audioDir,
+        pipeline: this.pipeline,
+        authToken: process.env.AI_LIFE_LOG_TOKEN,
+        log: (l, m) => this.log(l, `[remote] ${m}`),
+      });
+      this.remoteSource.on("text", (text: string, tsMs: number, tag: string) => {
+        try {
+          this.writer.appendOrInsert(text, new Date(tsMs), tag);
+          this.log("info", `[${new Date(tsMs).toISOString()}][${tag}] ${text}`);
+        } catch (err: any) {
+          this.log("error", `remote write failed: ${err.message}`);
+        }
+      });
+      try {
+        const actualPort = await this.remoteSource.start();
+        this.log("info", `remote upload http listening on :${actualPort}`);
+      } catch (err: any) {
+        this.log("error", `remote source start failed: ${err.message}`);
+        this.remoteSource = null;
+      }
+    } else {
+      this.log("info", "remote upload disabled (set AI_LIFE_LOG_REMOTE_UPLOAD=true)");
+    }
+
     // Log RSS every 10 min for long-run memory observability
     this.rssTimer = setInterval(() => {
       const rss = Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -184,9 +217,11 @@ class AiLifeLogPlugin extends PluginBase {
 
   private async stopCapture(): Promise<void> {
     try { await this.macSource?.stop(); } catch (err: any) { this.log("warn", `macSource.stop: ${err.message}`); }
+    try { await this.remoteSource?.stop(); } catch (err: any) { this.log("warn", `remoteSource.stop: ${err.message}`); }
     try { this.pipeline?.stop(); } catch (err: any) { this.log("warn", `pipeline.stop: ${err.message}`); }
     if (this.rssTimer) { clearInterval(this.rssTimer); this.rssTimer = null; }
     this.macSource = null;
+    this.remoteSource = null;
   }
 
   private async setActivity(activity: string): Promise<void> {
