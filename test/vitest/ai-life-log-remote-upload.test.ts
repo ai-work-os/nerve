@@ -67,6 +67,26 @@ describe("LifeLogHttpServer upload", () => {
     const r = await postOpus(port, Buffer.from("x"), {} as any);
     expect(r.status).toBe(400);
   });
+
+  it("同 chunkId 二次上传返回 ok 但不再触发 onChunk (幂等)", async () => {
+    let onChunkCalls = 0;
+    await srv.stop();
+    srv = new LifeLogHttpServer({
+      port: 0,
+      audioDir: join(dir, "audio2"),
+      onChunk: async () => { onChunkCalls++; },
+    });
+    port = await srv.start();
+    const meta = { deviceId: "p", recordedAtMs: 1700000000000, durationMs: 60000, chunkId: "dup1" };
+    const r1 = await postOpus(port, Buffer.from("first"), meta);
+    expect(r1.status).toBe(200);
+    const r2 = await postOpus(port, Buffer.from("second"), meta);
+    expect(r2.status).toBe(200);
+    expect(r2.body.ok).toBe(true);
+    // wait a tick for async onChunk dispatch
+    await new Promise(r => setTimeout(r, 50));
+    expect(onChunkCalls).toBe(1);
+  });
 });
 
 describe("LifeLogHttpServer auth", () => {

@@ -5,7 +5,7 @@
  * `audioDir/{day}/{chunkId}.opus` and invokes a callback for downstream ASR.
  */
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import Busboy from "busboy";
 
@@ -104,6 +104,12 @@ export class LifeLogHttpServer {
       const dayDir = join(this.cfg.audioDir, day);
       mkdirSync(dayDir, { recursive: true });
       const opusPath = join(dayDir, `${meta.chunkId}.opus`);
+      if (existsSync(opusPath)) {
+        this.log("info", `chunk dup ignored: ${meta.deviceId} ${meta.chunkId}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, chunkId: meta.chunkId, dedup: true }));
+        return;
+      }
       writeFileSync(opusPath, fileBuf);
       this.log("info", `chunk landed: ${meta.deviceId} ${meta.chunkId} ${fileBuf.length}B`);
       // Fire-and-forget — ASR is async
