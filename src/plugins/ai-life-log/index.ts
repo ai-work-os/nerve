@@ -75,13 +75,6 @@ class AiLifeLogPlugin extends PluginBase {
   }
 
   protected async onReady(): Promise<void> {
-    if (process.platform !== "darwin") {
-      this.errorReason = "ai-life-log requires macOS (Swift AudioCapture)";
-      this.log("warn", this.errorReason);
-      await this.setActivity(`error: ${this.errorReason}`);
-      return;
-    }
-
     const sense = findSenseVoiceDir();
     if (!sense) {
       this.errorReason = "SenseVoice model not found. Install 闪电说 (https://shandianshuo.cn) " +
@@ -130,16 +123,20 @@ class AiLifeLogPlugin extends PluginBase {
       this.log("error", `asr error: ${err.message}`);
     });
 
-    this.macSource = new MacMicSource({
-      log: (l, m) => this.log(l, m),
-      onActivity: (s) => void this.setActivity(s),
-    });
-    try {
-      await this.macSource.start((pcm, _ts) => this.pipeline?.feed(pcm));
-    } catch (err: any) {
-      this.errorReason = `mac source start failed: ${err.message}`;
-      this.log("error", this.errorReason);
-      await this.setActivity(`error: ${this.errorReason}`);
+    if (process.platform === "darwin") {
+      this.macSource = new MacMicSource({
+        log: (l, m) => this.log(l, m),
+        onActivity: (s) => void this.setActivity(s),
+      });
+      try {
+        await this.macSource.start((pcm, _ts) => this.pipeline?.feed(pcm));
+      } catch (err: any) {
+        this.errorReason = `mac source start failed: ${err.message}`;
+        this.log("error", this.errorReason);
+        await this.setActivity(`error: ${this.errorReason}`);
+      }
+    } else {
+      this.log("info", `mac mic source disabled on platform=${process.platform} (Swift AudioCapture is darwin-only)`);
     }
 
     // Optional remote upload server (mobile clients post Opus chunks here).
