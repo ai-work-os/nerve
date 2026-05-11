@@ -14,9 +14,11 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
-import { AudioCapture } from "../ai-ear/audio-capture.js";
 import { AsrPipeline, createRealAsrPipeline } from "./asr-pipeline.js";
 import { DailyFileWriter } from "./daily-file-writer.js";
+import { MacMicSource } from "./sources/mac-mic-source.js";
+import { RemoteUploadSource } from "./sources/remote-upload-source.js";
+import { cleanOldAudio } from "./audio-cleaner.js";
 
 function getArg(flag: string, def: string): string {
   const i = process.argv.indexOf(flag);
@@ -52,26 +54,15 @@ function findSileroVad(): string | null {
   return null;
 }
 
-// Watchdog interval: how often we tick to detect timer drift (= system sleep).
-const WATCHDOG_TICK_MS = 30_000;
-// If wall-clock advanced more than this between ticks, we infer the system slept
-// and the AVAudioEngine is likely stuck — restart capture.
-const SLEEP_DRIFT_MS = 60_000;
-// Backoff for capture exit auto-restart, ms.
-const RESTART_BACKOFF_MS = [1_000, 3_000, 10_000, 30_000];
-
 class AiLifeLogPlugin extends PluginBase {
-  private capture: AudioCapture | null = null;
+  private macSource: MacMicSource | null = null;
+  private remoteSource: RemoteUploadSource | null = null;
   private pipeline: AsrPipeline | null = null;
   private writer: DailyFileWriter;
-  private running = false;
   private startTime = Date.now();
   private errorReason: string | null = null;
   private rssTimer: ReturnType<typeof setInterval> | null = null;
-  private wakeTimer: ReturnType<typeof setInterval> | null = null;
-  private lastTick = 0;
-  private restartAttempt = 0;
-  private restarting = false;
+  private cleanerTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     super({
@@ -84,13 +75,6 @@ class AiLifeLogPlugin extends PluginBase {
   }
 
   protected async onReady(): Promise<void> {
-    if (process.platform !== "darwin") {
-      this.errorReason = "ai-life-log requires macOS (Swift AudioCapture)";
-      this.log("warn", this.errorReason);
-      await this.setActivity(`error: ${this.errorReason}`);
-      return;
-    }
-
     const sense = findSenseVoiceDir();
     if (!sense) {
       this.errorReason = "SenseVoice model not found. Install 闪电说 (https://shandianshuo.cn) " +
@@ -129,8 +113,8 @@ class AiLifeLogPlugin extends PluginBase {
 
     this.pipeline.on("text", (text: string, ts: Date) => {
       try {
-        this.writer.append(text, ts);
-        this.log("info", `[${ts.toISOString()}] ${text}`);
+        this.writer.appendOrInsert(text, ts, "mac");
+        this.log("info", `[${ts.toISOString()}][mac] ${text}`);
       } catch (err: any) {
         this.log("error", `write failed: ${err.message}`);
       }
@@ -139,7 +123,52 @@ class AiLifeLogPlugin extends PluginBase {
       this.log("error", `asr error: ${err.message}`);
     });
 
-    await this.startCapture();
+    if (process.platform === "darwin") {
+      this.macSource = new MacMicSource({
+        log: (l, m) => this.log(l, m),
+        onActivity: (s) => void this.setActivity(s),
+      });
+      try {
+        await this.macSource.start((pcm, _ts) => this.pipeline?.feed(pcm));
+      } catch (err: any) {
+        this.errorReason = `mac source start failed: ${err.message}`;
+        this.log("error", this.errorReason);
+        await this.setActivity(`error: ${this.errorReason}`);
+      }
+    } else {
+      this.log("info", `mac mic source disabled on platform=${process.platform} (Swift AudioCapture is darwin-only)`);
+    }
+
+    // Optional remote upload server (mobile clients post Opus chunks here).
+    const enableRemote = process.env.AI_LIFE_LOG_REMOTE_UPLOAD === "true";
+    if (enableRemote) {
+      const remotePort = parseInt(process.env.AI_LIFE_LOG_HTTP_PORT ?? "4810", 10);
+      const audioDir = resolve(this.dataDir, "audio");
+      this.remoteSource = new RemoteUploadSource({
+        port: remotePort,
+        audioDir,
+        pipeline: this.pipeline,
+        authToken: process.env.AI_LIFE_LOG_TOKEN,
+        log: (l, m) => this.log(l, `[remote] ${m}`),
+      });
+      this.remoteSource.on("text", (text: string, tsMs: number, tag: string) => {
+        try {
+          this.writer.appendOrInsert(text, new Date(tsMs), tag);
+          this.log("info", `[${new Date(tsMs).toISOString()}][${tag}] ${text}`);
+        } catch (err: any) {
+          this.log("error", `remote write failed: ${err.message}`);
+        }
+      });
+      try {
+        const actualPort = await this.remoteSource.start();
+        this.log("info", `remote upload http listening on :${actualPort}`);
+      } catch (err: any) {
+        this.log("error", `remote source start failed: ${err.message}`);
+        this.remoteSource = null;
+      }
+    } else {
+      this.log("info", "remote upload disabled (set AI_LIFE_LOG_REMOTE_UPLOAD=true)");
+    }
 
     // Log RSS every 10 min for long-run memory observability
     this.rssTimer = setInterval(() => {
@@ -147,44 +176,15 @@ class AiLifeLogPlugin extends PluginBase {
       this.log("info", `rss=${rss}MB`);
     }, 600_000);
 
-    // Wake watchdog: detect macOS sleep via timer drift. AVAudioEngine inside the
-    // AudioCapture binary often gets stuck across system sleep — process stays
-    // alive and stdout pipe is open, but no PCM samples flow. Drift detection
-    // catches this without needing OS-specific notifications.
-    this.lastTick = Date.now();
-    this.wakeTimer = setInterval(() => this.wakeTick(), WATCHDOG_TICK_MS);
-  }
-
-  private wakeTick(): void {
-    const now = Date.now();
-    const drift = now - this.lastTick - WATCHDOG_TICK_MS;
-    this.lastTick = now;
-    if (drift > SLEEP_DRIFT_MS && this.running && !this.restarting) {
-      this.log("warn", `wake watchdog: detected ${Math.round(drift / 1000)}s drift, restarting capture`);
-      void this.restartCapture("sleep-wake");
-    }
-  }
-
-  private async restartCapture(reason: string): Promise<void> {
-    if (this.restarting) return;
-    this.restarting = true;
-    this.log("info", `restart capture (reason=${reason}, attempt=${this.restartAttempt + 1})`);
-    try {
-      try { this.capture?.stop(); } catch (err: any) { this.log("warn", `capture.stop in restart: ${err.message}`); }
-      this.capture = null;
-      this.running = false;
-      // Drop any in-flight VAD state so post-restart audio doesn't get glued
-      // to pre-sleep audio (would create one giant utterance + bad ASR).
-      try { this.pipeline?.stop(); } catch { /* best effort */ }
-      await this.startCapture();
-      if (this.running) {
-        this.restartAttempt = 0;
-        this.errorReason = null;
-        this.log("info", `capture restart succeeded (reason=${reason})`);
-      }
-    } finally {
-      this.restarting = false;
-    }
+    // Daily audio retention sweep (covers audio/, corrupt/, failed/)
+    const retainDays = parseInt(process.env.AI_LIFE_LOG_AUDIO_RETAIN_DAYS ?? "7", 10);
+    const audioDir = resolve(this.dataDir, "audio");
+    const initStats = cleanOldAudio(audioDir, retainDays);
+    this.log("info", `cleaner: initial sweep removed ${initStats.deleted} files (retain=${retainDays}d)`);
+    this.cleanerTimer = setInterval(() => {
+      const stats = cleanOldAudio(audioDir, retainDays);
+      if (stats.deleted > 0) this.log("info", `cleaner: deleted ${stats.deleted} old .opus files`);
+    }, 86400_000);
   }
 
   protected onDisconnect(): void {
@@ -215,7 +215,7 @@ class AiLifeLogPlugin extends PluginBase {
         const stats = this.writer.stats();
         const mode = this.errorReason
           ? `error: ${this.errorReason}`
-          : (this.pipeline?.isPaused() ? "paused" : (this.running ? "recording" : "idle"));
+          : (this.pipeline?.isPaused() ? "paused" : (this.macSource ? "recording" : "idle"));
         const uptime = Math.round((Date.now() - this.startTime) / 1000);
         return { reply: `${mode}; uptime=${uptime}s; today: lines=${stats.lines}, chars=${stats.chars}, file=${stats.file}` };
       }
@@ -224,53 +224,14 @@ class AiLifeLogPlugin extends PluginBase {
     }
   }
 
-  private async startCapture(): Promise<void> {
-    if (!this.pipeline) return;
-    this.capture = new AudioCapture("mic");
-    this.capture.on("data", (pcm: Buffer) => this.pipeline?.feed(pcm));
-    this.capture.on("log", (line: string) => this.log("info", `[capture] ${line}`));
-    this.capture.on("error", (err: Error) => this.log("error", `capture error: ${err.message}`));
-    this.capture.on("exit", (code: number | null) => {
-      this.log("warn", `capture exited code=${code}`);
-      this.running = false;
-      if (this.restarting) return; // 我们正在主动重启，不再触发新一轮
-      // Auto-restart with backoff. Most exits we'd see in the wild are transient
-      // (sleep-wake, audio device hot-unplug). Cap retries to avoid tight loops
-      // when something is fundamentally broken (mic permission revoked, etc).
-      const attempt = this.restartAttempt;
-      if (attempt >= RESTART_BACKOFF_MS.length) {
-        this.errorReason = `capture exited (code=${code}); ${attempt} restarts failed, giving up`;
-        this.log("error", this.errorReason);
-        void this.setActivity("error: capture exited (give up)");
-        return;
-      }
-      const delay = RESTART_BACKOFF_MS[attempt];
-      this.restartAttempt = attempt + 1;
-      this.errorReason = `capture exited (code=${code}); restarting in ${delay}ms (attempt ${this.restartAttempt})`;
-      this.log("warn", this.errorReason);
-      void this.setActivity(`error: capture exited, restart in ${delay}ms`);
-      setTimeout(() => { void this.restartCapture(`capture-exit-code-${code}`); }, delay);
-    });
-
-    try {
-      await this.capture.start();
-      this.running = true;
-      await this.setActivity("recording");
-      this.log("info", "recording started (mic)");
-    } catch (err: any) {
-      this.errorReason = `capture start failed: ${err.message}`;
-      this.log("error", this.errorReason);
-      await this.setActivity(`error: ${this.errorReason}`);
-    }
-  }
-
   private async stopCapture(): Promise<void> {
-    try { this.capture?.stop(); } catch (err: any) { this.log("warn", `capture.stop: ${err.message}`); }
+    try { await this.macSource?.stop(); } catch (err: any) { this.log("warn", `macSource.stop: ${err.message}`); }
+    try { await this.remoteSource?.stop(); } catch (err: any) { this.log("warn", `remoteSource.stop: ${err.message}`); }
     try { this.pipeline?.stop(); } catch (err: any) { this.log("warn", `pipeline.stop: ${err.message}`); }
     if (this.rssTimer) { clearInterval(this.rssTimer); this.rssTimer = null; }
-    if (this.wakeTimer) { clearInterval(this.wakeTimer); this.wakeTimer = null; }
-    this.capture = null;
-    this.running = false;
+    if (this.cleanerTimer) { clearInterval(this.cleanerTimer); this.cleanerTimer = null; }
+    this.macSource = null;
+    this.remoteSource = null;
   }
 
   private async setActivity(activity: string): Promise<void> {

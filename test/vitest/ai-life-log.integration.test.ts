@@ -110,7 +110,7 @@ describe.skipIf(!haveModels)(
           const stats = writer.stats();
           expect(stats.lines).toBe(events.length);
           const fileContent = readFileSync(stats.file, "utf8");
-          expect(fileContent).toMatch(/^\[\d{2}:\d{2}:\d{2}\] /);
+          expect(fileContent).toMatch(/^\[\d{2}:\d{2}:\d{2}\]\[mac\] /);
         } finally {
           rmSync(tmpLogDir, { recursive: true, force: true });
         }

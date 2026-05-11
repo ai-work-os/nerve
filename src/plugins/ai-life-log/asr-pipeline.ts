@@ -81,6 +81,27 @@ export class AsrPipeline extends EventEmitter {
     this.drain();
   }
 
+  /**
+   * Synchronously recognize an entire PCM chunk in one shot, bypassing VAD.
+   * Used by RemoteUploadSource where chunk boundaries are already known.
+   * Returns trimmed transcript or "" if empty / no speech.
+   */
+  recognizeChunk(pcmInt16: Buffer): string {
+    if (pcmInt16.length === 0) return "";
+    const samples = int16ToFloat32(pcmInt16);
+    if (samples.length === 0) return "";
+    try {
+      const stream = this.recognizer.createStream();
+      stream.acceptWaveform({ samples, sampleRate: this.sampleRate });
+      this.recognizer.decode(stream);
+      const text = this.recognizer.getResult(stream).text ?? "";
+      return text.trim();
+    } catch (err) {
+      this.emit("error", err);
+      return "";
+    }
+  }
+
   private drain(): void {
     while (!this.vad.isEmpty()) {
       const seg = this.vad.front();
