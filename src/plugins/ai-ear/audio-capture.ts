@@ -96,6 +96,36 @@ export class AudioCapture extends EventEmitter {
     }
   }
 
+  /**
+   * Send SIGTERM and wait for the child to actually exit. If it doesn't exit
+   * within timeoutMs, escalate to SIGKILL. Returns when proc has been reaped.
+   *
+   * Critical for MacMicSource.restartCapture: stop() alone returns immediately
+   * after sending SIGTERM, but the Swift binary takes 100–300ms (sometimes
+   * longer across sleep-wake) to clean up its AVAudioEngine. If we spawn a new
+   * AudioCapture before the old one releases the mic, both processes hold the
+   * input simultaneously and PCM streams interleave into the same pipeline,
+   * producing degenerate ASR output ("对对对", "点点点", "好好好好好").
+   */
+  async stopAndWait(timeoutMs: number = 2000): Promise<void> {
+    const proc = this.proc;
+    if (!proc || proc.killed || proc.exitCode !== null) return;
+
+    const exited = new Promise<void>((resolveExit) => {
+      proc.once("exit", () => resolveExit());
+    });
+
+    try { proc.kill("SIGTERM"); } catch { /* already dead */ }
+
+    const timer = new Promise<"timeout">((resolveT) => setTimeout(() => resolveT("timeout"), timeoutMs));
+    const which = await Promise.race([exited.then(() => "exited" as const), timer]);
+
+    if (which === "timeout" && this.proc && !this.proc.killed && this.proc.exitCode === null) {
+      try { proc.kill("SIGKILL"); } catch { /* race — already dying */ }
+      await exited;
+    }
+  }
+
   get running(): boolean {
     return this.proc !== null && !this.proc.killed;
   }
