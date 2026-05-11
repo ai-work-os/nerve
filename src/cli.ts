@@ -140,10 +140,13 @@ async function cmdServe(args: string[]) {
     startDuty();
   }
 
-  // Auto-start ai-life-log plugin (macOS only; silently skips otherwise)
+  // Auto-start ai-life-log plugin: macOS uses local mic; Linux/others only when
+  // AI_LIFE_LOG_REMOTE_UPLOAD=true (mobile clients post Opus chunks via HTTP).
   let lifeLogNodeId: string | undefined;
+  const lifeLogRemoteUpload = process.env.AI_LIFE_LOG_REMOTE_UPLOAD === "true";
+  const lifeLogShouldStart = !noLifeLog && (process.platform === "darwin" || lifeLogRemoteUpload);
 
-  if (!noLifeLog && process.platform === "darwin") {
+  if (lifeLogShouldStart) {
     const startLifeLog = () => {
       const result = nerve.cleanupStaleGuardian("ai-life-log");
       if (result === "alive") {
@@ -160,7 +163,7 @@ async function cmdServe(args: string[]) {
     };
     startLifeLog();
   } else if (!noLifeLog) {
-    info(`ai-life-log skipped (platform=${process.platform}, requires darwin)`);
+    info(`ai-life-log skipped (platform=${process.platform}, AI_LIFE_LOG_REMOTE_UPLOAD!=true)`);
   }
 
   void startStartupScenes({
