@@ -453,7 +453,7 @@ export class HttpRouter {
       }
 
       case "/node/capabilities": {
-        const { listProgramAdapters } = await import("../adapter.js");
+        const { listProgramAdapters } = await import("../node/adapter.js");
         const staticAdapters = listProgramAdapters();
 
         const capabilities: Record<string, { description: string; commands: Record<string, any>; usage?: string; spawned: boolean }> = {};

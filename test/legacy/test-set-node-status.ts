@@ -13,8 +13,8 @@
  * 运行: npx tsx test/test-set-node-status.ts
  */
 
-import { NodePool } from "../../src/node-pool.js";
-import { NerveNode } from "../../src/node.js";
+import { NodePool } from "../../src/node/node-pool.js";
+import { NerveNode } from "../../src/node/node.js";
 
 // --- Test infra ---
 

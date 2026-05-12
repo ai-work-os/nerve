@@ -3,7 +3,7 @@
  * Unit tests for adapter.ts — pure function tests, no server needed.
  */
 
-import { getAdapter, listAdapters, listProgramAdapters } from "../../src/adapter.js";
+import { getAdapter, listAdapters, listProgramAdapters } from "../../src/node/adapter.js";
 
 let passed = 0;
 let failed = 0;

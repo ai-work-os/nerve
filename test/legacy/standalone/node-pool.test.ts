@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/node-pool.test.ts
  */
 
-import { NodePool } from "../../../src/node-pool.js";
+import { NodePool } from "../../../src/node/node-pool.js";
 
 let passed = 0;
 let failed = 0;

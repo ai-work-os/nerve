@@ -21,8 +21,8 @@
  * 运行: npx tsx test/test-cleanup-node.ts
  */
 
-import { NodePool } from "../../src/node-pool.js";
-import { NerveNode } from "../../src/node.js";
+import { NodePool } from "../../src/node/node-pool.js";
+import { NerveNode } from "../../src/node/node.js";
 import { EventEmitter } from "node:events";
 
 // --- Minimal mock store ---

@@ -38,8 +38,8 @@ import {
   type DmRecord,
 } from "../../../src/plugins/user-recorder/logic.js";
 
-import { NodePool } from "../../../src/node-pool.js";
-import { NerveNode } from "../../../src/node.js";
+import { NodePool } from "../../../src/node/node-pool.js";
+import { NerveNode } from "../../../src/node/node.js";
 
 // ============================================================
 // formatDmRecord — prompt type

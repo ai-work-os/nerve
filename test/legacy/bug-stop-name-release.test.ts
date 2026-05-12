@@ -15,8 +15,8 @@
  * 运行: npx tsx test/bug-stop-name-release.test.ts
  */
 
-import { NodePool } from "../../src/node-pool.js";
-import { NerveNode } from "../../src/node.js";
+import { NodePool } from "../../src/node/node-pool.js";
+import { NerveNode } from "../../src/node/node.js";
 
 // --- Minimal mock store ---
 const noopStore = {

@@ -10,7 +10,7 @@
  * Run: npx tsx test/test-model-registry.ts
  */
 
-import { getContextWindow } from "../../src/model-registry.js";
+import { getContextWindow } from "../../src/node/model-registry.js";
 
 // --- Test infrastructure ---
 

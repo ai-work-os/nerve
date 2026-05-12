@@ -11,7 +11,7 @@
  */
 
 import { ChannelManager } from "../../src/channel/channel-manager.js";
-import { NerveNode } from "../../src/node.js";
+import { NerveNode } from "../../src/node/node.js";
 
 // --- Test infra ---
 

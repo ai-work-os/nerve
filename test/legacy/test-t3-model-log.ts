@@ -9,8 +9,8 @@
  * Run: npx tsx test/test-t3-model-log.ts
  */
 
-import { NerveNode } from "../../src/node.js";
-import { getAdapter } from "../../src/adapter.js";
+import { NerveNode } from "../../src/node/node.js";
+import { getAdapter } from "../../src/node/adapter.js";
 
 // --- Test infrastructure ---
 

@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/node.test.ts
  */
 
-import { NerveNode } from "../../../src/node.js";
+import { NerveNode } from "../../../src/node/node.js";
 import type { Message } from "../../../src/transport/protocol.js";
 
 let passed = 0;

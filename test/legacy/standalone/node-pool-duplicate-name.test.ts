@@ -8,8 +8,8 @@
  * Run: npx tsx test/unit/node-pool-duplicate-name.test.ts
  */
 
-import { NodePool } from "../../../src/node-pool.js";
-import { NerveNode } from "../../../src/node.js";
+import { NodePool } from "../../../src/node/node-pool.js";
+import { NerveNode } from "../../../src/node/node.js";
 
 let passed = 0;
 let failed = 0;

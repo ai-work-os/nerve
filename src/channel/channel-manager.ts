@@ -1,10 +1,10 @@
 import { Channel } from "./channel.js";
 import { ChannelStore } from "../storage/channel-store.js";
-import { NodePool } from "../node-pool.js";
-import type { SpawnOptions } from "../node-pool.js";
+import { NodePool } from "../node/node-pool.js";
+import type { SpawnOptions } from "../node/node-pool.js";
 import { route } from "./router.js";
 import { Store } from "../storage/store.js";
-import { NerveNode } from "../node.js";
+import { NerveNode } from "../node/node.js";
 import { BlobStore } from "../storage/blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "../transport/protocol.js";
 import type { WebSocket } from "ws";

@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/adapter.test.ts
  */
 
-import { getAdapter, listAdapters } from "../../../src/adapter.js";
+import { getAdapter, listAdapters } from "../../../src/node/adapter.js";
 
 let passed = 0;
 let failed = 0;
