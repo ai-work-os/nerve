@@ -33,3 +33,39 @@ describe("logger.child", () => {
     spy.mockRestore();
   });
 });
+
+describe("level filtering", () => {
+  beforeEach(() => { delete process.env.NERVE_DEBUG; logger.__resetForTest?.(); });
+
+  it("DEBUG hidden by default", () => {
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const c = logger.child({ module: "test-mod" });
+    c.debug("hidden");
+    expect(spy.mock.calls.map(x => x[0]).join("")).not.toContain("hidden");
+    spy.mockRestore();
+  });
+
+  it("NERVE_DEBUG=mod enables DEBUG for that module only", () => {
+    process.env.NERVE_DEBUG = "mod-a";
+    logger.__resetForTest?.();
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    logger.child({ module: "mod-a" }).debug("show-a");
+    logger.child({ module: "mod-b" }).debug("hide-b");
+    const out = spy.mock.calls.map(x => x[0]).join("");
+    expect(out).toContain("show-a");
+    expect(out).not.toContain("hide-b");
+    spy.mockRestore();
+  });
+
+  it("NERVE_DEBUG=plugin:* matches glob", () => {
+    process.env.NERVE_DEBUG = "plugin:*";
+    logger.__resetForTest?.();
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    logger.child({ module: "plugin:duty-monitor" }).debug("show-plugin");
+    logger.child({ module: "core" }).debug("hide-core");
+    const out = spy.mock.calls.map(x => x[0]).join("");
+    expect(out).toContain("show-plugin");
+    expect(out).not.toContain("hide-core");
+    spy.mockRestore();
+  });
+});

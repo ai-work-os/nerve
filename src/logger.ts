@@ -36,7 +36,38 @@ function formatContext(ctx: LogContext): string {
   return parts.join(" ");
 }
 
+const LEVEL_ORDER: Record<LogLevel, number> = {
+  TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4,
+};
+
+let debugMatchers: ((module: string) => boolean)[] = [];
+function parseNerveDebug(): void {
+  debugMatchers = [];
+  const raw = process.env.NERVE_DEBUG;
+  if (!raw) return;
+  for (const pat of raw.split(",").map(s => s.trim()).filter(Boolean)) {
+    if (pat.includes("*")) {
+      const regex = new RegExp("^" + pat.replace(/\*/g, ".*") + "$");
+      debugMatchers.push(m => regex.test(m));
+    } else {
+      debugMatchers.push(m => m === pat);
+    }
+  }
+}
+parseNerveDebug();
+
+function shouldLog(level: LogLevel, module?: string): boolean {
+  const threshold = LEVEL_ORDER.INFO;
+  const levelNum = LEVEL_ORDER[level];
+  if (levelNum >= threshold) return true;
+  if ((level === "DEBUG" || level === "TRACE") && module) {
+    return debugMatchers.some(fn => fn(module));
+  }
+  return false;
+}
+
 function emit(level: LogLevel, ctx: LogContext, msg: string): void {
+  if (!shouldLog(level, ctx.module)) return;
   const ctxStr = formatContext(ctx);
   const prefix = ctxStr ? ` ${ctxStr}` : "";
   const line = `${localIso()} [${level}]${prefix} ${msg}`;
@@ -84,5 +115,5 @@ export function closeLog(): void {
 }
 
 export function __resetForTest(): void {
-  /* placeholder — next task adds NERVE_DEBUG re-parse */
+  parseNerveDebug();
 }
