@@ -4,13 +4,13 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { NerveNode } from "./node.js";
-import { StdioTransport, WebSocketTransport, NullTransport } from "./transport.js";
+import { StdioTransport, WebSocketTransport, NullTransport } from "./transport/transport.js";
 import { AcpClient, type McpServerConfig, type PromptAttachment } from "./acp-client.js";
 import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "./infra/logger.js";
 import type { Store } from "./storage/store.js";
-import type { NodeStatus, PermissionLevel, Message, MessageAction } from "./protocol.js";
+import type { NodeStatus, PermissionLevel, Message, MessageAction } from "./transport/protocol.js";
 import type { WebSocket } from "ws";
 
 export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;

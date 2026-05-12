@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import type { MessageInfo } from "./protocol.js";
+import type { MessageInfo } from "./transport/protocol.js";
 import type { Store } from "./storage/store.js";
 
 export class Channel {

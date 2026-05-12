@@ -5,7 +5,7 @@
  */
 
 import { NerveNode } from "../../../src/node.js";
-import type { Message } from "../../../src/protocol.js";
+import type { Message } from "../../../src/transport/protocol.js";
 
 let passed = 0;
 let failed = 0;

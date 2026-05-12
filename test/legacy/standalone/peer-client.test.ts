@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { createServer } from "node:http";
-import { PeerClient } from "../../../src/peer-client.js";
+import { PeerClient } from "../../../src/transport/peer-client.js";
 
 const server = createServer((req, res) => {
   let body = "";

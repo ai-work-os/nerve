@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { RemoteRegistry } from "../../../src/remote-registry.js";
+import { RemoteRegistry } from "../../../src/transport/remote-registry.js";
 
 let pass = 0;
 let fail = 0;

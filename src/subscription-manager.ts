@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import type { Message } from "./protocol.js";
+import type { Message } from "./transport/protocol.js";
 
 /**
  * Manages direct node subscriptions (node.subscribe / node.unsubscribe).

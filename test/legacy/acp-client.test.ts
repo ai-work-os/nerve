@@ -15,8 +15,8 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { AcpClient, type AcpClientOptions } from "../../src/acp-client.js";
-import type { StdioTransport } from "../../src/transport.js";
-import type { JsonRpcMessage } from "../../src/protocol.js";
+import type { StdioTransport } from "../../src/transport/transport.js";
+import type { JsonRpcMessage } from "../../src/transport/protocol.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TMP_DIR = resolve(__dirname, "..", ".test-data-acp-client");

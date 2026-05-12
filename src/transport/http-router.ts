@@ -2,10 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
-import type { ChannelManager } from "./channel-manager.js";
-import type { SceneManager } from "./scene-manager.js";
+import type { ChannelManager } from "../channel-manager.js";
+import type { SceneManager } from "../scene-manager.js";
 import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
-import * as log from "./infra/logger.js";
+import * as log from "../infra/logger.js";
 
 /**
  * HTTP API router for process nodes (CLI agents) to manage channels via terminal/curl.
@@ -453,7 +453,7 @@ export class HttpRouter {
       }
 
       case "/node/capabilities": {
-        const { listProgramAdapters } = await import("./adapter.js");
+        const { listProgramAdapters } = await import("../adapter.js");
         const staticAdapters = listProgramAdapters();
 
         const capabilities: Record<string, { description: string; commands: Record<string, any>; usage?: string; spawned: boolean }> = {};

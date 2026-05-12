@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadPeerConfig, isLocalRequest, hasValidToken } from "../../../src/peer-config.js";
+import { loadPeerConfig, isLocalRequest, hasValidToken } from "../../../src/transport/peer-config.js";
 
 let pass = 0;
 let fail = 0;

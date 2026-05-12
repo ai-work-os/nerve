@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Message, MessageInfo } from "../protocol.js";
+import type { Message, MessageInfo } from "../transport/protocol.js";
 
 export class Store {
   private db: Database.Database;

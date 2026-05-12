@@ -5,7 +5,7 @@
  */
 
 import { Scheduler } from "../../../src/scheduler.js";
-import type { MessageInfo } from "../../../src/protocol.js";
+import type { MessageInfo } from "../../../src/transport/protocol.js";
 
 let passed = 0;
 let failed = 0;

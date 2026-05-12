@@ -1,5 +1,5 @@
 import type { Channel } from "./channel.js";
-import type { MessageInfo } from "./protocol.js";
+import type { MessageInfo } from "./transport/protocol.js";
 
 /**
  * Parse @mentions from message content.

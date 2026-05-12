@@ -1,7 +1,7 @@
 import { ChildProcess, spawn } from "node:child_process";
 import type { WebSocket } from "ws";
 import { LineBuffer, type JsonRpcMessage } from "./protocol.js";
-import * as log from "./infra/logger.js";
+import * as log from "../infra/logger.js";
 
 export type MessageHandler = (msg: JsonRpcMessage) => void;
 export type CloseHandler = (code: number | null) => void;

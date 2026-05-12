@@ -1,5 +1,5 @@
-import type { Transport } from "./transport.js";
-import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message } from "./protocol.js";
+import type { Transport } from "./transport/transport.js";
+import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message } from "./transport/protocol.js";
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
 import { getContextWindow } from "./model-registry.js";
 import { getAdapter } from "./adapter.js";

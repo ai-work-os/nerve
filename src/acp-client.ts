@@ -2,8 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { nanoid } from "nanoid";
-import type { StdioTransport } from "./transport.js";
-import type { JsonRpcMessage } from "./protocol.js";
+import type { StdioTransport } from "./transport/transport.js";
+import type { JsonRpcMessage } from "./transport/protocol.js";
 import {
   ClientSideConnection,
   RequestError,

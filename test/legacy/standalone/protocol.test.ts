@@ -13,8 +13,8 @@ import {
   encodeResponse,
   encodeError,
   encodeNotification,
-} from "../../../src/protocol.js";
-import type { JsonRpcMessage } from "../../../src/protocol.js";
+} from "../../../src/transport/protocol.js";
+import type { JsonRpcMessage } from "../../../src/transport/protocol.js";
 
 // --- Test infrastructure ---
 
