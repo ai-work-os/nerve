@@ -7,8 +7,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChannelManager } from "../../../src/channel-manager.js";
-import { handleRpcRequest, type RequestResult } from "../../../src/request-handler.js";
+import { ChannelManager } from "../../../src/channel/channel-manager.js";
+import { handleRpcRequest, type RequestResult } from "../../../src/channel/request-handler.js";
 
 // --- Test infrastructure ---
 

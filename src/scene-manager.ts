@@ -10,7 +10,7 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import * as log from "./infra/logger.js";
-import type { ChannelManager } from "./channel-manager.js";
+import type { ChannelManager } from "./channel/channel-manager.js";
 
 // --- Types ---
 

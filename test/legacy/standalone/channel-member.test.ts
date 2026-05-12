@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
-import { parseMentions } from "../../../src/router.js";
-import { parseRemoteMemberName, remoteMemberId } from "../../../src/channel-member.js";
+import { parseMentions } from "../../../src/channel/router.js";
+import { parseRemoteMemberName, remoteMemberId } from "../../../src/channel/channel-member.js";
 
 let pass = 0;
 let fail = 0;

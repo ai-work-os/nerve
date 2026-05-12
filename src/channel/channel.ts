@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
-import type { MessageInfo } from "./transport/protocol.js";
-import type { Store } from "./storage/store.js";
+import type { MessageInfo } from "../transport/protocol.js";
+import type { Store } from "../storage/store.js";
 
 export class Channel {
   readonly id: string;

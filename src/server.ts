@@ -3,12 +3,12 @@ import { resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { WebSocketServer, WebSocket } from "ws";
 import type { PromptAttachment } from "./acp-client.js";
-import { ChannelManager } from "./channel-manager.js";
-import { SubscriptionManager } from "./subscription-manager.js";
+import { ChannelManager } from "./channel/channel-manager.js";
+import { SubscriptionManager } from "./channel/subscription-manager.js";
 import { HttpRouter } from "./transport/http-router.js";
 import { SceneManager } from "./scene-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage, Message } from "./transport/protocol.js";
-import { handleRpcRequest } from "./request-handler.js";
+import { handleRpcRequest } from "./channel/request-handler.js";
 import * as log from "./infra/logger.js";
 import { localIso, localTimeOnly } from "./infra/time-util.js";
 

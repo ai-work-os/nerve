@@ -2,7 +2,7 @@
 
 import { resolve } from "node:path";
 import { homedir } from "node:os";
-import { ChannelManager } from "./channel-manager.js";
+import { ChannelManager } from "./channel/channel-manager.js";
 import { Server } from "./server.js";
 
 // Parse CLI args

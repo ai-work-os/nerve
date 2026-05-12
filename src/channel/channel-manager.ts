@@ -1,19 +1,19 @@
 import { Channel } from "./channel.js";
-import { ChannelStore } from "./storage/channel-store.js";
-import { NodePool } from "./node-pool.js";
-import type { SpawnOptions } from "./node-pool.js";
+import { ChannelStore } from "../storage/channel-store.js";
+import { NodePool } from "../node-pool.js";
+import type { SpawnOptions } from "../node-pool.js";
 import { route } from "./router.js";
-import { Store } from "./storage/store.js";
-import { NerveNode } from "./node.js";
-import { BlobStore } from "./storage/blob-store.js";
-import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "./transport/protocol.js";
+import { Store } from "../storage/store.js";
+import { NerveNode } from "../node.js";
+import { BlobStore } from "../storage/blob-store.js";
+import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "../transport/protocol.js";
 import type { WebSocket } from "ws";
-import { EventLogger } from "./infra/event-logger.js";
-import { PeerClient } from "./transport/peer-client.js";
-import { loadPeerConfig } from "./transport/peer-config.js";
+import { EventLogger } from "../infra/event-logger.js";
+import { PeerClient } from "../transport/peer-client.js";
+import { loadPeerConfig } from "../transport/peer-config.js";
 import { isRemoteMemberId } from "./channel-member.js";
-import { RemoteRegistry, type RemoteMemberRecord, type RemoteOriginRecord } from "./transport/remote-registry.js";
-import * as log from "./infra/logger.js";
+import { RemoteRegistry, type RemoteMemberRecord, type RemoteOriginRecord } from "../transport/remote-registry.js";
+import * as log from "../infra/logger.js";
 
 /**
  * Build the system prompt injected into agent nodes when joining a channel.

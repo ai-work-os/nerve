@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
-import type { ChannelManager } from "../channel-manager.js";
+import type { ChannelManager } from "../channel/channel-manager.js";
 import type { SceneManager } from "../scene-manager.js";
 import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
 import * as log from "../infra/logger.js";

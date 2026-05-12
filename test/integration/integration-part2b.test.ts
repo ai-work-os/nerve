@@ -192,7 +192,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
   describe("guardian tests", () => {
     it("Guardian: cleanupStaleGuardian removes dead guardian + channels", async () => {
       // Import ChannelManager to test cleanupStaleGuardian() directly
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-test-cleanup");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -216,7 +216,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
     });
 
     it("Guardian: cleanupStaleGuardian skips live guardian", async () => {
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-test-alive");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -233,7 +233,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
     });
 
     it("Guardian: cleanupStaleGuardian ignores non-guardian nodes", async () => {
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-test-nong");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -248,7 +248,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
     });
 
     it("Guardian: cleanupStaleGuardian returns 'none' when no node", async () => {
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-test-none");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -258,7 +258,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
     });
 
     it("Guardian: dead program node → full cleanup (pool + channels)", async () => {
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-dead-prog");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -283,7 +283,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
     });
 
     it("Guardian: alive program node → skip cleanup", async () => {
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-alive-prog");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -300,7 +300,7 @@ describe("Nerve Integration Tests - Part 2b", () => {
     });
 
     it("Guardian: non-program WS node should not block real guardian", async () => {
-      const { ChannelManager } = await import("../../src/channel-manager.js");
+      const { ChannelManager } = await import("../../src/channel/channel-manager.js");
       const tmpDataDir = resolve(getTestData(), "guardian-non-prog");
       mkdirSync(tmpDataDir, { recursive: true });
       const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });

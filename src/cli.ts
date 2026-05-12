@@ -86,7 +86,7 @@ async function cmdServe(args: string[]) {
   const logFile = resolve(dataDir, "nerve.log");
   initLog(logFile);
 
-  const { ChannelManager } = await import("./channel-manager.js");
+  const { ChannelManager } = await import("./channel/channel-manager.js");
   const { Server } = await import("./server.js");
   const { startStartupScenes } = await import("./startup.js");
 

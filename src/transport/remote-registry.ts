@@ -1,4 +1,4 @@
-import { remoteMemberId, remoteMemberName } from "../channel-member.js";
+import { remoteMemberId, remoteMemberName } from "../channel/channel-member.js";
 
 export interface RemoteMemberRecord {
   localName: string;

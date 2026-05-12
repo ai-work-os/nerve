@@ -266,7 +266,7 @@ async function test3_stoppedBroadcastIncludesReason() {
 async function test4_programNodeManualStopReasonManual() {
   console.log("\n▸ T4: 程序节点手动 stop → reason=manual（非 normal）");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const { mkdirSync } = await import("node:fs");
   const EventEmitter = (await import("node:events")).default;
   const tmpDataDir = resolve(ROOT, ".test-data-exit-reason-t4");

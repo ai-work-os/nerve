@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/router.test.ts
  */
 
-import { parseMentions, route } from "../../../src/router.js";
+import { parseMentions, route } from "../../../src/channel/router.js";
 
 // --- Test infrastructure ---
 

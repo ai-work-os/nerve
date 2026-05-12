@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/channel-manager.test.ts
  */
 
-import { buildSystemPrompt } from "../../../src/channel-manager.js";
+import { buildSystemPrompt } from "../../../src/channel/channel-manager.js";
 
 // --- Test infrastructure ---
 

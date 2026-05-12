@@ -217,7 +217,7 @@ async function test4_cleanupStale() {
   console.log("\n▸ Test 4: cleanupStaleGuardian 对 user-recorder 也能用（单元测试）");
 
   // Import ChannelManager directly for unit test
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
 
   const unitDataDir = resolve(TEST_DATA + "-unit");
   if (existsSync(unitDataDir)) rmSync(unitDataDir, { recursive: true });

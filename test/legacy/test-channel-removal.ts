@@ -10,7 +10,7 @@
  * 运行: npx tsx test/test-channel-removal.ts
  */
 
-import { ChannelManager } from "../../src/channel-manager.js";
+import { ChannelManager } from "../../src/channel/channel-manager.js";
 import { NerveNode } from "../../src/node.js";
 
 // --- Test infra ---

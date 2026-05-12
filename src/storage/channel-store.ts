@@ -1,4 +1,4 @@
-import { Channel } from "../channel.js";
+import { Channel } from "../channel/channel.js";
 import type { Store } from "./store.js";
 import type { MessageInfo } from "../transport/protocol.js";
 import * as log from "../infra/logger.js";

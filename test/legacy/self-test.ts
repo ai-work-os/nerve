@@ -3769,7 +3769,7 @@ async function testGuardianCleanupDeadNodeBeforeSpawn() {
   console.log("\n▸ Guardian: cleanupStaleGuardian removes dead guardian + channels");
 
   // Import ChannelManager to test cleanupStaleGuardian() directly
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-test-cleanup");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -3795,7 +3795,7 @@ async function testGuardianCleanupDeadNodeBeforeSpawn() {
 async function testGuardianSkipSpawnIfAlive() {
   console.log("\n▸ Guardian: cleanupStaleGuardian skips live guardian");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-test-alive");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -3814,7 +3814,7 @@ async function testGuardianSkipSpawnIfAlive() {
 async function testGuardianCleanupIgnoresNonGuardian() {
   console.log("\n▸ Guardian: cleanupStaleGuardian ignores non-guardian nodes");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-test-nong");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -3831,7 +3831,7 @@ async function testGuardianCleanupIgnoresNonGuardian() {
 async function testGuardianCleanupNoneFound() {
   console.log("\n▸ Guardian: cleanupStaleGuardian returns 'none' when no node");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-test-none");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -3845,7 +3845,7 @@ async function testGuardianCleanupNoneFound() {
 async function testGuardianCleanupDeadProgramNode() {
   console.log("\n▸ Guardian: dead program node → full cleanup (pool + channels)");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-dead-prog");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -3872,7 +3872,7 @@ async function testGuardianCleanupDeadProgramNode() {
 async function testGuardianSkipSpawnIfAliveProgramNode() {
   console.log("\n▸ Guardian: alive program node → skip cleanup");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-alive-prog");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });
@@ -3891,7 +3891,7 @@ async function testGuardianSkipSpawnIfAliveProgramNode() {
 async function testGuardianIgnoreNonProgramNode() {
   console.log("\n▸ Guardian: non-program WS node should not block real guardian");
 
-  const { ChannelManager } = await import("../../src/channel-manager.js");
+  const { ChannelManager } = await import("../../src/channel/channel-manager.js");
   const tmpDataDir = resolve(TEST_DATA, "guardian-non-prog");
   mkdirSync(tmpDataDir, { recursive: true });
   const cm = new ChannelManager({ dataDir: tmpDataDir, port: 0 });

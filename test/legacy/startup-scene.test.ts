@@ -3,7 +3,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChannelManager } from "../../src/channel-manager.js";
+import { ChannelManager } from "../../src/channel/channel-manager.js";
 import { Server } from "../../src/server.js";
 import { startStartupScenes } from "../../src/startup.js";
 
