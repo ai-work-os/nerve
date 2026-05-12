@@ -41,6 +41,9 @@ import {
   PROTOCOL_VERSION,
 } from "@agentclientprotocol/sdk";
 import * as log from "../infra/logger.js";
+import { child as childLogger } from "../infra/logger.js";
+
+const acpLog = childLogger({ module: "agent:acp" });
 
 /** Re-export McpServerStdio as McpServerConfig for backward compatibility */
 export type McpServerConfig = McpServerStdio;
@@ -80,6 +83,7 @@ function transportToStream(
         const m = msg as any;
         if (m.method === "session/update" && !("id" in m)) {
           log.debug(`[ACP] intercepted session/update: ${JSON.stringify(m.params).slice(0, 200)}`);
+          acpLog.boundary("in", "acp", { method: "session/update" });
           onUpdate?.(m.params as SessionNotification);
           return;
         }
@@ -246,6 +250,7 @@ export class AcpClient {
   async handshake(): Promise<void> {
     try {
       // Step 1: initialize
+      acpLog.boundary("out", "acp", { method: "initialize" });
       const initResult = await this.connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
         clientInfo: { name: "nerve", version: "0.1.0" },
@@ -261,10 +266,12 @@ export class AcpClient {
 
       // Step 2: authenticate (optional)
       if (this.authMethod) {
+        acpLog.boundary("out", "acp", { method: "authenticate" });
         await this.connection.authenticate({ methodId: this.authMethod });
       }
 
       // Step 3: session/new (with retry)
+      acpLog.boundary("out", "acp", { method: "session/new" });
       const sessionResult = await this.newSessionWithRetry(2);
 
       this.sessionId = sessionResult.sessionId;
@@ -340,6 +347,7 @@ export class AcpClient {
 
     try {
       this.promptInFlight = true;
+      acpLog.boundary("out", "acp", { method: "session/prompt", sessionId: this.sessionId });
 
       const result = await Promise.race([
         this.connection.prompt({
@@ -364,6 +372,7 @@ export class AcpClient {
     if (!this.sessionId) return { error: "no session" };
     if (!this.promptInFlight) return { error: "no active prompt" };
 
+    acpLog.boundary("out", "acp", { method: "session/cancel", sessionId: this.sessionId });
     await this.connection.cancel({ sessionId: this.sessionId });
     return {};
   }

@@ -2,6 +2,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import type { WebSocket } from "ws";
 import { LineBuffer, type JsonRpcMessage } from "./protocol.js";
 import * as log from "../infra/logger.js";
+import { child as childLogger, newCorrelationId } from "../infra/logger.js";
 
 export type MessageHandler = (msg: JsonRpcMessage) => void;
 export type CloseHandler = (code: number | null) => void;
@@ -128,6 +129,9 @@ export class WebSocketTransport implements Transport {
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(data.toString()) as JsonRpcMessage;
+        const correlationId = newCorrelationId();
+        const wsLog = childLogger({ module: "transport:ws", correlationId });
+        wsLog.boundary("in", "ws", { method: (msg as any).method, id: (msg as any).id });
         this.msgHandler?.(msg);
       } catch {
         // ignore malformed messages
