@@ -191,7 +191,7 @@ class McpToolClient {
     this.client = new Client({ name: "self-test", version: "0.1.0" });
     this.transport = new StdioClientTransport({
       command: "npx",
-      args: ["tsx", "src/nerve-mcp.ts"],
+      args: ["tsx", "src/mcp/nerve-mcp.ts"],
       cwd: ROOT,
       env: {
         ...process.env,

@@ -45,7 +45,7 @@ let mapNodes: (nodes: MockNode[], channelMap: Map<string, string>) => MappedNode
 
 try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod = await import("../../../src/nerve-mcp-node-list.js");
+  const mod = await import("../../../src/mcp/nerve-mcp-node-list.js");
   filterNodes = mod.filterNodes;
   mapNodes = mod.mapNodes;
 } catch {

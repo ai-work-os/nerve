@@ -1,4 +1,4 @@
-import type { MessageInfo } from "./transport/protocol.js";
+import type { MessageInfo } from "../transport/protocol.js";
 
 export interface QueueItem {
   channelId: string;

@@ -88,7 +88,7 @@ async function cmdServe(args: string[]) {
 
   const { ChannelManager } = await import("./channel/channel-manager.js");
   const { Server } = await import("./server.js");
-  const { startStartupScenes } = await import("./startup.js");
+  const { startStartupScenes } = await import("./scene/startup.js");
 
   const nerve = new ChannelManager({ dataDir, port, eventLogPath });
   const server = new Server(nerve, port);
@@ -516,7 +516,7 @@ if (!cmd || cmd === "--help" || cmd === "-h") {
 } else if (cmd === "log") {
   void cmdLog(argv.slice(1));
 } else if (cmd === "bridge" || cmd === "br") {
-  import("./nvim-bridge.js").then(m => m.main(argv.slice(1))).catch(err => die(`bridge error: ${err.message}`));
+  import("./integration/nvim-bridge.js").then(m => m.main(argv.slice(1))).catch(err => die(`bridge error: ${err.message}`));
 } else if (cmd === "scene" || cmd === "sc") {
   const sub = argv[1];
   if (!sub) die("Usage: nerve scene <list|start|stop> [name]");

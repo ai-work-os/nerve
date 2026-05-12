@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChannelManager } from "../../src/channel/channel-manager.js";
 import { Server } from "../../src/server.js";
-import { startStartupScenes } from "../../src/startup.js";
+import { startStartupScenes } from "../../src/scene/startup.js";
 
 let passed = 0;
 let failed = 0;

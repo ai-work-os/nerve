@@ -11,7 +11,7 @@
  * call ordering and prompt injection without real nodes.
  */
 
-import type { SceneConfig, SceneNodeDef, SceneOnReady } from "../../../src/scene-manager.js";
+import type { SceneConfig, SceneNodeDef, SceneOnReady } from "../../../src/scene/scene-manager.js";
 
 // --- Test infrastructure ---
 
@@ -121,7 +121,7 @@ function createMockCm(nodes: MockNode[]) {
 
 // --- Import SceneManager ---
 
-import { SceneManager } from "../../../src/scene-manager.js";
+import { SceneManager } from "../../../src/scene/scene-manager.js";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

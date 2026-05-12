@@ -2,8 +2,8 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { nanoid } from "nanoid";
-import type { StdioTransport } from "./transport/transport.js";
-import type { JsonRpcMessage } from "./transport/protocol.js";
+import type { StdioTransport } from "../transport/transport.js";
+import type { JsonRpcMessage } from "../transport/protocol.js";
 import {
   ClientSideConnection,
   RequestError,
@@ -40,7 +40,7 @@ import {
   type PermissionOptionKind,
   PROTOCOL_VERSION,
 } from "@agentclientprotocol/sdk";
-import * as log from "./infra/logger.js";
+import * as log from "../infra/logger.js";
 
 /** Re-export McpServerStdio as McpServerConfig for backward compatibility */
 export type McpServerConfig = McpServerStdio;

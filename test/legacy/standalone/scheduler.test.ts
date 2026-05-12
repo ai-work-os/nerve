@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/scheduler.test.ts
  */
 
-import { Scheduler } from "../../../src/scheduler.js";
+import { Scheduler } from "../../../src/scene/scheduler.js";
 import type { MessageInfo } from "../../../src/transport/protocol.js";
 
 let passed = 0;

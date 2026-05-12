@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { NerveNode } from "./node.js";
 import { StdioTransport, WebSocketTransport, NullTransport } from "../transport/transport.js";
-import { AcpClient, type McpServerConfig, type PromptAttachment } from "../acp-client.js";
+import { AcpClient, type McpServerConfig, type PromptAttachment } from "../agent/acp-client.js";
 import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "../infra/logger.js";
@@ -296,8 +296,8 @@ export class NodePool {
 
     // Build MCP server config for nerve tools injection
     // Detect if running in dev mode (.ts) or compiled (.js)
-    // node-pool.ts lives at src/node/, but nerve-mcp.ts lives at src/ (one level up).
-    const selfDir = dirname(dirname(fileURLToPath(import.meta.url)));
+    // node-pool.ts lives at src/node/, but nerve-mcp.ts lives at src/mcp/ (sibling dir).
+    const selfDir = join(dirname(dirname(fileURLToPath(import.meta.url))), "mcp");
     const mcpScript = existsSync(join(selfDir, "nerve-mcp.ts"))
       ? join(selfDir, "nerve-mcp.ts")
       : join(selfDir, "nerve-mcp.js");

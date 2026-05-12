@@ -3,7 +3,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadStartupConfig, startStartupScenes } from "../../../src/startup.js";
+import { loadStartupConfig, startStartupScenes } from "../../../src/scene/startup.js";
 
 let passed = 0;
 let failed = 0;

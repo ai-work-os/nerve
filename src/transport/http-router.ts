@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
 import type { ChannelManager } from "../channel/channel-manager.js";
-import type { SceneManager } from "../scene-manager.js";
+import type { SceneManager } from "../scene/scene-manager.js";
 import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
 import * as log from "../infra/logger.js";
 

@@ -53,7 +53,7 @@ class McpToolClient {
   async connect(): Promise<void> {
     this.transport = new StdioClientTransport({
       command: "npx",
-      args: ["tsx", resolve(ROOT, "src/nerve-mcp.ts")],
+      args: ["tsx", resolve(ROOT, "src/mcp/nerve-mcp.ts")],
       env: {
         ...process.env,
         NERVE_PORT: String(TEST_PORT),

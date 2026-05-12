@@ -72,7 +72,7 @@ async function main() {
 
   // Start bridge in stdout mode (no nvim sock)
   let bridgeOutput = "";
-  bridge = spawn("npx", ["tsx", "src/nvim-bridge.ts", "--port", String(PORT), "--channel", channelId, "--name", "nvim-test"], {
+  bridge = spawn("npx", ["tsx", "src/integration/nvim-bridge.ts", "--port", String(PORT), "--channel", channelId, "--name", "nvim-test"], {
     cwd: "/Users/renjinxi/.ai/nerve",
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, NVIM_LISTEN_ADDRESS: "" },
