@@ -9,6 +9,7 @@ import { AcpClient, type McpServerConfig, type PromptAttachment } from "../agent
 import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "../infra/logger.js";
+import { child as childLogger } from "../infra/logger.js";
 import type { Store } from "../storage/store.js";
 import type { NodeStatus, PermissionLevel, Message, MessageAction } from "../transport/protocol.js";
 import type { WebSocket } from "ws";
@@ -30,6 +31,7 @@ export const defaultTransportFactory: TransportFactory = {
 };
 
 export class NodePool {
+  private log = childLogger({ module: "node-pool" });
   private nodes = new Map<string, NerveNode>();
   private acpClients = new Map<string, AcpClient>();
   private nameIndex = new Map<string, string>(); // name → id
@@ -59,7 +61,7 @@ export class NodePool {
   private appendDmMessage(node: NerveNode, message: Message): void {
     node.appendMessage(message);
     this.store.insertDmMessage(message);
-    log.debug(`dm message persisted: ${node.name}, id=${message.id}, role=${message.role}, len=${message.text.length}`);
+    this.log.debug(`dm message persisted: ${node.name}, id=${message.id}, role=${message.role}, len=${message.text.length}`);
   }
 
   appendSystemMessage(node: NerveNode, text: string, action?: MessageAction): Message {
@@ -79,6 +81,7 @@ export class NodePool {
   /** Unified status change — all status mutations converge here.
    *  Guarantees: store sync + idempotent emit + activity reset on idle. */
   private _setNodeStatus(node: NerveNode, status: NodeStatus): void {
+    const prevStatus = node.status;
     const changed = node.status !== status;
     node.status = status;
     node.touch();
@@ -93,6 +96,7 @@ export class NodePool {
 
     // Only emit when status actually changed
     if (changed) {
+      this.log.stateChange("status", prevStatus, status, node.name);
       this.onEvent("node.statusChanged", node);
     }
   }
@@ -153,7 +157,11 @@ export class NodePool {
       this.onEvent("node.removed", node);
     }
 
-    log.info(`_cleanupNode: ${node.name} (${nodeId}), status=${node.status}, removed=${!!opts?.removeFromPool}`);
+    this.log.lifecycle(
+      opts?.newStatus === "error" ? "crash" : "stop",
+      opts?.reason,
+      { nodeId, name: node.name, status: node.status, removed: !!opts?.removeFromPool },
+    );
   }
 
   get(id: string): NerveNode | undefined {
@@ -241,7 +249,7 @@ export class NodePool {
       cwd,
     });
     const effectiveModel = node.effectiveModel;
-    log.info(`spawn process: adapter=${adapterName} name=${name} model=${options.model || ""} effectiveModel=${effectiveModel || ""}`);
+    this.log.info(`spawn process: adapter=${adapterName} name=${name} model=${options.model || ""} effectiveModel=${effectiveModel || ""}`);
 
     this.nodes.set(id, node);
     this.nameIndex.set(name, id);
@@ -260,7 +268,7 @@ export class NodePool {
           settings.model = effectiveModel;
         }
         writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
-        if (effectiveModel) log.info(`settings.local.json model set for ${name}: ${effectiveModel}`);
+        if (effectiveModel) this.log.info(`settings.local.json model set for ${name}: ${effectiveModel}`);
       } else if (effectiveModel) {
         // Ensure model is set in existing settings file
         try {
@@ -268,9 +276,9 @@ export class NodePool {
           if (existing.model !== effectiveModel) {
             existing.model = effectiveModel;
             writeFileSync(settingsFile, JSON.stringify(existing, null, 2));
-            log.info(`settings.local.json model updated for ${name}: ${effectiveModel}`);
+            this.log.info(`settings.local.json model updated for ${name}: ${effectiveModel}`);
           }
-        } catch (e) { log.warn(`settings.local.json parse error for ${name}: ${e}`); }
+        } catch (e) { this.log.warn(`settings.local.json parse error for ${name}: ${e}`); }
       }
     }
 
@@ -310,7 +318,7 @@ export class NodePool {
         { name: "NERVE_NODE_NAME", value: name },
       ],
     }];
-    log.info(`MCP inject: ${name} ← nerve (${mcpScript})`);
+    this.log.info(`MCP inject: ${name} ← nerve (${mcpScript})`);
 
     // ACP handshake
     const client = new AcpClient({
@@ -417,17 +425,17 @@ export class NodePool {
 
     // Log stderr for debugging
     proc.stderr?.on("data", (chunk: Buffer) => {
-      log.debug(`program:${name} stderr: ${chunk.toString().trim()}`);
+      this.log.debug(`program:${name} stderr: ${chunk.toString().trim()}`);
     });
 
     this.store.updateNodeStatus(id, "connecting", undefined, proc.pid);
-    log.info(`program node spawned: ${name} (pid=${proc.pid}, adapter=${adapterName})`);
+    this.log.lifecycle("start", `program node ${name}`, { nodeId: id, pid: proc.pid, adapter: adapterName });
 
     // Connection timeout
     const timeout = adapter.connectTimeout ?? 10000;
     const timer = setTimeout(() => {
       if (node.status === "connecting") {
-        log.warn(`program node timeout: ${name} did not connect within ${timeout}ms`);
+        this.log.warn(`program node timeout: ${name} did not connect within ${timeout}ms`);
         this._cleanupNode(id, { newStatus: "error" });
         this.onEvent("node.statusChanged", node);
         this.onEvent("node.error", node, { error: `program node did not connect within ${timeout}ms` });
@@ -454,7 +462,7 @@ export class NodePool {
     // Spawn error handler (e.g. cmd not found)
     proc.on("error", (err) => {
       clearTimeout(timer);
-      log.error(`program node spawn error: ${name} — ${err.message}`);
+      this.log.error(`program node spawn error: ${name} — ${err.message}`);
       this._cleanupNode(id, { newStatus: "error" });
       this.onEvent("node.error", node, { error: err.message });
       this.onEvent("node.statusChanged", node);
@@ -493,7 +501,7 @@ export class NodePool {
     node.status = "idle";
     this.store.updateNodeStatus(nodeId, "idle");
 
-    log.info(`program node connected: ${node.name} (nodeId=${nodeId})`);
+    this.log.info(`program node connected: ${node.name} (nodeId=${nodeId})`);
     this.onEvent("node.ready", node);
     this.onEvent("node.statusChanged", node);
   }
@@ -505,12 +513,12 @@ export class NodePool {
     if (!node.transport.alive) throw new Error("node transport not connected");
 
     const reqId = this.nextCommandId++;
-    log.info(`sendCommand: ${nodeName} command=${command} reqId=${reqId} from=${from}`);
+    this.log.info(`sendCommand: ${nodeName} command=${command} reqId=${reqId} from=${from}`);
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingCommands.delete(reqId);
-        log.warn(`sendCommand timeout: ${nodeName} command=${command} reqId=${reqId}`);
+        this.log.warn(`sendCommand timeout: ${nodeName} command=${command} reqId=${reqId}`);
         reject(new Error("command timeout (10s)"));
       }, 10000);
 
@@ -534,10 +542,10 @@ export class NodePool {
     if (!pending) return false;
     this.pendingCommands.delete(id);
     if (error) {
-      log.info(`handleCommandResponse: reqId=${id} error=${error.message}`);
+      this.log.info(`handleCommandResponse: reqId=${id} error=${error.message}`);
       pending.reject(new Error(error.message));
     } else {
-      log.info(`handleCommandResponse: reqId=${id} ok`);
+      this.log.info(`handleCommandResponse: reqId=${id} ok`);
       pending.resolve(result || {});
     }
     return true;
@@ -564,11 +572,11 @@ export class NodePool {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
     if (!client || !node) {
-      log.warn(`promptNode: node ${nodeId} not found`);
+      this.log.warn(`promptNode: node ${nodeId} not found`);
       return { error: "node not found" };
     }
 
-    log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
+    this.log.info(`promptNode: ${node.name} (${nodeId}), text="${text.slice(0, 80)}${text.length > 80 ? "..." : ""}"`);
     this._setNodeStatus(node, "busy");
 
     // DM capture: init buffer + emit dm.prompt
@@ -581,7 +589,7 @@ export class NodePool {
       targetNodeName: node.name,
       ts: new Date().toISOString(),
     });
-    log.debug(`dm.prompt emitted: ${node.name}, text="${text.slice(0, 50)}"`);
+    this.log.debug(`dm.prompt emitted: ${node.name}, text="${text.slice(0, 50)}"`);
 
     const userMsgParams: Record<string, unknown> = { update: { sessionUpdate: "user_message", content: { type: "text", text } }, from: from ? { nodeId: from.nodeId, name: from.name } : undefined };
     node.observeUpdate(userMsgParams);
@@ -600,7 +608,7 @@ export class NodePool {
     try {
       result = await client.prompt(text, attachments);
     } catch (err: any) {
-      log.error(`promptNode: ${node.name} rejected: ${err.message}`);
+      this.log.error(`promptNode: ${node.name} rejected: ${err.message}`);
       // DM capture: emit dm.response with error
       const responseText = node._dmResponseBuffer ?? "";
       node._dmResponseBuffer = undefined;
@@ -626,7 +634,7 @@ export class NodePool {
         durationMs: Date.now() - startTs,
         ts: new Date().toISOString(),
       });
-      log.debug(`dm.response emitted (error): ${node.name}, error=${err.message}`);
+      this.log.debug(`dm.response emitted (error): ${node.name}, error=${err.message}`);
       this._setNodeStatus(node, "idle");
       return { error: err.message, text: responseText };
     }
@@ -644,7 +652,7 @@ export class NodePool {
       durationMs: Date.now() - startTs,
       ts: new Date().toISOString(),
     });
-    log.debug(`dm.response emitted: ${node.name}, stopReason=${result.stopReason}, textLen=${responseText.length}`);
+    this.log.debug(`dm.response emitted: ${node.name}, stopReason=${result.stopReason}, textLen=${responseText.length}`);
 
     // Finalize in-flight assembler → append to messageStore for replay.
     // Prefer assembler text (built from chunks); fall back to _dmResponseBuffer
@@ -662,11 +670,11 @@ export class NodePool {
         ts: Date.now(),
       };
       this.appendDmMessage(node, agentMsg);
-      log.debug(`agent message finalized: ${node.name}, id=${agentMsg.id} len=${assembledText.length}`);
+      this.log.debug(`agent message finalized: ${node.name}, id=${agentMsg.id} len=${assembledText.length}`);
     }
 
     this._setNodeStatus(node, "idle");
-    log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
+    this.log.info(`promptNode: ${node.name} done, stopReason=${result.stopReason || "none"}${result.error ? ", error=" + result.error : ""}`);
 
     return { ...result, text: responseText };
   }
@@ -734,22 +742,22 @@ export class NodePool {
     const client = this.acpClients.get(nodeId);
     const node = this.nodes.get(nodeId);
     if (!client || !node) {
-      log.warn(`session reset rejected: nodeId=${nodeId}, reason=node not found, source=${source}`);
+      this.log.warn(`session reset rejected: nodeId=${nodeId}, reason=node not found, source=${source}`);
       return { error: "node not found" };
     }
 
-    log.info(`session reset requested: ${node.name}, source=${source}, status=${node.status}, selfReset=${selfReset}, session=${expectedSessionId}`);
+    this.log.info(`session reset requested: ${node.name}, source=${source}, status=${node.status}, selfReset=${selfReset}, session=${expectedSessionId}`);
 
     if (node.status === "busy" && !selfReset) {
-      log.warn(`session reset rejected: ${node.name}, reason=busy, source=${source}`);
+      this.log.warn(`session reset rejected: ${node.name}, reason=busy, source=${source}`);
       return { error: "node is busy" };
     }
     if (node.sessionId !== expectedSessionId) {
-      log.warn(`session reset rejected: ${node.name}, reason=session mismatch, expected=${expectedSessionId}, actual=${node.sessionId}, source=${source}`);
+      this.log.warn(`session reset rejected: ${node.name}, reason=session mismatch, expected=${expectedSessionId}, actual=${node.sessionId}, source=${source}`);
       return { error: "session mismatch" };
     }
     if (node.resetInProgress) {
-      log.warn(`session reset rejected: ${node.name}, reason=reset in progress, source=${source}`);
+      this.log.warn(`session reset rejected: ${node.name}, reason=reset in progress, source=${source}`);
       return { error: "reset in progress" };
     }
 
@@ -760,7 +768,7 @@ export class NodePool {
       // ACP session/new (reuse sessionClear logic)
       const result = await client.sessionClear();
       if (result.error || !result.sessionId) {
-        log.error(`session reset failed: ${node.name}, source=${source}, error=${result.error || "session clear failed"}`);
+        this.log.error(`session reset failed: ${node.name}, source=${source}, error=${result.error || "session clear failed"}`);
         return { error: result.error || "session clear failed" };
       }
 
@@ -783,8 +791,8 @@ export class NodePool {
         `当前工作目录：${node.cwd || process.cwd()}`,
       ].join("\n");
 
-      log.info(`session reset: ${node.name} ${previousSessionId} → ${result.sessionId}, source=${source}, summary=${summaryPath}`);
-      log.info(`recovery prompt: sending to ${node.name}, channel=${channelId}, summaryPath=${summaryPath}`);
+      this.log.info(`session reset: ${node.name} ${previousSessionId} → ${result.sessionId}, source=${source}, summary=${summaryPath}`);
+      this.log.info(`recovery prompt: sending to ${node.name}, channel=${channelId}, summaryPath=${summaryPath}`);
       // Send recovery prompt (don't await — let agent process async)
       void this.promptNode(nodeId, resetPrompt);
 
@@ -798,7 +806,7 @@ export class NodePool {
   async stopNode(nodeId: string): Promise<void> {
     const node = this.nodes.get(nodeId);
     if (!node) return;
-    log.info(`stopNode: ${node.name} (${nodeId})`);
+    this.log.info(`stopNode: ${node.name} (${nodeId})`);
 
     // Check if this is a program node (has a tracked process)
     const proc = this.programProcesses.get(nodeId);
@@ -832,7 +840,7 @@ export class NodePool {
     const node = this.nodes.get(nodeId);
     if (!node) return;
 
-    log.info(`remove: ${node.name} (${nodeId})`);
+    this.log.info(`remove: ${node.name} (${nodeId})`);
     this._cleanupNode(nodeId, { removeFromPool: true });
   }
 
