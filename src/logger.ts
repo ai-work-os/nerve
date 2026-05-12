@@ -86,6 +86,9 @@ export interface Logger {
   debug(msg: string, data?: object): void;
   trace(msg: string, data?: object): void;
   child(ctx: LogContext): Logger;
+  lifecycle(event: "start" | "stop" | "restart" | "crash", reason?: string, data?: object): void;
+  stateChange(field: string, from: unknown, to: unknown, reason?: string): void;
+  boundary(direction: "in" | "out", kind: string, summary?: object): void;
 }
 
 function makeLogger(baseCtx: LogContext): Logger {
@@ -96,6 +99,12 @@ function makeLogger(baseCtx: LogContext): Logger {
     debug: (msg, data) => emit("DEBUG", { ...baseCtx, ...(data || {}) }, msg),
     trace: (msg, data) => emit("TRACE", { ...baseCtx, ...(data || {}) }, msg),
     child: (ctx) => makeLogger({ ...baseCtx, ...ctx }),
+    lifecycle: (event, reason, data) =>
+      emit("INFO", { ...baseCtx, lifecycle: event, ...(reason ? { reason } : {}), ...(data || {}) }, `lifecycle:${event}`),
+    stateChange: (field, from, to, reason) =>
+      emit("INFO", { ...baseCtx, field, from, to, ...(reason ? { reason } : {}) }, `stateChange:${field}`),
+    boundary: (direction, kind, summary) =>
+      emit("INFO", { ...baseCtx, dir: direction, kind, ...(summary || {}) }, `boundary:${direction}:${kind}`),
   };
 }
 

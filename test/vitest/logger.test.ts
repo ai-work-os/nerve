@@ -69,3 +69,34 @@ describe("level filtering", () => {
     spy.mockRestore();
   });
 });
+
+describe("standard events", () => {
+  it("lifecycle logs event + reason", () => {
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    logger.child({ module: "test" }).lifecycle("start", "boot");
+    const out = spy.mock.calls.map(x => x[0]).join("");
+    expect(out).toContain("lifecycle=start");
+    expect(out).toContain("reason=boot");
+    spy.mockRestore();
+  });
+
+  it("stateChange logs from/to", () => {
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    logger.child({ module: "node" }).stateChange("status", "idle", "running", "spawned");
+    const out = spy.mock.calls.map(x => x[0]).join("");
+    expect(out).toContain("field=status");
+    expect(out).toContain("from=idle");
+    expect(out).toContain("to=running");
+    spy.mockRestore();
+  });
+
+  it("boundary logs direction + kind", () => {
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    logger.child({ module: "transport" }).boundary("in", "http", { path: "/spawn", method: "POST" });
+    const out = spy.mock.calls.map(x => x[0]).join("");
+    expect(out).toContain("dir=in");
+    expect(out).toContain("kind=http");
+    expect(out).toContain("path=/spawn");
+    spy.mockRestore();
+  });
+});
