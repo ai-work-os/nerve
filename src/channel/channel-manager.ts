@@ -13,7 +13,7 @@ import { PeerClient } from "../transport/peer-client.js";
 import { loadPeerConfig } from "../transport/peer-config.js";
 import { isRemoteMemberId } from "./channel-member.js";
 import { RemoteRegistry, type RemoteMemberRecord, type RemoteOriginRecord } from "../transport/remote-registry.js";
-import * as log from "../infra/logger.js";
+import { child as childLogger } from "../infra/logger.js";
 
 /**
  * Build the system prompt injected into agent nodes when joining a channel.
@@ -50,6 +50,7 @@ export interface ChannelManagerOptions {
 }
 
 export class ChannelManager {
+  private log = childLogger({ module: "channel-manager" });
   readonly store: Store;
   readonly nodePool: NodePool;
   readonly blobStore: BlobStore;
@@ -156,7 +157,7 @@ export class ChannelManager {
     }
 
     this.channelStore.delete(id);
-    log.info(`channel deleted: ${id}`);
+    this.log.info(`channel deleted: ${id}`);
   }
 
   // --- Node operations ---
@@ -251,8 +252,10 @@ export class ChannelManager {
     if (!ch || !node) return;
 
     const name = nodeName || node.name;
+    const oldMemberCount = ch.nodes.size;
     ch.addNode(nodeId, name, this.store);
     node.channels.add(channelId);
+    this.log.child({ channelId }).stateChange("members", oldMemberCount, ch.nodes.size, "join");
 
     // Inject system prompt for process nodes joining a channel
     if (node.isProcess && !node.systemPrompt) {
@@ -275,7 +278,9 @@ export class ChannelManager {
     if (!ch) return;
 
     const nodeId = ch.getNodeId(nodeName);
+    const oldMemberCount = ch.nodes.size;
     ch.removeNode(nodeName, this.store);
+    this.log.child({ channelId }).stateChange("members", oldMemberCount, ch.nodes.size, "leave");
 
     if (nodeId) {
       const node = this.nodePool.get(nodeId);
@@ -303,7 +308,7 @@ export class ChannelManager {
 
     // Identity check: must be a program node (spawned by server, not an external WS client)
     if (!this.nodePool.isProgramNode(node.id)) {
-      log.info(`cleanupStaleGuardian: ${name} (${node.id}) is not a program node, removing impostor`);
+      this.log.info(`cleanupStaleGuardian: ${name} (${node.id}) is not a program node, removing impostor`);
       for (const chId of node.channels) {
         this.removeNodeFromChannel(chId, node.name);
       }
@@ -312,12 +317,12 @@ export class ChannelManager {
     }
 
     if (node.transport.alive) {
-      log.info(`cleanupStaleGuardian: ${name} (${node.id}) transport alive, skipping`);
+      this.log.info(`cleanupStaleGuardian: ${name} (${node.id}) transport alive, skipping`);
       return "alive";
     }
 
     // Transport dead — full cleanup: channels first, then remove
-    log.info(`cleanupStaleGuardian: cleaning stale program node ${name} (${node.id})`);
+    this.log.info(`cleanupStaleGuardian: cleaning stale program node ${name} (${node.id})`);
     for (const chId of node.channels) {
       this.removeNodeFromChannel(chId, node.name);
     }
@@ -371,7 +376,7 @@ export class ChannelManager {
     // Route @mentions
     const targets = route(ch, msg);
     if (targets.length > 0) {
-      log.info(`route: ${msg.from} → [${targets.map(t => t.nodeName).join(", ")}] in channel ${channelId}`);
+      this.log.info(`route: ${msg.from} → [${targets.map(t => t.nodeName).join(", ")}] in channel ${channelId}`);
     }
     for (const target of targets) {
       if (isRemoteMemberId(target.nodeId)) {
@@ -418,7 +423,7 @@ export class ChannelManager {
           targetNodeName: target.nodeName,
           delivery: "program_node_message",
         });
-        log.info(`mention routed to program node ${target.nodeName} via node.message: "${cmdContent.slice(0, 50)}"`);
+        this.log.info(`mention routed to program node ${target.nodeName} via node.message: "${cmdContent.slice(0, 50)}"`);
       } else {
         // Direct mention notification for WS nodes
         node.transport.send({
@@ -583,21 +588,21 @@ export class ChannelManager {
     const doPrompt = () => {
       // Record store position before prompting (for diff logging only)
       const storeStart = node.messageStore.length;
-      log.info(`dispatch: prompting ${node.name} (store@${storeStart}, channel=${channelId || "none"})`);
+      this.log.info(`dispatch: prompting ${node.name} (store@${storeStart}, channel=${channelId || "none"})`);
 
       this.nodePool.promptNode(nodeId, prompt).then((result) => {
         if (!channelId) return;
 
         if (result.error) {
-          log.warn(`prompt ${node.name} returned error: ${result.error}`);
+          this.log.warn(`prompt ${node.name} returned error: ${result.error}`);
           this.postMessage(channelId, node.name, `[error: ${String(result.error).slice(0, 100)}]`);
           return;
         }
 
         const newEntries = node.messageStore.length - storeStart;
-        log.info(`dispatch: ${node.name} done, ${newEntries} new messages (agent replies via nerve_post)`);
+        this.log.info(`dispatch: ${node.name} done, ${newEntries} new messages (agent replies via nerve_post)`);
       }).catch(err => {
-        log.warn(`prompt ${node.name} exception: ${err}`);
+        this.log.warn(`prompt ${node.name} exception: ${err}`);
         if (channelId) {
           this.postMessage(channelId, node.name, `[error: prompt failed — ${String(err).slice(0, 100)}]`);
         }
@@ -605,9 +610,9 @@ export class ChannelManager {
     };
 
     if (node.status === "busy") {
-      log.info(`dispatch: ${node.name} is busy, cancelling before new prompt`);
+      this.log.info(`dispatch: ${node.name} is busy, cancelling before new prompt`);
       this.nodePool.cancelNode(nodeId).then(() => doPrompt()).catch(err => {
-        log.warn(`cancel ${node.name} failed: ${err}, prompting anyway`);
+        this.log.warn(`cancel ${node.name} failed: ${err}, prompting anyway`);
         doPrompt();
       });
     } else {
@@ -644,15 +649,15 @@ export class ChannelManager {
 
     switch (event) {
       case "node.registered":
-        log.info(`node registered: ${node.name} (${node.transport.type})`);
+        this.log.info(`node registered: ${node.name} (${node.transport.type})`);
         break;
 
       case "node.ready":
-        log.info(`node ready: ${node.name} (session: ${node.sessionId})`);
+        this.log.info(`node ready: ${node.name} (session: ${node.sessionId})`);
         break;
 
       case "node.stopped": {
-        log.info(`node stopped: ${node.name} (exit: ${detail?.exitCode})`);
+        this.log.info(`node stopped: ${node.name} (exit: ${detail?.exitCode})`);
         // Notify channels
         for (const chId of node.channels) {
           const ch = this.channelStore.get(chId);
@@ -666,7 +671,7 @@ export class ChannelManager {
       }
 
       case "node.error":
-        log.error(`node error: ${node.name}: ${detail?.error}`);
+        this.log.error(`node error: ${node.name}: ${detail?.error}`);
         break;
 
       case "node.update":
@@ -691,7 +696,7 @@ export class ChannelManager {
         break;
 
       case "node.removed":
-        log.info(`node removed: ${node.name}`);
+        this.log.info(`node removed: ${node.name}`);
         break;
     }
   }

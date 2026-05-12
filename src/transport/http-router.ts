@@ -6,12 +6,15 @@ import type { ChannelManager } from "../channel/channel-manager.js";
 import type { SceneManager } from "../scene/scene-manager.js";
 import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
 import * as log from "../infra/logger.js";
+import { child as childLogger, newCorrelationId } from "../infra/logger.js";
+// Note: `log` namespace kept for log.getLogPath() used in /health and /log endpoints
 
 /**
  * HTTP API router for process nodes (CLI agents) to manage channels via terminal/curl.
  * All POST endpoints accept JSON body with `from` field to identify the caller node.
  */
 export class HttpRouter {
+  private log = childLogger({ module: "transport:http" });
   private scenes?: SceneManager;
 
   constructor(
@@ -24,6 +27,11 @@ export class HttpRouter {
   }
 
   handle(req: IncomingMessage, res: ServerResponse): void {
+    const correlationId = newCorrelationId();
+    const reqLog = this.log.child({ correlationId });
+    const path = req.url || "";
+    reqLog.boundary("in", "http", { method: req.method, path });
+
     // Health check (includes log path for AI access)
     if (req.method === "GET" && req.url === "/health") {
       const logPath = log.getLogPath();
@@ -104,7 +112,7 @@ export class HttpRouter {
       const remoteAddress = req.socket.remoteAddress;
       if (!isLocalRequest(remoteAddress) && !hasValidToken(req.headers, config.token)) {
         res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "invalid peer token" }));
-        log.warn(`peer auth failed: url=${req.url} remote=${remoteAddress || ""}`);
+        reqLog.warn(`peer auth failed: url=${req.url} remote=${remoteAddress || ""}`);
         return;
       }
     }
@@ -116,9 +124,11 @@ export class HttpRouter {
         const data = JSON.parse(body) as Record<string, unknown>;
         const result = await this.route(req.url || "", data);
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+        reqLog.boundary("out", "http", { status: 200 });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         res.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: message }));
+        reqLog.boundary("out", "http", { status: 400 });
       }
     });
   }
