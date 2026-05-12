@@ -100,3 +100,23 @@ describe("standard events", () => {
     spy.mockRestore();
   });
 });
+
+describe("correlationId", () => {
+  it("newCorrelationId returns 8-char id", () => {
+    const id = logger.newCorrelationId();
+    expect(id).toMatch(/^[a-z0-9]{8}$/);
+  });
+
+  it("two ids differ", () => {
+    expect(logger.newCorrelationId()).not.toBe(logger.newCorrelationId());
+  });
+
+  it("correlationId visible in child log output", () => {
+    const cid = logger.newCorrelationId();
+    const c = logger.child({ module: "test", correlationId: cid });
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    c.info("traced");
+    expect(spy.mock.calls.map(x => x[0]).join("")).toContain(`correlationId=${cid}`);
+    spy.mockRestore();
+  });
+});

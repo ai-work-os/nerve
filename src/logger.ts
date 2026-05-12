@@ -1,6 +1,13 @@
 import { mkdirSync, createWriteStream, type WriteStream } from "node:fs";
 import { dirname } from "node:path";
+import { customAlphabet } from "nanoid";
 import { localIso } from "./time-util.js";
+
+const corrIdGen = customAlphabet("abcdefghijklmnopqrstuvwxyz0123456789", 8);
+
+export function newCorrelationId(): string {
+  return corrIdGen();
+}
 
 let logStream: WriteStream | null = null;
 let logPath: string | null = null;
