@@ -282,7 +282,7 @@ export class NodePool {
         ...adapter.env,
         NERVE_PORT: String(serverPort),
         NERVE_NODE_NAME: name,
-        PATH: join(dirname(dirname(fileURLToPath(import.meta.url))), "bin") + ":" + (process.env.PATH || ""),
+        PATH: join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), "bin") + ":" + (process.env.PATH || ""),
       },
       cwd,
     });
@@ -296,7 +296,8 @@ export class NodePool {
 
     // Build MCP server config for nerve tools injection
     // Detect if running in dev mode (.ts) or compiled (.js)
-    const selfDir = dirname(fileURLToPath(import.meta.url));
+    // node-pool.ts lives at src/node/, but nerve-mcp.ts lives at src/ (one level up).
+    const selfDir = dirname(dirname(fileURLToPath(import.meta.url)));
     const mcpScript = existsSync(join(selfDir, "nerve-mcp.ts"))
       ? join(selfDir, "nerve-mcp.ts")
       : join(selfDir, "nerve-mcp.js");
@@ -381,7 +382,8 @@ export class NodePool {
     const id = nanoid(12);
 
     // Program nodes use nerve project root as cwd (adapter paths are relative to it)
-    const nerveRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    // node-pool.ts lives at src/node/, so go up two levels to reach project root.
+    const nerveRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
     cwd = nerveRoot;
 
     // Create placeholder node with NullTransport (replaced when program connects via WS)
