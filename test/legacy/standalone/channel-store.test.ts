@@ -4,8 +4,8 @@
  * Run: npx tsx test/unit/channel-store.test.ts
  */
 
-import { ChannelStore } from "../../../src/channel-store.js";
-import { Store } from "../../../src/store.js";
+import { ChannelStore } from "../../../src/storage/channel-store.js";
+import { Store } from "../../../src/storage/store.js";
 
 // --- Test infrastructure ---
 

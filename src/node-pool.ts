@@ -9,7 +9,7 @@ import { AcpClient, type McpServerConfig, type PromptAttachment } from "./acp-cl
 import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "./infra/logger.js";
-import type { Store } from "./store.js";
+import type { Store } from "./storage/store.js";
 import type { NodeStatus, PermissionLevel, Message, MessageAction } from "./protocol.js";
 import type { WebSocket } from "ws";
 

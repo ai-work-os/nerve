@@ -4,7 +4,7 @@
  * Run: npx tsx test/unit/store.test.ts
  */
 
-import { Store } from "../../../src/store.js";
+import { Store } from "../../../src/storage/store.js";
 
 // --- Test infrastructure ---
 
