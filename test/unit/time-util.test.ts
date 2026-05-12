@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { localIso, localTimeOnly } from "../../src/time-util.js";
+import { localIso, localTimeOnly } from "../../src/infra/time-util.js";
 
 describe("localTimeOnly", () => {
   it("formats HH:MM:SS in local time", () => {

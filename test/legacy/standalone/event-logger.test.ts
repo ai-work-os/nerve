@@ -7,7 +7,7 @@
 import { mkdirSync, rmSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EventLogger } from "../../../src/event-logger.js";
+import { EventLogger } from "../../../src/infra/event-logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../../..");

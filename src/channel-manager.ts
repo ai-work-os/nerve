@@ -8,12 +8,12 @@ import { NerveNode } from "./node.js";
 import { BlobStore } from "./blob-store.js";
 import type { MessageInfo, PermissionLevel, JsonRpcNotification, Message } from "./protocol.js";
 import type { WebSocket } from "ws";
-import { EventLogger } from "./event-logger.js";
+import { EventLogger } from "./infra/event-logger.js";
 import { PeerClient } from "./peer-client.js";
 import { loadPeerConfig } from "./peer-config.js";
 import { isRemoteMemberId } from "./channel-member.js";
 import { RemoteRegistry, type RemoteMemberRecord, type RemoteOriginRecord } from "./remote-registry.js";
-import * as log from "./logger.js";
+import * as log from "./infra/logger.js";
 
 /**
  * Build the system prompt injected into agent nodes when joining a channel.

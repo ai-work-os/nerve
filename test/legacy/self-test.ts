@@ -17,7 +17,7 @@ import WebSocket from "ws";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { checkProcessHealth, CronScheduler, checkHealth, getCpuUsage } from "../../src/plugins/duty-monitor/index.js";
-import { EventLogger } from "../../src/event-logger.js";
+import { EventLogger } from "../../src/infra/event-logger.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "../..");
@@ -1723,7 +1723,7 @@ async function testLogUsesLocalTime() {
   const logFile = resolve(TEST_DATA, "logger-local-time.log");
   if (existsSync(logFile)) rmSync(logFile);
 
-  const logger = await import("../../src/logger.js");
+  const logger = await import("../../src/infra/logger.js");
   logger.initLog(logFile);
   logger.info("local-time-test");
   logger.closeLog();

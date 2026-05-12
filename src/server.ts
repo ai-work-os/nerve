@@ -9,8 +9,8 @@ import { HttpRouter } from "./http-router.js";
 import { SceneManager } from "./scene-manager.js";
 import type { JsonRpcRequest, JsonRpcMessage, Message } from "./protocol.js";
 import { handleRpcRequest } from "./request-handler.js";
-import * as log from "./logger.js";
-import { localIso, localTimeOnly } from "./time-util.js";
+import * as log from "./infra/logger.js";
+import { localIso, localTimeOnly } from "./infra/time-util.js";
 
 const PROGRAM_LOG_MESSAGE_LIMIT = 5000;
 

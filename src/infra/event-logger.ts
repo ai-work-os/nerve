@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { NerveNode } from "./node.js";
+import type { NerveNode } from "../node.js";
 import * as log from "./logger.js";
 
 type EventDetail = Record<string, unknown> | undefined;

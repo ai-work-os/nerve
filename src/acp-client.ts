@@ -40,7 +40,7 @@ import {
   type PermissionOptionKind,
   PROTOCOL_VERSION,
 } from "@agentclientprotocol/sdk";
-import * as log from "./logger.js";
+import * as log from "./infra/logger.js";
 
 /** Re-export McpServerStdio as McpServerConfig for backward compatibility */
 export type McpServerConfig = McpServerStdio;

@@ -82,7 +82,7 @@ async function cmdServe(args: string[]) {
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
-  const { initLog, info, closeLog } = await import("./logger.js");
+  const { initLog, info, closeLog } = await import("./infra/logger.js");
   const logFile = resolve(dataDir, "nerve.log");
   initLog(logFile);
 

@@ -9,7 +9,7 @@
  * No side effects on import. No env reads.
  */
 
-import { child as childLogger } from "../../logger.js";
+import { child as childLogger } from "../../infra/logger.js";
 
 const log = childLogger({ module: "plugin:duty-monitor:cron-scheduler" });
 

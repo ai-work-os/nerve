@@ -6,7 +6,7 @@
 import { describe, it } from "vitest";
 import { assert, assertEq, assertNoThrow, existsSync, mkdirSync, rmSync } from "../helpers/vitest.js";
 import { checkProcessHealth, CronScheduler, checkHealth, getCpuUsage } from "../../src/plugins/duty-monitor/index.js";
-import { EventLogger } from "../../src/event-logger.js";
+import { EventLogger } from "../../src/infra/event-logger.js";
 
 // ============================================================
 // EventLogger

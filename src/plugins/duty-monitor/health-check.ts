@@ -11,7 +11,7 @@
 
 import * as os from "node:os";
 import { statfs } from "node:fs/promises";
-import { child as childLogger } from "../../logger.js";
+import { child as childLogger } from "../../infra/logger.js";
 
 const log = childLogger({ module: "plugin:duty-monitor:health-check" });
 

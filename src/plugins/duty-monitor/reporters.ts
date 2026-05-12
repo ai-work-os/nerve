@@ -10,7 +10,7 @@
  * coupling this module to PluginBase. Callers pass an emit function.
  */
 
-import { child as childLogger } from "../../logger.js";
+import { child as childLogger } from "../../infra/logger.js";
 import type { HealthAlert } from "./health-check.js";
 import type { Schedule } from "./cron-scheduler.js";
 

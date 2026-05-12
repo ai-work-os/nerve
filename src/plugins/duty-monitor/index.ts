@@ -12,7 +12,7 @@
  */
 
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
-import { child as childLogger } from "../../logger.js";
+import { child as childLogger } from "../../infra/logger.js";
 import { CronScheduler, parseSchedule } from "./cron-scheduler.js";
 import { runHealthCheck, checkHealth, checkProcessHealth, getMemoryUsage, getDiskUsage, getCpuUsage } from "./health-check.js";
 import { formatSchedule, publishHealthAlerts } from "./reporters.js";

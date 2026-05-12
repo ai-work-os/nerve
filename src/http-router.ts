@@ -5,7 +5,7 @@ import { basename, resolve } from "node:path";
 import type { ChannelManager } from "./channel-manager.js";
 import type { SceneManager } from "./scene-manager.js";
 import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
-import * as log from "./logger.js";
+import * as log from "./infra/logger.js";
 
 /**
  * HTTP API router for process nodes (CLI agents) to manage channels via terminal/curl.

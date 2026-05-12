@@ -10,7 +10,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { child as childLogger } from "../../logger.js";
+import { child as childLogger } from "../../infra/logger.js";
 import type { Schedule } from "./cron-scheduler.js";
 
 const log = childLogger({ module: "plugin:duty-monitor:task-store" });

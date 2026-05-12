@@ -1358,7 +1358,7 @@ describe("Nerve Integration Tests - Part 1", () => {
     const logFile = resolve(getTestData(), "logger-local-time.log");
     if (existsSync(logFile)) rmSync(logFile);
 
-    const logger = await import("../../src/logger.js");
+    const logger = await import("../../src/infra/logger.js");
     logger.initLog(logFile);
     logger.info("local-time-test");
     logger.closeLog();

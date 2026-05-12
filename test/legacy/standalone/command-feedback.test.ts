@@ -58,7 +58,7 @@ let formatUnknownCommand: (cmd: string, available: string[], from?: string) => s
 let formatReportError: (to: string | undefined, message: string) => string | undefined;
 
 try {
-  const mod = await import("../../../src/command-feedback.js");
+  const mod = await import("../../../src/infra/command-feedback.js");
   formatCommandResponse = mod.formatCommandResponse;
   formatHelpText = mod.formatHelpText;
   formatUnknownCommand = mod.formatUnknownCommand;

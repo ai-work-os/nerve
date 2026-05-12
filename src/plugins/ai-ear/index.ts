@@ -21,7 +21,7 @@ import { mkdirSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import { type AudioSource } from "./audio-capture.js";
-import { child as childLogger } from "../../logger.js";
+import { child as childLogger } from "../../infra/logger.js";
 import { CapturePipeline } from "./capture-pipeline.js";
 
 // Re-exports for backward compatibility (tests import from index.ts)
