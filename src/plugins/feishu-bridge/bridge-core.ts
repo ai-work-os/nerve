@@ -31,6 +31,13 @@ export interface BridgeCoreOptions {
   /** Our own node name on nerve — receives @mention from agents in their nerve_post replies */
   bridgeNodeName: string;
   log: (level: "info" | "warn" | "error" | "debug", msg: string) => void;
+  /**
+   * Delay (ms) after node.spawn before posting the first user message.
+   * Workaround: node.spawn returns when the process registers, but the agent's
+   * ACP session is not yet ready — dispatchDirect fails with "no session" if
+   * we post immediately. Observed handshake takes ~2s on home (codex). Default 4000ms.
+   */
+  spawnReadyDelayMs?: number;
 }
 
 /**
@@ -172,6 +179,14 @@ export class BridgeCore {
         name: agentName,
         channelId,
       });
+
+      // Wait for agent's ACP session to be ready before any prompt arrives.
+      // See spawnReadyDelayMs docstring above.
+      const delay = this.opts.spawnReadyDelayMs ?? 4000;
+      if (delay > 0) {
+        this.opts.log("debug", `waiting ${delay}ms for ${agentName} session handshake`);
+        await new Promise(r => setTimeout(r, delay));
+      }
     } catch (err: any) {
       // Best-effort cleanup if the bridge join or agent spawn failed mid-flight
       this.opts.log("warn", `setup failed mid-flight, attempting channel cleanup: ${err?.message || err}`);

@@ -74,6 +74,8 @@ describe("feishu-bridge BridgeCore", () => {
       agentAdapter: "codex",
       bridgeNodeName: "feishu-bridge",
       log: () => {},
+      // Tests are not flaky — skip the spawn-ready delay
+      spawnReadyDelayMs: 0,
     });
   }
 
