@@ -11,8 +11,8 @@ import { appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 
-import { CommandResult, formatCommandResponse, formatHelpText, formatUnknownCommand, formatReportError } from "../command-feedback.js";
-import { localIso } from "../time-util.js";
+import { CommandResult, formatCommandResponse, formatHelpText, formatUnknownCommand, formatReportError } from "../infra/command-feedback.js";
+import { localIso } from "../infra/time-util.js";
 export type { CommandResult };
 
 export interface CommandDef {

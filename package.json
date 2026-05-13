@@ -11,10 +11,12 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts serve",
     "start": "node dist/cli.js serve",
-    "test": "vitest run test/vitest/unit.test.ts",
-    "test:integration": "vitest run test/vitest/integration-part",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:e2e": "vitest run test/e2e",
     "test:all": "vitest run",
-    "test:legacy": "tsx test/self-test.ts",
+    "test:legacy": "tsx test/legacy/self-test.ts",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {

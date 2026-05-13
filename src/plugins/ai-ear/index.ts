@@ -17,11 +17,18 @@
  *   MC_PUSH_LINES        — Buffer flush line threshold (default: 10)
  */
 
-import { appendFileSync, writeFileSync, mkdirSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
-import { AudioCapture, type AudioSource } from "./audio-capture.js";
-import { AsrClient } from "./asr-client.js";
+import { type AudioSource } from "./audio-capture.js";
+import { child as childLogger } from "../../infra/logger.js";
+import { CapturePipeline } from "./capture-pipeline.js";
+
+// Re-exports for backward compatibility (tests import from index.ts)
+export { TranscriptBuffer, type FlushReason, type TranscriptBufferConfig } from "./transcript-buffer.js";
+export { SliceWriter } from "./capture-pipeline.js";
+
+const log = childLogger({ module: "plugin:ai-ear" });
 
 // --- Config from environment ---
 
@@ -37,102 +44,13 @@ const AUDIO_SOURCE = (process.env.MC_AUDIO_SOURCE || "mic") as AudioSource;
 let PUSH_INTERVAL = parseInt(process.env.MC_PUSH_INTERVAL || "300000");
 let PUSH_LINES = parseInt(process.env.MC_PUSH_LINES || "10");
 
-// --- Transcript Buffer (exported for testing) ---
-
-export type FlushReason = "interval" | "line_count" | "manual" | "stop";
-
-export interface TranscriptBufferConfig {
-  pushInterval: number;
-  pushLines: number;
-  onFlush: (lines: string[], reason: FlushReason) => void;
-}
-
-export class TranscriptBuffer {
-  private lines: string[] = [];
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private config: TranscriptBufferConfig;
-
-  constructor(config: TranscriptBufferConfig) {
-    this.config = config;
-    this.timer = setInterval(() => this.doFlush("interval"), config.pushInterval);
-  }
-
-  add(line: string): void {
-    this.lines.push(line);
-    if (this.lines.length >= this.config.pushLines) {
-      this.doFlush("line_count");
-    }
-  }
-
-  flush(): void {
-    this.doFlush("manual");
-  }
-
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    this.doFlush("stop");
-  }
-
-  private doFlush(reason: FlushReason): void {
-    if (this.lines.length === 0) return;
-    const batch = this.lines;
-    this.lines = [];
-    this.config.onFlush(batch, reason);
-  }
-}
-
-// --- Slice Writer (exported for testing) ---
-
-export class SliceWriter {
-  private sliceIndex = 0;
-  private tmpDir: string;
-  private baseTs: string;
-
-  constructor(tmpDir: string, baseTs: string) {
-    this.tmpDir = tmpDir;
-    this.baseTs = baseTs;
-    // Clean and recreate tmp dir for new session
-    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
-    mkdirSync(tmpDir, { recursive: true });
-  }
-
-  /** Write lines to a numbered slice file, return the file path */
-  write(lines: string[]): string {
-    this.sliceIndex++;
-    const num = String(this.sliceIndex).padStart(3, "0");
-    const filePath = resolve(this.tmpDir, `${this.baseTs}_${num}.txt`);
-    writeFileSync(filePath, lines.join("\n") + "\n");
-    return filePath;
-  }
-
-  /** Extract time range from lines like "[+120s][mic] text" */
-  static timeRange(lines: string[]): string {
-    const extract = (line: string): string | null => {
-      const m = line.match(/^\[(\+\d+s)\]/);
-      return m ? m[1] : null;
-    };
-    const first = extract(lines[0]);
-    const last = extract(lines[lines.length - 1]);
-    if (first && last && first !== last) return `${first}-${last}`;
-    if (first) return first;
-    return "?";
-  }
-}
-
 // --- Plugin ---
 
 class AiEarPlugin extends PluginBase {
-  private capture: AudioCapture | null = null;
-  private asr: AsrClient | null = null;
+  private pipeline: CapturePipeline | null = null;
   private meetingFile: string | null = null;
   private meetingsDir: string;
-  private startTime = 0;
-  private buffer: TranscriptBuffer | null = null;
   private recording = false;
-  private sliceWriter: SliceWriter | null = null;
   private tmpDir: string;
 
   constructor() {
@@ -205,7 +123,7 @@ class AiEarPlugin extends PluginBase {
             // Disable line-based flush when interval is explicitly set
             // (user wants time-based control only)
             PUSH_LINES = Infinity;
-            this.rebuildBuffer();
+            this.pipeline?.rebuildBuffer(PUSH_INTERVAL, PUSH_LINES);
             this.log("info", `config: interval ${oldInterval}ms → ${PUSH_INTERVAL}ms, lines=disabled`);
           } else {
             this.log("error", `config: invalid interval "${value}"`);
@@ -215,7 +133,7 @@ class AiEarPlugin extends PluginBase {
           if (lines > 0) {
             const oldLines = PUSH_LINES;
             PUSH_LINES = lines;
-            this.rebuildBuffer();
+            this.pipeline?.rebuildBuffer(PUSH_INTERVAL, PUSH_LINES);
             this.log("info", `config: lines ${oldLines} → ${lines}`);
           } else {
             this.log("error", `config: invalid lines "${value}"`);
@@ -226,8 +144,8 @@ class AiEarPlugin extends PluginBase {
         break;
       }
       case "flush":
-        if (this.buffer) {
-          this.buffer.flush();
+        if (this.pipeline?.hasBuffer()) {
+          this.pipeline.flushBuffer();
           this.log("info", "manual flush triggered");
         } else {
           this.log("warn", "no active buffer to flush");
@@ -235,7 +153,6 @@ class AiEarPlugin extends PluginBase {
         break;
     }
   }
-
 
   async startRecording(source: AudioSource = AUDIO_SOURCE, from?: string, channelId?: string): Promise<void> {
     if (this.recording) {
@@ -250,84 +167,44 @@ class AiEarPlugin extends PluginBase {
     }
 
     this.recording = true;
-    this.startTime = Date.now();
     this.meetingFile = this.createMeetingFile();
     const baseTs = basename(this.meetingFile, ".txt");
-    this.sliceWriter = new SliceWriter(this.tmpDir, baseTs);
-    this.log("info", `recording started: source=${source}, file=${this.meetingFile}`);
 
-    // Init buffer
-    this.buffer = new TranscriptBuffer({
+    log.info(`recording started: source=${source}, file=${this.meetingFile}`);
+
+    this.pipeline = new CapturePipeline({
+      apiKey: DASHSCOPE_API_KEY,
+      model: DASHSCOPE_MODEL,
       pushInterval: PUSH_INTERVAL,
       pushLines: PUSH_LINES,
-      onFlush: (lines, reason) => this.onBufferFlush(lines, reason),
-    });
-
-    // Start ASR
-    this.asr = new AsrClient({
-      model: DASHSCOPE_MODEL,
-      apiKey: DASHSCOPE_API_KEY,
-    });
-
-    this.asr.on("text", (text: string, interim: boolean) => {
-      if (!interim) this.onTranscript(text, source);
-    });
-
-    this.asr.on("error", (err: Error) => {
-      this.log("error", `ASR error: ${err.message}`);
-    });
-
-    this.asr.on("reconnecting", () => {
-      this.log("info", "ASR disconnected, reconnecting...");
-      this.setActivity(`recording (${source}) — ASR reconnecting`).catch(() => {});
-    });
-
-    this.asr.on("ready", () => {
-      if (this.recording) {
-        this.log("info", "ASR reconnected");
-        this.setActivity(`recording (${source})`).catch(() => {});
-      }
+      meetingFile: this.meetingFile,
+      tmpDir: this.tmpDir,
+      baseTs,
+      onLog: (level, msg) => this.log(level, msg),
+      onTranscriptLine: (line) => this.log("info", line),
+      onFlushToChannel: async (lines, slicePath, timeRange) => {
+        const content = `新增转录 [${timeRange}]，${lines.length}行，文件：${slicePath}`;
+        await this.emit("transcription", undefined, content);
+      },
+      onCaptureExit: () => {
+        if (this.recording) {
+          this.stopRecording().catch((e) => this.log("warn", `stopRecording on capture exit failed: ${e}`));
+        }
+      },
+      onActivity: (activity) => {
+        this.setActivity(activity).catch(() => {});
+      },
     });
 
     try {
-      await this.asr.connect();
-    } catch (err: any) {
-      this.reportError(channelId, from, `ASR connect failed: ${err.message}`);
-      this.recording = false;
-      await this.setActivity("error: ASR connect failed");
-      return;
-    }
-
-    // Start audio capture
-    this.capture = new AudioCapture(source);
-
-    this.capture.on("data", (pcm: Buffer) => {
-      this.asr?.sendAudio(pcm);
-    });
-
-    this.capture.on("log", (line: string) => {
-      this.log("info", `[capture] ${line}`);
-    });
-
-    this.capture.on("error", (err: Error) => {
-      this.log("error", `capture error: ${err.message}`);
-    });
-
-    this.capture.on("exit", (code: number | null) => {
-      this.log("info", `capture exited: code=${code}`);
-      if (this.recording) {
-        this.stopRecording().catch((e) => this.log("warn", `stopRecording on capture exit failed: ${e}`));
-      }
-    });
-
-    try {
-      await this.capture.start();
+      await this.pipeline.start(source);
       await this.setActivity(`recording (${source})`);
     } catch (err: any) {
-      this.reportError(channelId, from, `capture start failed: ${err.message}`);
+      this.reportError(channelId, from, `start failed: ${err.message}`);
       this.recording = false;
-      this.asr.disconnect();
-      await this.setActivity("error: capture failed");
+      await this.pipeline.stop();
+      this.pipeline = null;
+      await this.setActivity("error: start failed");
     }
   }
 
@@ -335,83 +212,16 @@ class AiEarPlugin extends PluginBase {
     if (!this.recording) return;
 
     this.recording = false;
+    const startedAt = this.pipeline?.startedAt ?? 0;
 
-    // Safe shutdown: each step independent, one failure doesn't block the rest
-    try { this.capture?.stop(); } catch (err: any) {
-      this.log("warn", `capture.stop() error: ${err.message}`);
-    }
-    try { this.asr?.disconnect(); } catch (err: any) {
-      this.log("warn", `asr.disconnect() error: ${err.message}`);
-    }
-    try { this.buffer?.stop(); } catch (err: any) {
-      this.log("warn", `buffer.stop() error: ${err.message}`);
-    }
+    await this.pipeline?.stop();
+    this.pipeline = null;
 
-    const duration = Math.round((Date.now() - this.startTime) / 1000);
+    const duration = Math.round((Date.now() - startedAt) / 1000);
     this.log("info", `recording stopped. duration=${duration}s, file=${this.meetingFile}`);
     await this.setActivity("idle — recording stopped");
 
-    this.capture = null;
-    this.asr = null;
-    this.buffer = null;
-    this.sliceWriter = null;
-  }
-
-  private onTranscript(text: string, source: string): void {
-    const elapsed = Math.round((Date.now() - this.startTime) / 1000);
-    const line = `[+${elapsed}s][${source}] ${text}`;
-
-    // Write to transcript file
-    if (this.meetingFile) {
-      appendFileSync(this.meetingFile, line + "\n");
-    }
-
-    // DM log
-    this.log("info", line);
-
-    // Buffer for channel push
-    this.buffer?.add(line);
-  }
-
-  private rebuildBuffer(): void {
-    if (this.buffer) {
-      this.buffer.stop();
-      this.buffer = new TranscriptBuffer({
-        pushInterval: PUSH_INTERVAL,
-        pushLines: PUSH_LINES,
-        onFlush: (lines, reason) => this.onBufferFlush(lines, reason),
-      });
-    }
-  }
-
-  private onBufferFlush(lines: string[], reason: FlushReason): void {
-    switch (reason) {
-      case "interval":
-        this.log("info", `flush triggered by interval (${PUSH_INTERVAL}ms), ${lines.length} lines`);
-        break;
-      case "line_count":
-        this.log("info", `flush triggered by line count (${lines.length} >= ${PUSH_LINES})`);
-        break;
-      case "manual":
-        this.log("info", `flush triggered by manual command, ${lines.length} lines`);
-        break;
-      case "stop":
-        this.log("info", `flush triggered by stop, ${lines.length} lines`);
-        break;
-    }
-    void this.pushToChannel(lines);
-  }
-
-  private async pushToChannel(lines: string[]): Promise<void> {
-    if (lines.length === 0) return;
-
-    const slicePath = this.sliceWriter?.write(lines);
-    if (slicePath) {
-      this.log("debug", `slice written: ${slicePath} (${lines.length} lines)`);
-    }
-    const timeRange = SliceWriter.timeRange(lines);
-    const content = `新增转录 [${timeRange}]，${lines.length}行，文件：${slicePath}`;
-    await this.emit("transcription", undefined, content);
+    this.meetingFile = null;
   }
 
   private createMeetingFile(): string {
@@ -443,7 +253,7 @@ if (_isMain) {
   const plugin = new AiEarPlugin();
 
   plugin.start().catch((err) => {
-    console.error(`[ai-ear] failed to start: ${err}`);
+    log.error(`failed to start: ${err}`);
     process.exit(1);
   });
 

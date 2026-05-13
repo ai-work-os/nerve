@@ -2,19 +2,21 @@ import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { nanoid } from "nanoid";
 import { WebSocketServer, WebSocket } from "ws";
-import type { PromptAttachment } from "./acp-client.js";
-import { ChannelManager } from "./channel-manager.js";
-import { SubscriptionManager } from "./subscription-manager.js";
-import { HttpRouter } from "./http-router.js";
-import { SceneManager } from "./scene-manager.js";
-import type { JsonRpcRequest, JsonRpcMessage, Message } from "./protocol.js";
-import { handleRpcRequest } from "./request-handler.js";
-import * as log from "./logger.js";
-import { localIso, localTimeOnly } from "./time-util.js";
+import type { PromptAttachment } from "./agent/acp-client.js";
+import { ChannelManager } from "./channel/channel-manager.js";
+import { SubscriptionManager } from "./channel/subscription-manager.js";
+import { HttpRouter } from "./transport/http-router.js";
+import { SceneManager } from "./scene/scene-manager.js";
+import type { JsonRpcRequest, JsonRpcMessage, Message } from "./transport/protocol.js";
+import { handleRpcRequest } from "./channel/request-handler.js";
+import * as log from "./infra/logger.js";
+import { child as childLogger } from "./infra/logger.js";
+import { localIso, localTimeOnly } from "./infra/time-util.js";
 
 const PROGRAM_LOG_MESSAGE_LIMIT = 5000;
 
 export class Server {
+  private log = childLogger({ module: "server" });
   private cm: ChannelManager;
   private wss!: WebSocketServer;
   private httpServer!: ReturnType<typeof createServer>;
@@ -119,7 +121,7 @@ export class Server {
               } catch { /* best-effort, observer may have disconnected */ }
             }
           }
-          log.debug(`dm event routed: ${event} for ${node.name}`);
+          this.log.debug(`dm event routed: ${event} for ${node.name}`);
         });
       }
     };
@@ -165,14 +167,14 @@ export class Server {
     });
 
     this.httpServer.listen(this.port, () => {
-      log.info(`nerve started on port ${this.port}`);
+      this.log.info(`nerve started on port ${this.port}`);
 
       // Memory sampling — log process memory every 30s for trend analysis
       const mb = (bytes: number) => Math.round(bytes / 1024 / 1024);
       const memInterval = parseInt(process.env.NERVE_MEM_INTERVAL_MS || "30000", 10);
       const logMem = () => {
         const mem = process.memoryUsage();
-        log.info(`[mem] rss=${mb(mem.rss)}mb heap=${mb(mem.heapUsed)}mb/${mb(mem.heapTotal)}mb ext=${mb(mem.external)}mb buf=${mb(mem.arrayBuffers)}mb`);
+        this.log.info(`[mem] rss=${mb(mem.rss)}mb heap=${mb(mem.heapUsed)}mb/${mb(mem.heapTotal)}mb ext=${mb(mem.external)}mb buf=${mb(mem.arrayBuffers)}mb`);
       };
       logMem(); // immediate first sample
       this.memSampler = setInterval(logMem, memInterval);
@@ -216,7 +218,7 @@ export class Server {
               if (p.source) pendingNode.source = p.source as string;
             }
             this.wsNodeMap.set(ws, pendingNodeId);
-            log.info(`node.register: program node ${name} claimed pending slot ${pendingNodeId}`);
+            this.log.info(`node.register: program node ${name} claimed pending slot ${pendingNodeId}`);
             this.sendResult(ws, id, { nodeId: pendingNodeId, name });
 
             // Replay channel joins — program node was added to channels before WS connected,
@@ -229,7 +231,7 @@ export class Server {
                   params: { channelId: chId, nodeId: pendingNodeId, nodeName: name },
                 } as any);
               }
-              log.info(`node.register: replayed ${pendingNode.channels.size} channel join(s) for ${name}`);
+              this.log.info(`node.register: replayed ${pendingNode.channels.size} channel join(s) for ${name}`);
             }
             break;
           }
@@ -239,7 +241,7 @@ export class Server {
             let suffix = 2;
             while (this.cm.nodePool.isNameTaken(`${name}-${suffix}`)) suffix++;
             name = `${name}-${suffix}`;
-            log.info(`node.register: name taken, assigned ${name}`);
+            this.log.info(`node.register: name taken, assigned ${name}`);
           }
 
           const node = this.cm.registerNode(
@@ -378,7 +380,7 @@ export class Server {
               const callerNode = this.cm.nodePool.get(callerNodeId);
               if (callerNode && callerNode.channels.size === 1) {
                 channelId = [...callerNode.channels][0];
-                log.info(`[node.spawn] auto-inherit channel ${channelId} from caller ${callerNode.name}`);
+                this.log.info(`[node.spawn] auto-inherit channel ${channelId} from caller ${callerNode.name}`);
               }
             }
           }
@@ -463,7 +465,7 @@ export class Server {
           }
           if (node.messageStore.length > PROGRAM_LOG_MESSAGE_LIMIT) {
             node.messageStore.splice(0, node.messageStore.length - PROGRAM_LOG_MESSAGE_LIMIT);
-            log.info(`[node.log] trimmed ${node.name} messageStore to ${PROGRAM_LOG_MESSAGE_LIMIT}`);
+            this.log.info(`[node.log] trimmed ${node.name} messageStore to ${PROGRAM_LOG_MESSAGE_LIMIT}`);
           }
 
           const updateParams = { update: { sessionUpdate: "node_log", entries } };
@@ -504,7 +506,7 @@ export class Server {
           const callerNodeId = this.wsNodeMap.get(ws);
           const callerNode = callerNodeId ? this.cm.nodePool.get(callerNodeId) : undefined;
           const from = callerNode ? { nodeId: callerNode.id, name: callerNode.name } : undefined;
-          log.debug(`node.prompt: nodeId=${nodeId} attachments=${attachments.length}`);
+          this.log.debug(`node.prompt: nodeId=${nodeId} attachments=${attachments.length}`);
           this.cm.nodePool.promptNode(nodeId, content, from, ws, attachments).then(result => {
             this.sendResult(ws, id, result);
           }).catch(err => {

@@ -19,6 +19,7 @@ import { DailyFileWriter } from "./daily-file-writer.js";
 import { MacMicSource } from "./sources/mac-mic-source.js";
 import { RemoteUploadSource } from "./sources/remote-upload-source.js";
 import { cleanOldAudio } from "./audio-cleaner.js";
+import { TranscriptFilter } from "./transcript-filter.js";
 
 function getArg(flag: string, def: string): string {
   const i = process.argv.indexOf(flag);
@@ -63,6 +64,8 @@ class AiLifeLogPlugin extends PluginBase {
   private errorReason: string | null = null;
   private rssTimer: ReturnType<typeof setInterval> | null = null;
   private cleanerTimer: ReturnType<typeof setInterval> | null = null;
+  private filter = new TranscriptFilter();
+  private filterLogEvery = 100;
 
   constructor() {
     super({
@@ -112,6 +115,10 @@ class AiLifeLogPlugin extends PluginBase {
     }
 
     this.pipeline.on("text", (text: string, ts: Date) => {
+      if (!this.filter.accept(text)) {
+        this.maybeLogFilterStats();
+        return;
+      }
       try {
         this.writer.appendOrInsert(text, ts, "mac");
         this.log("info", `[${ts.toISOString()}][mac] ${text}`);
@@ -152,6 +159,10 @@ class AiLifeLogPlugin extends PluginBase {
         log: (l, m) => this.log(l, `[remote] ${m}`),
       });
       this.remoteSource.on("text", (text: string, tsMs: number, tag: string) => {
+        if (!this.filter.accept(text)) {
+          this.maybeLogFilterStats();
+          return;
+        }
         try {
           this.writer.appendOrInsert(text, new Date(tsMs), tag);
           this.log("info", `[${new Date(tsMs).toISOString()}][${tag}] ${text}`);
@@ -221,6 +232,17 @@ class AiLifeLogPlugin extends PluginBase {
       }
       default:
         return {};
+    }
+  }
+
+  private maybeLogFilterStats(): void {
+    const stats = this.filter.getStats();
+    if (stats.dropped >= this.filterLogEvery) {
+      this.log(
+        "info",
+        `transcript-filter: dropped=${stats.dropped} (punct=${stats.byReason.punct}, filler=${stats.byReason.filler}, dup=${stats.byReason.dup})`
+      );
+      this.filter.resetStats();
     }
   }
 
