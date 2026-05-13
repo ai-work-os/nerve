@@ -72,6 +72,7 @@ async function cmdServe(args: string[]) {
   let noDuty = false;
   let noLifeLog = false;
   let noFeishu = false;
+  let noEmailWatcher = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -82,6 +83,7 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-duty") { noDuty = true; }
     else if (args[i] === "--no-life-log") { noLifeLog = true; }
     else if (args[i] === "--no-feishu") { noFeishu = true; }
+    else if (args[i] === "--no-email-watcher") { noEmailWatcher = true; }
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
@@ -193,6 +195,30 @@ async function cmdServe(args: string[]) {
     info(`feishu-bridge skipped (no ${feishuConfigPath})`);
   }
 
+  // Auto-start email-watcher only when accounts.json exists.
+  let emailWatcherNodeId: string | undefined;
+  const emailAccountsPath = resolve(homedir(), ".config/email-watcher/accounts.json");
+  const emailWatcherShouldStart = !noEmailWatcher && existsSync(emailAccountsPath);
+  if (emailWatcherShouldStart) {
+    const startEmailWatcher = () => {
+      const result = nerve.cleanupStaleGuardian("email-watcher");
+      if (result === "alive") {
+        info("email-watcher already running, skipping spawn");
+        return;
+      }
+      try {
+        const node = nerve.nodePool.spawnProcessSync("email-watcher", "email-watcher", resolve(dataDir), port);
+        emailWatcherNodeId = node.id;
+        info(`email-watcher spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`email-watcher spawn failed: ${err.message}`);
+      }
+    };
+    startEmailWatcher();
+  } else if (!noEmailWatcher) {
+    info(`email-watcher skipped (no ${emailAccountsPath})`);
+  }
+
   void startStartupScenes({
     dataDir,
     startScene: (name: string) => server.startScene(name),
@@ -217,6 +243,10 @@ async function cmdServe(args: string[]) {
       if (feishuBridgeNodeId) {
         try { await nerve.nodePool.stopNode(feishuBridgeNodeId); } catch (e) { info(`feishu-bridge stop failed: ${e}`); }
         info("feishu-bridge stopped");
+      }
+      if (emailWatcherNodeId) {
+        try { await nerve.nodePool.stopNode(emailWatcherNodeId); } catch (e) { info(`email-watcher stop failed: ${e}`); }
+        info("email-watcher stopped");
       }
       await server.shutdown();
       closeLog();
