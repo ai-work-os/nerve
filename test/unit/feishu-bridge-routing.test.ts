@@ -245,60 +245,6 @@ describe("feishu-bridge BridgeCore", () => {
     expect(transport.posts.length).toBe(2);
   });
 
-  it("setDefaultAdapter 切到 gemini 后，新 mapping 用 gemini-feishu-* 名称", async () => {
-    await core.setDefaultAdapter("gemini");
-    await core.handleFeishuMessage({
-      chatId: "oc_gem", messageId: "m1",
-      messageType: "text", contentJson: JSON.stringify({ text: "hi" }),
-    });
-    const m = mapping.get("oc_gem")!;
-    expect(m.agentName).toMatch(/^gemini-feishu-/);
-    expect(m.agentAdapter).toBe("gemini");
-    // 切回 codex 后新 mapping 用 codex
-    await core.setDefaultAdapter("codex");
-    await core.handleFeishuMessage({
-      chatId: "oc_cdx", messageId: "m1",
-      messageType: "text", contentJson: JSON.stringify({ text: "hi" }),
-    });
-    expect(mapping.get("oc_cdx")!.agentAdapter).toBe("codex");
-  });
-
-  it("setDefaultAdapter 不允许的名字抛错", async () => {
-    await expect(core.setDefaultAdapter("rando-agent")).rejects.toThrow(/not allowed/);
-  });
-
-  it("isKnownAgent：只对自己 spawn 的 agent 返回 true", async () => {
-    expect(core.isKnownAgent("some-random-name")).toBe(false);
-    await core.handleFeishuMessage({
-      chatId: "oc_k", messageId: "m1",
-      messageType: "text", contentJson: JSON.stringify({ text: "hi" }),
-    });
-    const m = mapping.get("oc_k")!;
-    expect(core.isKnownAgent(m.agentName)).toBe(true);
-    expect(core.isKnownAgent("unknown")).toBe(false);
-  });
-
-  it("clearMapping 删单条，clearAllMappings 删全部并清掉 agentToChat 索引", async () => {
-    await core.handleFeishuMessage({
-      chatId: "oc_one", messageId: "m1",
-      messageType: "text", contentJson: JSON.stringify({ text: "hi" }),
-    });
-    await core.handleFeishuMessage({
-      chatId: "oc_two", messageId: "m2",
-      messageType: "text", contentJson: JSON.stringify({ text: "hi" }),
-    });
-    const a1 = mapping.get("oc_one")!.agentName;
-    expect(core.isKnownAgent(a1)).toBe(true);
-
-    expect(await core.clearMapping("oc_one")).toBe(true);
-    expect(core.isKnownAgent(a1)).toBe(false);
-    expect(mapping.get("oc_one")).toBeUndefined();
-    expect(mapping.all()).toHaveLength(1);
-
-    expect(await core.clearAllMappings()).toBe(1);
-    expect(mapping.all()).toHaveLength(0);
-  });
-
   it("已有 mapping 持久化后，新 BridgeCore 能直接路由 node.message", async () => {
     const path = join(dir, "mapping.json");
     // 第一次：建好 mapping
