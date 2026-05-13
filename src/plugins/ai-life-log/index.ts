@@ -74,7 +74,12 @@ class AiLifeLogPlugin extends PluginBase {
       capabilities: ["monitor"],
       permissions: "member",
     });
-    this.writer = new DailyFileWriter(resolve(this.dataDir, "log"));
+    // Primary: plugin dataDir. Mirror: ~/.ai/workspace/activity/life-log/
+    // so the transcript syncs to home via ~/.ai git sync, where home's
+    // duty-agent can read it for daily-life-recap.
+    const primary = resolve(this.dataDir, "log");
+    const mirror = resolve(homedir(), ".ai/workspace/activity/life-log");
+    this.writer = new DailyFileWriter([primary, mirror]);
   }
 
   protected async onReady(): Promise<void> {
