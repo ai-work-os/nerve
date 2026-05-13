@@ -17,7 +17,9 @@ import type { AudioSource, PcmCallback } from "./audio-source.js";
 const WATCHDOG_TICK_MS = 30_000;
 // If wall-clock advanced more than this between ticks, we infer the system slept
 // and the AVAudioEngine is likely stuck — restart capture.
-const SLEEP_DRIFT_MS = 60_000;
+// 5 分钟才视作"系统休眠"——production 数据显示 60s/120s drift 多为 GC/CPU 尖峰，
+// 真休眠通常 >5min。提高阈值消除假重启（活动日志 7 天观察到 39 次假重启）。
+const SLEEP_DRIFT_MS = 300_000;
 // Backoff for capture exit auto-restart, ms.
 const RESTART_BACKOFF_MS = [1_000, 3_000, 10_000, 30_000];
 // stopAndWait timeout when tearing down a capture during restart.
