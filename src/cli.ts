@@ -11,6 +11,7 @@
 
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 
@@ -70,6 +71,7 @@ async function cmdServe(args: string[]) {
   let noGuardian = false;
   let noDuty = false;
   let noLifeLog = false;
+  let noFeishu = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -79,6 +81,7 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-recorder") { /* deprecated no-op: user-recorder no longer auto-starts */ }
     else if (args[i] === "--no-duty") { noDuty = true; }
     else if (args[i] === "--no-life-log") { noLifeLog = true; }
+    else if (args[i] === "--no-feishu") { noFeishu = true; }
   }
 
   // Dynamic import to avoid loading heavy deps for simple commands
@@ -166,6 +169,30 @@ async function cmdServe(args: string[]) {
     info(`ai-life-log skipped (platform=${process.platform}, AI_LIFE_LOG_REMOTE_UPLOAD!=true)`);
   }
 
+  // Auto-start feishu-bridge only when credentials file exists.
+  let feishuBridgeNodeId: string | undefined;
+  const feishuConfigPath = resolve(homedir(), ".nerve/feishu.json");
+  const feishuShouldStart = !noFeishu && existsSync(feishuConfigPath);
+  if (feishuShouldStart) {
+    const startFeishu = () => {
+      const result = nerve.cleanupStaleGuardian("feishu-bridge");
+      if (result === "alive") {
+        info("feishu-bridge already running, skipping spawn");
+        return;
+      }
+      try {
+        const node = nerve.nodePool.spawnProcessSync("feishu-bridge", "feishu-bridge", resolve(dataDir), port);
+        feishuBridgeNodeId = node.id;
+        info(`feishu-bridge spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`feishu-bridge spawn failed: ${err.message}`);
+      }
+    };
+    startFeishu();
+  } else if (!noFeishu) {
+    info(`feishu-bridge skipped (no ${feishuConfigPath})`);
+  }
+
   void startStartupScenes({
     dataDir,
     startScene: (name: string) => server.startScene(name),
@@ -186,6 +213,10 @@ async function cmdServe(args: string[]) {
       if (lifeLogNodeId) {
         try { await nerve.nodePool.stopNode(lifeLogNodeId); } catch (e) { info(`ai-life-log stop failed: ${e}`); }
         info("ai-life-log stopped");
+      }
+      if (feishuBridgeNodeId) {
+        try { await nerve.nodePool.stopNode(feishuBridgeNodeId); } catch (e) { info(`feishu-bridge stop failed: ${e}`); }
+        info("feishu-bridge stopped");
       }
       await server.shutdown();
       closeLog();
