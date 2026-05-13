@@ -74,11 +74,13 @@ class AiLifeLogPlugin extends PluginBase {
       capabilities: ["monitor"],
       permissions: "member",
     });
-    // Primary: plugin dataDir. Mirror: ~/.ai/workspace/activity/life-log/
-    // so the transcript syncs to home via ~/.ai git sync, where home's
-    // duty-agent can read it for daily-life-recap.
+    // Primary: plugin dataDir. Mirror: ~/.ai/workspace/activity/life-log/{host}/
+    // The {host} subdir (mac / home) prevents two writers — Mac mic source on
+    // this machine and the remote-upload source running on home for phone audio —
+    // from clobbering the same daily file when ~/.ai syncs both ways.
     const primary = resolve(this.dataDir, "log");
-    const mirror = resolve(homedir(), ".ai/workspace/activity/life-log");
+    const host = process.platform === "darwin" ? "mac" : "home";
+    const mirror = resolve(homedir(), ".ai/workspace/activity/life-log", host);
     this.writer = new DailyFileWriter([primary, mirror]);
   }
 
