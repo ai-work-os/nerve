@@ -11,8 +11,9 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 
 function getArg(flag: string, def: string): string {
@@ -22,7 +23,7 @@ function getArg(flag: string, def: string): string {
 
 const PORT = parseInt(getArg("--port", "4800"));
 
-const SCRIPT_PATH = resolve(homedir(), ".ai/ops/scripts/email-watcher.py");
+const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "email-watcher.py");
 const ACCOUNTS_PATH = resolve(homedir(), ".config/email-watcher/accounts.json");
 const RESTART_BACKOFF_MS = [1_000, 3_000, 10_000, 30_000, 60_000];
 
