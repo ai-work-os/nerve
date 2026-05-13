@@ -32,8 +32,11 @@ interface ParsedLine {
 }
 
 export class DailyFileWriter {
-  constructor(private readonly dir: string) {
-    mkdirSync(dir, { recursive: true });
+  private readonly dirs: string[];
+
+  constructor(dir: string | string[]) {
+    this.dirs = Array.isArray(dir) ? dir : [dir];
+    for (const d of this.dirs) mkdirSync(d, { recursive: true });
   }
 
   /**
@@ -48,13 +51,23 @@ export class DailyFileWriter {
   /**
    * Insert one transcript line into the day file at the correct chronological
    * position. Fast path when the new line is later than the last existing line.
+   * Broadcast: writes the same line to every dir passed to the constructor.
+   * Per-dir failures swallowed and logged via console.warn so one broken mirror
+   * doesn't lose data on the primary.
    */
   appendOrInsert(text: string, ts: Date, source: string): void {
     const safe = text.replace(/[\r\n]+/g, " ").trim();
     if (safe.length === 0) return;
+    for (const d of this.dirs) {
+      try { this.writeOne(d, safe, ts, source); }
+      catch (err: any) { console.warn(`[DailyFileWriter] mirror failed for ${d}: ${err.message}`); }
+    }
+  }
+
+  private writeOne(dir: string, safe: string, ts: Date, source: string): void {
     const day = formatDate(ts);
     const time = formatTime(ts);
-    const path = join(this.dir, `${day}.txt`);
+    const path = join(dir, `${day}.txt`);
     const newLine = `[${time}][${source}] ${safe}\n`;
 
     if (!existsSync(path)) {
@@ -70,11 +83,9 @@ export class DailyFileWriter {
     const last = parseLine(lines[lines.length - 1]);
     const newKey = sortKey(time, source);
     if (last && sortKey(`${pad(last.hh)}:${pad(last.mm)}:${pad(last.ss)}`, last.source) <= newKey) {
-      // fast path: append
       appendFileSync(path, newLine);
       return;
     }
-    // slow path: parse all, insert, rewrite
     const parsed: ParsedLine[] = lines.map(l => parseLine(l) ?? { hh: 0, mm: 0, ss: 0, source: "?", text: l, raw: l });
     const newParsed: ParsedLine = {
       hh: ts.getHours(), mm: ts.getMinutes(), ss: ts.getSeconds(),
@@ -86,10 +97,10 @@ export class DailyFileWriter {
     writeFileSync(path, parsed.map(p => p.raw).join("\n") + "\n");
   }
 
-  /** Stats for today's file (where "today" is the local day of `now`). */
+  /** Stats for today's file in the primary (first) dir. */
   stats(now: Date = new Date()): DailyStats {
     const day = formatDate(now);
-    const file = join(this.dir, `${day}.txt`);
+    const file = join(this.dirs[0], `${day}.txt`);
     if (!existsSync(file)) return { file, lines: 0, chars: 0 };
     const content = readFileSync(file, "utf8");
     const lines = content.length === 0 ? 0 : content.split("\n").filter(l => l.length > 0).length;
