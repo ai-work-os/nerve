@@ -212,6 +212,28 @@ const adapters: Record<string, AdapterConfig> = {
     terminal: false,
     description: "节点行为观察与记录",
   },
+  "email-watcher": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/email-watcher/index.ts"],
+    capabilities: ["monitor"],
+    terminal: false,
+    description: "IMAP IDLE 监听邮件，验证码自动 pbcopy",
+    commands: {
+      pause: { description: "暂停监听（kill 子进程，不再重启）" },
+      resume: { description: "恢复监听（重新拉起子进程）" },
+      restart: { description: "立刻重启子进程" },
+      status: { description: "运行状态 / pid / uptime / 错误" },
+    },
+    usage: [
+      "包装 ~/.ai/ops/scripts/email-watcher.py daemon。",
+      "python 子进程做实际 IMAP IDLE / deepseek 判断 / pbcopy + macOS 通知。",
+      "TS plugin 只管生命周期 + 日志聚合 + 子进程崩溃自动重启。",
+      "",
+      "凭证: ~/.config/email-watcher/accounts.json (chmod 600，不进 git)。",
+      "随 nerve 自启 (cli.ts startEmailWatcher)，accounts.json 不存在时跳过启动。",
+    ].join("\n"),
+  },
   "feishu-bridge": {
     type: "program",
     cmd: "npx",
