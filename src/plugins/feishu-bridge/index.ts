@@ -3,16 +3,15 @@
  * feishu-bridge — nerve plugin node that bridges a Feishu bot to nerve channels.
  *
  * Inbound: feishu im.message.receive_v1 → channel.post into a per-chat nerve channel.
- *          AI agent (codex by default) is spawned lazily and joined to the channel.
- * Outbound: channel.message from the bound agent → feishu im.v1.message.reply.
+ *          AI agent (codex/gemini/claude) is spawned lazily and joined to the channel.
+ * Outbound: agent's `nerve_post({to: "feishu-bridge", ...})` → node.message → feishu reply.
  *
- * Usage:
- *   NERVE_PORT=4800 npx tsx src/plugins/feishu-bridge/index.ts
- *
- * Options (env or argv):
- *   --port <n>           nerve WS port (default 4800; NERVE_PORT overrides)
- *   --config <path>      feishu config (default ~/.nerve/feishu.json)
- *   --agent <adapter>    AI adapter to spawn (default "codex")
+ * DM commands (TUI DM the bridge node):
+ *   status                 — feishu status + mapping count + current default adapter
+ *   list                   — list all feishu chat ↔ channel mappings
+ *   agent <codex|gemini>   — set default adapter for new chats (existing chats unchanged)
+ *   clear                  — drop ALL mappings (existing codex/gemini processes survive)
+ *   clear <feishuChatId>   — drop a single mapping
  *
  * Credentials file ~/.nerve/feishu.json:
  *   { "app_id": "cli_xxx", "app_secret": "..." }
@@ -20,7 +19,7 @@
 
 import { resolve } from "node:path";
 
-import { PluginBase } from "../plugin-base.js";
+import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import { BridgeCore, type NerveTransport } from "./bridge-core.js";
 import { MappingStore } from "./mapping.js";
 import { loadConfig, defaultConfigPath } from "./config.js";
@@ -67,20 +66,102 @@ export class FeishuBridge extends PluginBase {
     }
   }
 
+  /** DM-callable commands shown in `help`. */
+  override getCommands(): Record<string, CommandDef> {
+    return {
+      status: { description: "feishu 连接状态 + 当前默认 adapter + mapping 数" },
+      list: { description: "列出所有飞书会话 ↔ nerve 频道映射" },
+      agent: {
+        description: "切换新会话默认 adapter（已有 mapping 不变）",
+        args: { name: "codex | gemini | claude" },
+      },
+      clear: {
+        description: "清掉 mapping。不带参数清全部，带参数清单个",
+        args: { chat: "可选：feishuChatId（如 oc_xxx）" },
+      },
+    };
+  }
+
   /**
-   * Override onMessage: every `node.message` ends up here (PluginBase dispatches
-   * to onMessage when no commands are declared). That's the path codex's
-   * `nerve_post({ to: "feishu-bridge", ... })` reply takes.
+   * Route incoming node.message:
+   *   - from a known AI agent (codex-feishu-* / gemini-feishu-*) → forward to feishu
+   *   - else → treat as DM command (PluginBase default flow)
+   *
+   * The base class registers a `node.message` handler that calls dispatchCommand;
+   * we hook in here to make agent replies bypass command parsing.
    */
-  protected override onMessage(content: string, from?: string): void {
-    this.core?.handleNodeMessage({ content, from });
+  protected override dispatchCommand(content: string, from?: string, channelId?: string): void {
+    if (from && this.core?.isKnownAgent(from)) {
+      this.core.handleNodeMessage({ content, from });
+      return;
+    }
+    super.dispatchCommand(content, from, channelId);
+  }
+
+  override onCommand(command: string, args: Record<string, string>, from?: string): CommandResult {
+    if (!this.core) return { error: "bridge not ready" };
+
+    switch (command) {
+      case "status": {
+        const adapter = this.core.currentDefaultAdapter();
+        const count = this.core.listMappings().length;
+        const reply = `feishu-bridge OK · default-adapter=${adapter} · mappings=${count}`;
+        this.log("info", `[cmd:status from=${from || "-"}] ${reply}`);
+        return { reply };
+      }
+
+      case "list": {
+        const all = this.core.listMappings();
+        if (all.length === 0) {
+          const reply = "(no mappings)";
+          this.log("info", `[cmd:list from=${from || "-"}] ${reply}`);
+          return { reply };
+        }
+        const lines = all.map(m =>
+          `${m.feishuChatId}  →  ${m.agentName}  (adapter=${m.agentAdapter || "?"})  ch=${m.channelId}`
+        );
+        const reply = lines.join("\n");
+        this.log("info", `[cmd:list from=${from || "-"}]\n${reply}`);
+        return { reply };
+      }
+
+      case "agent": {
+        const name = args.name || args["0"];
+        const allowed = this.core.allowedAdapters();
+        if (!name) return { error: `usage: agent <${allowed.join(" | ")}>` };
+        if (!allowed.includes(name)) {
+          return { error: `adapter "${name}" 不在白名单。可选: ${allowed.join(", ")}` };
+        }
+        // Validated synchronously; persist async (errors logged)
+        this.core.setDefaultAdapter(name).then(() => {
+          this.log("info", `[cmd:agent] default adapter → ${name}`);
+        }).catch(err => {
+          this.log("warn", `[cmd:agent] persist failed: ${err?.message || err}`);
+        });
+        return { reply: `default adapter → ${name} (新会话生效，已有 mapping 不变)` };
+      }
+
+      case "clear": {
+        const chat = args.chat || args["0"];
+        if (!chat) {
+          this.core.clearAllMappings().then(n => {
+            this.log("info", `[cmd:clear all] dropped ${n} mappings`);
+          }).catch(err => this.log("warn", `[cmd:clear all] ${err}`));
+          return { reply: `已清全部 mapping（重启时不再 re-join 旧频道）` };
+        }
+        this.core.clearMapping(chat).then(ok => {
+          this.log("info", `[cmd:clear ${chat}] ${ok ? "dropped" : "not found"}`);
+        }).catch(err => this.log("warn", `[cmd:clear ${chat}] ${err}`));
+        return { reply: `已尝试清 mapping: ${chat}` };
+      }
+    }
   }
 
   protected override async onReady(): Promise<void> {
     const transport: NerveTransport = {
       request: (method, params) => this.request(method, params || {}),
     };
-    const mapping = new MappingStore(this.mappingPath);
+    const mapping = new MappingStore(this.mappingPath, (msg) => this.log("warn", msg));
     this.core = new BridgeCore({
       transport,
       feishu: this.client,
@@ -104,7 +185,9 @@ export class FeishuBridge extends PluginBase {
     await this.client.start(async (evt) => {
       await this.core!.handleFeishuMessage(evt);
     });
-    this.log("info", `feishu-bridge ready (agent=${this.agentAdapter}, mappings=${mapping.all().length})`);
+    this.log("info",
+      `feishu-bridge ready (default-adapter=${this.core.currentDefaultAdapter()}, ` +
+      `mappings=${mapping.all().length})`);
   }
 
   /** Convenience for tests / explicit teardown */
