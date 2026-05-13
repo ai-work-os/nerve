@@ -26,14 +26,8 @@ export interface BridgeCoreOptions {
   transport: NerveTransport;
   feishu: IFeishuClient;
   mapping: MappingStore;
-  /**
-   * Default adapter for newly-created mappings when MappingStore has no
-   * persisted preference. The persisted preference (set by `agent` DM command)
-   * takes priority over this.
-   */
+  /** Adapter name used to spawn the AI agent (e.g. "codex") */
   agentAdapter: string;
-  /** Whitelist of adapters the bridge will accept via `agent` command. */
-  allowedAdapters?: string[];
   /** Our own node name on nerve — receives @mention from agents in their nerve_post replies */
   bridgeNodeName: string;
   log: (level: "info" | "warn" | "error" | "debug", msg: string) => void;
@@ -45,8 +39,6 @@ export interface BridgeCoreOptions {
    */
   spawnReadyDelayMs?: number;
 }
-
-const DEFAULT_ALLOWED_ADAPTERS = ["codex", "gemini", "claude"];
 
 /**
  * Make a stable, collision-resistant short id from a feishu chat id.
@@ -74,54 +66,10 @@ export class BridgeCore {
 
   constructor(opts: BridgeCoreOptions) {
     this.opts = opts;
-    // Seed MappingStore's defaultAdapter from constructor option if no persisted value yet.
-    // (MappingStore returns its persisted value if any; otherwise it falls back to its own default.)
     // Rebuild reverse index from persisted mapping
     for (const m of opts.mapping.all()) {
       this.agentToChat.set(m.agentName, m.feishuChatId);
     }
-  }
-
-  /** Allowed adapter names for the `agent` DM command. */
-  allowedAdapters(): string[] {
-    return this.opts.allowedAdapters ?? DEFAULT_ALLOWED_ADAPTERS;
-  }
-
-  /** Return whichever adapter new mappings will use. Mutable via setDefaultAdapter. */
-  currentDefaultAdapter(): string {
-    return this.opts.mapping.getDefaultAdapter() || this.opts.agentAdapter;
-  }
-
-  async setDefaultAdapter(name: string): Promise<void> {
-    if (!this.allowedAdapters().includes(name)) {
-      throw new Error(`adapter "${name}" not allowed. allowed: ${this.allowedAdapters().join(", ")}`);
-    }
-    await this.opts.mapping.setDefaultAdapter(name);
-  }
-
-  /** Used by FeishuBridge.dispatchCommand override to distinguish agent replies from user DMs. */
-  isKnownAgent(nodeName: string): boolean {
-    return this.agentToChat.has(nodeName);
-  }
-
-  /** All mappings. For DM `list` command. */
-  listMappings(): ChatMapping[] {
-    return this.opts.mapping.all();
-  }
-
-  /** Drop a single mapping. Returns true if it existed. For DM `clear <chatId>` command. */
-  async clearMapping(feishuChatId: string): Promise<boolean> {
-    const m = this.opts.mapping.get(feishuChatId);
-    if (m) this.agentToChat.delete(m.agentName);
-    this.latestUserMessageId.delete(feishuChatId);
-    return this.opts.mapping.delete(feishuChatId);
-  }
-
-  /** Drop everything. For DM `clear` (no args) command. */
-  async clearAllMappings(): Promise<number> {
-    this.agentToChat.clear();
-    this.latestUserMessageId.clear();
-    return this.opts.mapping.clearAll();
   }
 
   /** Handle an inbound feishu message — extract, ensure mapping, post to channel. */
@@ -214,11 +162,9 @@ export class BridgeCore {
   private async createMapping(feishuChatId: string): Promise<ChatMapping> {
     const shortId = makeShortId(feishuChatId);
     const channelName = `feishu-${shortId}`;
-    const adapter = this.currentDefaultAdapter();
-    // Agent name embeds adapter so we can see at a glance which one's running.
-    const agentName = `${adapter}-feishu-${shortId}`;
+    const agentName = `codex-feishu-${shortId}`;
 
-    this.opts.log("info", `creating channel + agent ${agentName} for feishu chat ${feishuChatId} (shortId=${shortId})`);
+    this.opts.log("info", `creating channel + agent for feishu chat ${feishuChatId} (shortId=${shortId})`);
 
     const ch = await this.opts.transport.request("channel.create", { name: channelName });
     const channelId = ch.channelId as string;
@@ -229,7 +175,7 @@ export class BridgeCore {
 
       // Spawn AI agent into the channel
       await this.opts.transport.request("node.spawn", {
-        adapter,
+        adapter: this.opts.agentAdapter,
         name: agentName,
         channelId,
       });
@@ -252,7 +198,6 @@ export class BridgeCore {
       feishuChatId,
       channelId,
       agentName,
-      agentAdapter: adapter,
       createdAt: new Date().toISOString(),
     };
     await this.opts.mapping.set(mapping);
