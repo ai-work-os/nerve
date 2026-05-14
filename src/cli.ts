@@ -36,6 +36,7 @@ async function cmdServe(args: string[]) {
   let noLifeLog = false;
   let noFeishu = false;
   let noEmailWatcher = false;
+  let noWatchdog = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -47,6 +48,7 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-life-log") { noLifeLog = true; }
     else if (args[i] === "--no-feishu") { noFeishu = true; }
     else if (args[i] === "--no-email-watcher") { noEmailWatcher = true; }
+    else if (args[i] === "--no-watchdog") { noWatchdog = true; }
   }
 
   const { initLog, info, closeLog } = await import("./infra/logger.js");
@@ -169,6 +171,25 @@ async function cmdServe(args: string[]) {
     info(`email-watcher skipped (no ${emailAccountsPath})`);
   }
 
+  let watchdogNodeId: string | undefined;
+  if (!noWatchdog) {
+    const startWatchdog = () => {
+      const result = nerve.cleanupStaleGuardian("system-watchdog");
+      if (result === "alive") {
+        info("system-watchdog already running, skipping spawn");
+        return;
+      }
+      try {
+        const node = nerve.nodePool.spawnProcessSync("system-watchdog", "system-watchdog", resolve(dataDir), port);
+        watchdogNodeId = node.id;
+        info(`system-watchdog spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`system-watchdog spawn failed: ${err.message}`);
+      }
+    };
+    startWatchdog();
+  }
+
   void startStartupScenes({
     dataDir,
     startScene: (name: string) => server.startScene(name),
@@ -197,6 +218,10 @@ async function cmdServe(args: string[]) {
       if (emailWatcherNodeId) {
         try { await nerve.nodePool.stopNode(emailWatcherNodeId); } catch (e) { info(`email-watcher stop failed: ${e}`); }
         info("email-watcher stopped");
+      }
+      if (watchdogNodeId) {
+        try { await nerve.nodePool.stopNode(watchdogNodeId); } catch (e) { info(`system-watchdog stop failed: ${e}`); }
+        info("system-watchdog stopped");
       }
       await server.shutdown();
       closeLog();
