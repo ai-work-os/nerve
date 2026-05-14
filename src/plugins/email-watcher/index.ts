@@ -81,6 +81,10 @@ class EmailWatcherPlugin extends PluginBase {
     };
   }
 
+  override getHealth() {
+    return { liveness: "process" as const, maxIdleMs: "none" as const, maxMemoryMB: 200 };
+  }
+
   protected override onCommand(command: string, _args: Record<string, string>, _from?: string): CommandResult {
     switch (command) {
       case "pause":

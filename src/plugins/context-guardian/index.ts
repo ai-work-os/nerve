@@ -57,6 +57,10 @@ class ContextGuardian extends PluginBase {
     };
   }
 
+  override getHealth() {
+    return { liveness: "process" as const, maxIdleMs: 60_000, maxMemoryMB: 100 };
+  }
+
   override getEvents(): string[] {
     return ["context_warning", "context_triggered"];
   }

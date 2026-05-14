@@ -76,6 +76,10 @@ export class FeishuBridge extends PluginBase {
     this.core?.handleNodeMessage({ content, from });
   }
 
+  override getHealth() {
+    return { liveness: "process" as const, maxIdleMs: "none" as const, maxMemoryMB: 200 };
+  }
+
   protected override async onReady(): Promise<void> {
     const transport: NerveTransport = {
       request: (method, params) => this.request(method, params || {}),
