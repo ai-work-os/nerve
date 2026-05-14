@@ -1,68 +1,31 @@
 #!/usr/bin/env node
 /**
- * Nerve Channel CLI — unified entry point for server and management commands.
+ * Nerve CLI — unified entry point.
  *
- * Usage:
- *   nerve serve [--port 4800] [--data DIR] [--event-log FILE]
- *   nerve status
- *   nerve channel list|create|close|history|post
- *   nerve node list|spawn|stop
+ * Server bootstrap:
+ *   nerve serve [--port N] [--data DIR] [--event-log F] [--no-*]
+ *
+ * Client commands (use HTTP API, AI-friendly JSON output by default):
+ *   nerve [-H host] [--human] <namespace> <action> [args]
+ *
+ * Namespaces: channel, node, session, scene, peer, remote, dm
+ * Top-level shortcuts: status, log, health, metrics, blob, bridge, post
+ *
+ * See `nerve --help` for the full command list and `~/.config/nerve/hosts.json`
+ * for host alias configuration.
  */
 
 import { resolve, dirname } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import http from "node:http";
+
+import { setBaseUrl, setOutputMode } from "./cli/http.js";
+import { extractHostFlag, extractOutputFlag, resolveHost } from "./cli/host-resolver.js";
 
 const DEFAULT_PORT = 4800;
-const BASE_URL = process.env.NERVE_URL || `http://localhost:${DEFAULT_PORT}`;
 
-// --- HTTP client ---
-
-function post(path: string, data: Record<string, unknown> = {}): Promise<any> {
-  const url = new URL(path, BASE_URL);
-  const body = JSON.stringify(data);
-  return new Promise((resolve, reject) => {
-    const req = http.request(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-    }, (res) => {
-      let d = "";
-      res.on("data", (c) => d += c);
-      res.on("end", () => {
-        try { resolve(JSON.parse(d)); } catch { reject(new Error(d)); }
-      });
-    });
-    req.on("error", (e) => reject(new Error(`Cannot connect to Nerve server: ${e.message}`)));
-    req.write(body);
-    req.end();
-  });
-}
-
-function get(path: string): Promise<any> {
-  const url = new URL(path, BASE_URL);
-  return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      let d = "";
-      res.on("data", (c) => d += c);
-      res.on("end", () => {
-        try { resolve(JSON.parse(d)); } catch { reject(new Error(d)); }
-      });
-    }).on("error", (e) => reject(new Error(`Cannot connect to Nerve server: ${e.message}`)));
-  });
-}
-
-function die(msg: string): never {
-  console.error(msg);
-  process.exit(1);
-}
-
-function out(data: unknown): void {
-  console.log(JSON.stringify(data, null, 2));
-}
-
-// --- Commands ---
+// --- Server bootstrap (heavy: dynamic imports inside) ---
 
 async function cmdServe(args: string[]) {
   let port = DEFAULT_PORT;
@@ -73,6 +36,7 @@ async function cmdServe(args: string[]) {
   let noLifeLog = false;
   let noFeishu = false;
   let noEmailWatcher = false;
+  let noWatchdog = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -84,9 +48,9 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-life-log") { noLifeLog = true; }
     else if (args[i] === "--no-feishu") { noFeishu = true; }
     else if (args[i] === "--no-email-watcher") { noEmailWatcher = true; }
+    else if (args[i] === "--no-watchdog") { noWatchdog = true; }
   }
 
-  // Dynamic import to avoid loading heavy deps for simple commands
   const { initLog, info, closeLog } = await import("./infra/logger.js");
   const logFile = resolve(dataDir, "nerve.log");
   initLog(logFile);
@@ -99,7 +63,6 @@ async function cmdServe(args: string[]) {
   const server = new Server(nerve, port);
   server.start();
 
-  // Auto-start context-guardian plugin via program node path
   let guardianNodeId: string | undefined;
 
   if (!noGuardian) {
@@ -109,7 +72,6 @@ async function cmdServe(args: string[]) {
         info("guardian already running, skipping spawn");
         return;
       }
-
       try {
         const node = nerve.nodePool.spawnProcessSync("guardian", "context-guardian", resolve(dataDir), port);
         guardianNodeId = node.id;
@@ -118,13 +80,10 @@ async function cmdServe(args: string[]) {
         info(`guardian spawn failed: ${err.message}`);
       }
     };
-
     startGuardian();
   }
 
-  // Auto-start duty-monitor plugin
   let dutyNodeId: string | undefined;
-
   if (!noDuty) {
     const startDuty = () => {
       const result = nerve.cleanupStaleGuardian("duty-monitor");
@@ -132,7 +91,6 @@ async function cmdServe(args: string[]) {
         info("duty-monitor already running, skipping spawn");
         return;
       }
-
       try {
         const node = nerve.nodePool.spawnProcessSync("duty-monitor", "duty-monitor", resolve(dataDir), port);
         dutyNodeId = node.id;
@@ -141,16 +99,12 @@ async function cmdServe(args: string[]) {
         info(`duty-monitor spawn failed: ${err.message}`);
       }
     };
-
     startDuty();
   }
 
-  // Auto-start ai-life-log plugin: macOS uses local mic; Linux/others only when
-  // AI_LIFE_LOG_REMOTE_UPLOAD=true (mobile clients post Opus chunks via HTTP).
   let lifeLogNodeId: string | undefined;
   const lifeLogRemoteUpload = process.env.AI_LIFE_LOG_REMOTE_UPLOAD === "true";
   const lifeLogShouldStart = !noLifeLog && (process.platform === "darwin" || lifeLogRemoteUpload);
-
   if (lifeLogShouldStart) {
     const startLifeLog = () => {
       const result = nerve.cleanupStaleGuardian("ai-life-log");
@@ -171,7 +125,6 @@ async function cmdServe(args: string[]) {
     info(`ai-life-log skipped (platform=${process.platform}, AI_LIFE_LOG_REMOTE_UPLOAD!=true)`);
   }
 
-  // Auto-start feishu-bridge only when credentials file exists.
   let feishuBridgeNodeId: string | undefined;
   const feishuConfigPath = resolve(homedir(), ".nerve/feishu.json");
   const feishuShouldStart = !noFeishu && existsSync(feishuConfigPath);
@@ -195,7 +148,6 @@ async function cmdServe(args: string[]) {
     info(`feishu-bridge skipped (no ${feishuConfigPath})`);
   }
 
-  // Auto-start email-watcher only when accounts.json exists.
   let emailWatcherNodeId: string | undefined;
   const emailAccountsPath = resolve(homedir(), ".config/email-watcher/accounts.json");
   const emailWatcherShouldStart = !noEmailWatcher && existsSync(emailAccountsPath);
@@ -217,6 +169,25 @@ async function cmdServe(args: string[]) {
     startEmailWatcher();
   } else if (!noEmailWatcher) {
     info(`email-watcher skipped (no ${emailAccountsPath})`);
+  }
+
+  let watchdogNodeId: string | undefined;
+  if (!noWatchdog) {
+    const startWatchdog = () => {
+      const result = nerve.cleanupStaleGuardian("system-watchdog");
+      if (result === "alive") {
+        info("system-watchdog already running, skipping spawn");
+        return;
+      }
+      try {
+        const node = nerve.nodePool.spawnProcessSync("system-watchdog", "system-watchdog", resolve(dataDir), port);
+        watchdogNodeId = node.id;
+        info(`system-watchdog spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`system-watchdog spawn failed: ${err.message}`);
+      }
+    };
+    startWatchdog();
   }
 
   void startStartupScenes({
@@ -248,6 +219,10 @@ async function cmdServe(args: string[]) {
         try { await nerve.nodePool.stopNode(emailWatcherNodeId); } catch (e) { info(`email-watcher stop failed: ${e}`); }
         info("email-watcher stopped");
       }
+      if (watchdogNodeId) {
+        try { await nerve.nodePool.stopNode(watchdogNodeId); } catch (e) { info(`system-watchdog stop failed: ${e}`); }
+        info("system-watchdog stopped");
+      }
       await server.shutdown();
       closeLog();
     } catch (err: any) {
@@ -259,332 +234,200 @@ async function cmdServe(args: string[]) {
   process.on("SIGINT", shutdown);
 }
 
-async function cmdStatus() {
-  try {
-    const health = await get("/health");
-    const nodes = await post("/node/list");
-    const channels = await post("/channel/list");
-    console.log(`Nerve: ${health.status}`);
-    if (health.logFile) console.log(`Log: ${health.logFile}`);
-    console.log(`Nodes: ${nodes.nodes?.length || 0}`);
-    for (const n of nodes.nodes || []) {
-      console.log(`  ${n.name} [${n.status}] ${n.transport} ${n.adapter || ""}`);
-    }
-    console.log(`Channels: ${channels.channels?.length || 0}`);
-    for (const ch of channels.channels || []) {
-      const nodeNames = Object.keys(ch.nodes || {});
-      console.log(`  ${ch.id} ${ch.name || "(unnamed)"} [${nodeNames.join(", ") || "empty"}]`);
-    }
-  } catch (e: any) {
-    die(e.message);
-  }
-}
-
-async function cmdLog(args: string[]) {
-  let tail = 50;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--tail" && args[i + 1]) { tail = parseInt(args[i + 1]); i++; }
-    else if (args[i] === "-f") {
-      // Follow mode — just cat the log path
-      const health = await get("/health");
-      if (health.logFile) {
-        console.log(health.logFile);
-      } else {
-        die("no log file");
-      }
-      return;
-    }
-  }
-  try {
-    const url = `/log?tail=${tail}`;
-    const result = await new Promise<string>((resolve, reject) => {
-      const u = new URL(url, BASE_URL);
-      http.get(u, (res) => {
-        let d = "";
-        res.on("data", (c) => d += c);
-        res.on("end", () => resolve(d));
-      }).on("error", reject);
-    });
-    process.stdout.write(result);
-  } catch (e: any) {
-    die(e.message);
-  }
-}
-
-async function cmdChannel(sub: string, args: string[]) {
-  try {
-    switch (sub) {
-      case "list": case "ls": {
-        const r = await post("/channel/list");
-        for (const ch of r.channels || []) {
-          const nodes = Object.keys(ch.nodes || {});
-          console.log(`${ch.id}  ${ch.name || "(unnamed)"}  cwd=${ch.cwd}  nodes=[${nodes.join(",")}]`);
-        }
-        if (!r.channels?.length) console.log("(no channels)");
-        break;
-      }
-      case "create": {
-        let cwd = process.cwd(), name: string | undefined;
-        for (let i = 0; i < args.length; i++) {
-          if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
-          else if (args[i] === "--name" && args[i + 1]) { name = args[i + 1]; i++; }
-          else if (!name) name = args[i]; // positional: name
-        }
-        const r = await post("/channel/create", { cwd, name });
-        console.log(r.channelId);
-        break;
-      }
-      case "close": {
-        const channelId = args[0];
-        if (!channelId) die("Usage: nerve channel close <channelId>");
-        await post("/channel/close", { channelId });
-        console.log("ok");
-        break;
-      }
-      case "history": case "hist": {
-        const channelId = args[0];
-        if (!channelId) die("Usage: nerve channel history <channelId> [--limit N]");
-        let limit = 20;
-        for (let i = 1; i < args.length; i++) {
-          if (args[i] === "--limit" && args[i + 1]) { limit = parseInt(args[i + 1]); i++; }
-        }
-        const r = await post("/channel/history", { channelId, limit });
-        for (const m of r.messages || []) {
-          const t = new Date(m.timestamp).toLocaleTimeString();
-          console.log(`[${t}] ${m.from}: ${m.content}`);
-        }
-        break;
-      }
-      case "post": {
-        let channelId: string | undefined, from: string | undefined;
-        const contentParts: string[] = [];
-        // First pass: extract flags
-        for (let i = 0; i < args.length; i++) {
-          if (args[i] === "--from" && args[i + 1]) { from = args[i + 1]; i++; }
-          else if (args[i] === "--channel" && args[i + 1]) { channelId = args[i + 1]; i++; }
-          else if (!channelId) channelId = args[i];
-          else contentParts.push(args[i]);
-        }
-        const content = contentParts.join(" ");
-        if (!channelId || !content) die("Usage: nerve channel post <channelId> <message> [--from NAME]");
-        const r = await post("/channel/post", { channelId, from: from || "cli", content });
-        if (r.error) die(r.error);
-        console.log("ok");
-        break;
-      }
-      default:
-        die(`Unknown: nerve channel ${sub}\nCommands: list, create, close, history, post`);
-    }
-  } catch (e: any) {
-    die(e.message);
-  }
-}
-
-async function cmdNode(sub: string, args: string[]) {
-  try {
-    switch (sub) {
-      case "list": case "ls": {
-        const r = await post("/node/list");
-        for (const n of r.nodes || []) {
-          console.log(`${n.id}  ${n.name}  [${n.status}]  ${n.transport}  ${n.adapter || ""}`);
-        }
-        if (!r.nodes?.length) console.log("(no nodes)");
-        break;
-      }
-      case "spawn": {
-        const adapter = args[0];
-        if (!adapter) die("Usage: nerve node spawn <adapter> [--name NAME] [--cwd DIR] [--model MODEL]");
-        let name: string | undefined, cwd: string | undefined, model: string | undefined;
-        for (let i = 1; i < args.length; i++) {
-          if (args[i] === "--name" && args[i + 1]) { name = args[i + 1]; i++; }
-          else if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
-          else if (args[i] === "--model" && args[i + 1]) { model = args[i + 1]; i++; }
-        }
-        const r = await post("/node/spawn", { adapter, name, cwd, model });
-        if (r.error) die(r.error);
-        console.log(`${r.nodeId}  ${r.name}  [${r.status}]`);
-        break;
-      }
-      case "join": {
-        const nodeName = args[0];
-        const channelId = args[1];
-        if (!nodeName || !channelId) die("Usage: nerve node join <nodeName> <channelId>");
-        const r = await post("/node/join", { nodeName, channelId });
-        if (r.error) die(r.error);
-        console.log("ok");
-        break;
-      }
-      case "leave": {
-        const nodeName = args[0];
-        const channelId = args[1];
-        if (!nodeName || !channelId) die("Usage: nerve node leave <nodeName> <channelId>");
-        const r = await post("/node/leave", { nodeName, channelId });
-        if (r.error) die(r.error);
-        console.log("ok");
-        break;
-      }
-      case "stop": {
-        const target = args[0];
-        if (!target) die("Usage: nerve node stop <nodeId|nodeName>");
-        const r = await post("/node/stop", target.length === 12 ? { nodeId: target } : { nodeName: target });
-        if (r.error) die(r.error);
-        console.log("ok");
-        break;
-      }
-      default:
-        die(`Unknown: nerve node ${sub}\nCommands: list, spawn, join, leave, stop`);
-    }
-  } catch (e: any) {
-    die(e.message);
-  }
-}
-
-async function cmdRemote(sub: string, args: string[]) {
-  try {
-    switch (sub) {
-      case "spawn": {
-        const peer = args[0];
-        const adapter = args[1];
-        if (!peer || !adapter) die("Usage: nerve remote spawn <peer> <adapter> --name NAME --channel CHANNEL [--cwd DIR] [--model MODEL]");
-        let name: string | undefined;
-        let channelId: string | undefined;
-        let cwd: string | undefined;
-        let model: string | undefined;
-        for (let i = 2; i < args.length; i++) {
-          if (args[i] === "--name" && args[i + 1]) { name = args[i + 1]; i++; }
-          else if (args[i] === "--channel" && args[i + 1]) { channelId = args[i + 1]; i++; }
-          else if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
-          else if (args[i] === "--model" && args[i + 1]) { model = args[i + 1]; i++; }
-        }
-        if (!name || !channelId) die("Usage: nerve remote spawn <peer> <adapter> --name NAME --channel CHANNEL [--cwd DIR] [--model MODEL]");
-        const r = await post("/remote/spawn", { peer, adapter, name, channelId, cwd, model });
-        if (r.error) die(r.error);
-        console.log(r.name);
-        break;
-      }
-      default:
-        die(`Unknown: nerve remote ${sub}\nCommands: spawn`);
-    }
-  } catch (e: any) {
-    die(e.message);
-  }
-}
-
-async function cmdScene(sub: string, args: string[]) {
-  try {
-    switch (sub) {
-      case "list": case "ls": {
-        const r = await post("/scene/list");
-        for (const s of r.scenes || []) {
-          const status = s.running ? " [运行中]" : "";
-          console.log(`  ${s.name}${status}  (${s.file})`);
-        }
-        if (!r.scenes?.length) console.log("(no scenes)");
-        break;
-      }
-      case "start": {
-        const name = args[0];
-        if (!name) die("Usage: nerve scene start <name> [--cwd DIR]");
-        let cwd: string | undefined;
-        for (let i = 1; i < args.length; i++) {
-          if (args[i] === "--cwd" && args[i + 1]) { cwd = args[i + 1]; i++; }
-        }
-        const r = await post("/scene/start", { name, cwd });
-        if (r.error) die(r.error);
-        console.log(`场景 ${r.name} 已启动`);
-        if (r.channelId) console.log(`频道: ${r.channelId}`);
-        if (r.nodeIds?.length) console.log(`节点: ${r.nodeIds.join(", ")}`);
-        break;
-      }
-      case "stop": {
-        const name = args[0];
-        if (!name) die("Usage: nerve scene stop <name>");
-        const r = await post("/scene/stop", { name });
-        if (r.error) die(r.error);
-        console.log("ok");
-        break;
-      }
-      default:
-        die(`Unknown: nerve scene ${sub}\nCommands: list, start, stop`);
-    }
-  } catch (e: any) {
-    die(e.message);
-  }
-}
+// --- Help text ---
 
 function showHelp() {
-  console.log(`nerve — Nerve CLI
+  console.log(`nerve — Nerve CLI (debug-oriented; JSON output by default)
 
-Commands:
-  serve [--port 4800] [--data DIR] [--no-guardian]
-                                         Start the Nerve server
-  status                                 Show server status
+Global flags:
+  -H, --host <alias|URL>   Target nerve instance (default: NERVE_URL env or localhost:4800)
+                           Aliases configured in ~/.config/nerve/hosts.json
+  --human                  Human-readable output (default is JSON)
+  --json                   Force JSON output
 
-  channel list                           List channels
-  channel create [NAME] [--cwd DIR]      Create a channel
-  channel close <ID>                     Close a channel
-  channel history <ID> [--limit 20]      Show message history
-  channel post <ID> <message> [--from X] Post a message
+Server:
+  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher]
 
-  node list                              List nodes
-  node spawn <adapter> [--name N] [--model M] Spawn an agent
-  node join <name> <channelId>           Join agent to channel
-  node leave <name> <channelId>          Remove agent from channel
-  node stop <ID|name>                    Stop a node
+Top-level:
+  status                                Show server + nodes + channels summary
+  health                                Server health check
+  metrics                               Memory + process metrics
+  log [--tail N] [-f|--follow]          Show recent server logs
+  blob <blobId>                         Fetch blob content
+  bridge [--sock ADDR] [--channel ID]   Connect nvim to a channel
+  post <channelId> <msg> [--from N]     Shortcut for: channel post
 
-  remote spawn <peer> <adapter> --name N --channel ID
-                                         Spawn an agent on a peer
-
-  scene list                             List available scenes
-  scene start <name> [--cwd DIR]         Start a scene
-  scene stop <name>                      Stop a running scene
-
-  bridge [--sock ADDR] [--channel ID]    Connect nvim to a channel
-
-  log [--tail 50]                        Show recent logs
-  log -f                                 Print log file path (for tail -f)
+Namespaces (run "nerve <ns>" without args for full subcommand list):
+  channel    11 subcommands (list, create, close, delete, history, post,
+             members, addNode, removeNode, listArchived, restore)
+  node       9 subcommands (list, spawn, join, leave, stop, command, message,
+             cancel, capabilities)
+  session    5 subcommands (list, load, clear, compact, reset)
+  scene      3 subcommands (list, start, stop)
+  peer       4 subcommands (health, remote-spawn, remote-prompt, remote-reply)
+  remote     1 subcommand  (spawn)
+  dm         2 subcommands (read, send)
 
 Environment:
-  NERVE_URL    Server URL (default: http://localhost:4800)`);
+  NERVE_URL    Full server URL override (e.g. http://localhost:4801)
+  NERVE_HOST   Host alias from hosts.json (e.g. "home", "dev")
+
+Examples:
+  nerve -H home node list
+  nerve dm read duty-monitor --limit 5
+  nerve node command duty-monitor trigger --args name=erp-notes-reorganize
+  nerve session clear codex-1
+  nerve --human channel list`);
 }
 
-// --- Main ---
+// --- Main dispatch ---
 
-const argv = process.argv.slice(2);
-const cmd = argv[0];
+async function main(argv: string[]): Promise<void> {
+  // Parse global flags first
+  try {
+    const explicit = extractHostFlag(argv);
+    if (explicit) setBaseUrl(explicit);
+    else setBaseUrl(resolveHost(undefined));
+  } catch (e: any) {
+    console.error(JSON.stringify({ error: e.message }));
+    process.exit(1);
+  }
+  const mode = extractOutputFlag(argv);
+  setOutputMode(mode);
 
-if (!cmd || cmd === "--help" || cmd === "-h") {
-  showHelp();
-} else if (cmd === "serve" || cmd === "server") {
-  void cmdServe(argv.slice(1));
-} else if (cmd === "status" || cmd === "st") {
-  void cmdStatus();
-} else if (cmd === "channel" || cmd === "ch") {
-  const sub = argv[1];
-  if (!sub) die("Usage: nerve channel <list|create|close|history|post>");
-  void cmdChannel(sub, argv.slice(2));
-} else if (cmd === "node" || cmd === "n") {
-  const sub = argv[1];
-  if (!sub) die("Usage: nerve node <list|spawn|stop>");
-  void cmdNode(sub, argv.slice(2));
-} else if (cmd === "remote" || cmd === "r") {
-  const sub = argv[1];
-  if (!sub) die("Usage: nerve remote <spawn>");
-  void cmdRemote(sub, argv.slice(2));
-} else if (cmd === "post") {
-  // Shortcut: nerve post <channelId> <message> [--from X]
-  void cmdChannel("post", argv.slice(1));
-} else if (cmd === "log") {
-  void cmdLog(argv.slice(1));
-} else if (cmd === "bridge" || cmd === "br") {
-  import("./integration/nvim-bridge.js").then(m => m.main(argv.slice(1))).catch(err => die(`bridge error: ${err.message}`));
-} else if (cmd === "scene" || cmd === "sc") {
-  const sub = argv[1];
-  if (!sub) die("Usage: nerve scene <list|start|stop> [name]");
-  void cmdScene(sub, argv.slice(2));
-} else if (cmd === "--port") {
-  // Legacy: nerve --port 4800 → treat as serve
-  void cmdServe(argv);
-} else {
-  die(`Unknown command: ${cmd}\nRun 'nerve --help' for usage.`);
+  const cmd = argv[0];
+
+  if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") {
+    showHelp();
+    return;
+  }
+
+  try {
+    switch (cmd) {
+      case "serve":
+      case "server":
+        await cmdServe(argv.slice(1));
+        return;
+
+      case "--port":
+        // legacy: nerve --port 4800
+        await cmdServe(argv);
+        return;
+
+      case "status":
+      case "st": {
+        const { status } = await import("./cli/commands/misc.js");
+        await status();
+        return;
+      }
+
+      case "health": {
+        const { health } = await import("./cli/commands/misc.js");
+        await health();
+        return;
+      }
+
+      case "metrics": {
+        const { metrics } = await import("./cli/commands/misc.js");
+        await metrics();
+        return;
+      }
+
+      case "log": {
+        const { log } = await import("./cli/commands/misc.js");
+        await log(argv.slice(1));
+        return;
+      }
+
+      case "blob": {
+        const { blob } = await import("./cli/commands/misc.js");
+        await blob(argv.slice(1));
+        return;
+      }
+
+      case "channel":
+      case "ch": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/channel.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "node":
+      case "n": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/node.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "session":
+      case "sess": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/session.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "scene":
+      case "sc": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/scene.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "peer": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/peer.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "remote":
+      case "r": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/remote.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "dm": {
+        const sub = argv[1];
+        const { run, help } = await import("./cli/commands/dm.js");
+        if (!sub) { console.log(help()); return; }
+        await run(sub, argv.slice(2));
+        return;
+      }
+
+      case "post": {
+        // shortcut: nerve post <channelId> <message> [--from X]
+        const { run } = await import("./cli/commands/channel.js");
+        await run("post", argv.slice(1));
+        return;
+      }
+
+      case "bridge":
+      case "br": {
+        const m = await import("./integration/nvim-bridge.js");
+        await m.main(argv.slice(1));
+        return;
+      }
+
+      default:
+        console.error(JSON.stringify({ error: `unknown command: ${cmd}`, hint: "run 'nerve --help'" }));
+        process.exit(1);
+    }
+  } catch (e: any) {
+    console.error(JSON.stringify({ error: e.message || String(e) }));
+    process.exit(1);
+  }
 }
+
+void main(process.argv.slice(2));

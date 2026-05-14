@@ -1,5 +1,5 @@
 import type { Transport } from "../transport/transport.js";
-import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message } from "../transport/protocol.js";
+import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message, HealthContract } from "../transport/protocol.js";
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
 import { getContextWindow } from "./model-registry.js";
 import { getAdapter } from "./adapter.js";
@@ -33,6 +33,7 @@ export class NerveNode {
   usage?: NodeUsage;
   commands?: Record<string, { description: string; args?: Record<string, string> }>;
   events?: string[];
+  health?: HealthContract;
 
   // For stdio nodes: prompt generation counter (prevent stale callbacks)
   promptGen = 0;
@@ -160,6 +161,7 @@ export class NerveNode {
       usage: this.usage,
       commands: this.commands,
       events: this.events,
+      health: this.health,
     };
   }
 }

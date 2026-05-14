@@ -117,6 +117,26 @@ const adapters: Record<string, AdapterConfig> = {
     terminal: false,
     description: "AI 上下文容量监控与自动重置",
   },
+  "system-watchdog": {
+    type: "program",
+    cmd: "npx",
+    args: ["tsx", "src/plugins/system-watchdog/index.ts"],
+    capabilities: ["monitor"],
+    terminal: false,
+    description: "L1 节点级健康监控（liveness / idle / memory）",
+    commands: {
+      status: { description: "运行状态" },
+      scan: { description: "立刻触发 scan" },
+      list: { description: "列出受监控节点" },
+      silence: { description: "静默某项报警 N 分钟", args: { node: "node 名", metric: "metric 名", minutes: "分钟" } },
+    },
+    usage: [
+      "L1 系统级健康监控。每个程序节点在 PluginBase.getHealth() 声明契约，",
+      "watchdog 定时（默认 60s）拉 node.list 对账。",
+      "异常写 ~/.ai/ops/state/system-alerts.md + push #ops 频道（去重 60min）。",
+      "随 nerve 自启 (cli.ts startWatchdog)，无需 nerve_spawn。",
+    ].join("\n"),
+  },
   "ai-ear": {
     type: "program",
     cmd: "npx",

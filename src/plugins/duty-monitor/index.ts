@@ -60,6 +60,10 @@ class DutyMonitor extends PluginBase {
 
   override getEvents(): string[] { return ["task_fired", "health_alert"]; }
 
+  override getHealth() {
+    return { liveness: "process" as const, maxIdleMs: 120_000, maxMemoryMB: 200 };
+  }
+
   override getCommands(): Record<string, CommandDef> {
     return {
       add: { description: "添加定时任务", args: { schedule: "HH:MM | Day:HH:MM | every:Nm", message: "@target 消息内容" } },

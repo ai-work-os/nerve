@@ -205,6 +205,7 @@ export class Server {
 
           const commands = p.commands as Record<string, { description: string; args?: Record<string, string> }> | undefined;
           const events = p.events as string[] | undefined;
+          const health = p.health as import("./transport/protocol.js").HealthContract | undefined;
 
           // Check if this is a spawned program node reconnecting
           const pendingNodeId = this.cm.nodePool.claimPendingProgram(name);
@@ -215,6 +216,7 @@ export class Server {
             if (pendingNode) {
               if (commands) pendingNode.commands = commands;
               if (events) pendingNode.events = events;
+              if (health) pendingNode.health = health;
               if (p.source) pendingNode.source = p.source as string;
             }
             this.wsNodeMap.set(ws, pendingNodeId);
@@ -252,6 +254,7 @@ export class Server {
           );
           if (commands) node.commands = commands;
           if (events) node.events = events;
+          if (health) node.health = health;
           if (p.source) node.source = p.source as string;
           this.wsNodeMap.set(ws, node.id);
           this.sendResult(ws, id, { nodeId: node.id, name: node.name });

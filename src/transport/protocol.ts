@@ -82,6 +82,15 @@ export interface NodeUsage {
   lastUpdated: number;
 }
 
+export interface HealthContract {
+  /** Liveness 检查类型。process = 检查 pid 是否还在；connection = 检查 WS 是否在线；none = 不检查。默认 process。 */
+  liveness?: "process" | "connection" | "none";
+  /** 多久没活动算异常（毫秒）。"none" = 不检查（事件驱动节点用）。检查依据：NodeInfo.lastActiveAt。 */
+  maxIdleMs?: number | "none";
+  /** 进程内存上限（MB）。未设置 = 不检查。 */
+  maxMemoryMB?: number;
+}
+
 export interface NodeInfo {
   id: string;
   name: string;
@@ -102,6 +111,7 @@ export interface NodeInfo {
   usage?: NodeUsage;
   commands?: Record<string, { description: string; args?: Record<string, string> }>;
   events?: string[];
+  health?: HealthContract;
 }
 
 export interface ChannelInfo {

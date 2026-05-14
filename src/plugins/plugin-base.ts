@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 
 import { CommandResult, formatCommandResponse, formatHelpText, formatUnknownCommand, formatReportError } from "../infra/command-feedback.js";
 import { localIso } from "../infra/time-util.js";
+import type { HealthContract } from "../transport/protocol.js";
 export type { CommandResult };
 
 export interface CommandDef {
@@ -196,6 +197,9 @@ export class PluginBase {
 
   /** Override in subclass: declare emitted events */
   getEvents(): string[] { return []; }
+
+  /** Override in subclass: declare health contract for system-watchdog. */
+  getHealth(): HealthContract { return {}; }
 
   /** Override in subclass: handle a parsed command.
    *  Return a string to signal an error (posted back to channel if called from channel context).
@@ -458,6 +462,7 @@ export class PluginBase {
           // Register as node
           const commands = this.getAllCommands();
           const events = this.getEvents();
+          const health = this.getHealth();
           const regParams: Record<string, unknown> = {
             name: this.options.name,
             capabilities: this.options.capabilities,
@@ -465,6 +470,7 @@ export class PluginBase {
           };
           if (Object.keys(commands).length > 0) regParams.commands = commands;
           if (events.length > 0) regParams.events = events;
+          if (Object.keys(health).length > 0) regParams.health = health;
           // Register notification handlers BEFORE node.register to avoid race condition:
           // server may send notifications (e.g. scene on_ready, channel.nodeJoined)
           // in the same TCP segment as the register response.

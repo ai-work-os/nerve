@@ -488,6 +488,26 @@ export class HttpRouter {
         return { capabilities };
       }
 
+      case "/node/dm-history": {
+        const nodeId = data.nodeId as string;
+        const nodeName = data.nodeName as string;
+        const limit = typeof data.limit === "number" ? data.limit : 50;
+        const before = typeof data.before === "number" ? (data.before as number) : undefined;
+        let targetId: string | undefined;
+        if (nodeId) {
+          targetId = nodeId;
+        } else if (nodeName) {
+          const node = this.cm.nodePool.getByName(nodeName);
+          if (!node) throw new Error(`node "${nodeName}" not found`);
+          targetId = node.id;
+        } else {
+          throw new Error("nodeId or nodeName required");
+        }
+        const messages = this.cm.store.getDmMessages(targetId, limit, before);
+        this.log.debug(`dm-history: node=${targetId} limit=${limit} before=${before ?? "none"} returned=${messages.length}`);
+        return { messages };
+      }
+
       case "/node/list": {
         let nodes = this.cm.nodePool.listAll();
         const cwdFilter = data.cwd ? resolve(data.cwd as string) : undefined;
