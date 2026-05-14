@@ -66,6 +66,7 @@ describe("system-watchdog integration", () => {
         WATCHDOG_INTERVAL_MS: "1000",
         WATCHDOG_ALERT_FILE: alertFile,
         WATCHDOG_OPS_CHANNEL: "ops",
+        WATCHDOG_SILENCE_FILE: join(tmpDir, "silence.json"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

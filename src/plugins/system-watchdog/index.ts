@@ -27,6 +27,7 @@ const SCAN_INTERVAL_MS = parseInt(process.env.WATCHDOG_INTERVAL_MS ?? "60000");
 const SILENCE_WINDOW_MS = parseInt(process.env.WATCHDOG_SILENCE_MS ?? String(60 * 60 * 1000));
 const ALERT_FILE = process.env.WATCHDOG_ALERT_FILE ?? resolve(homedir(), ".ai/ops/state/system-alerts.md");
 const OPS_CHANNEL_NAME = process.env.WATCHDOG_OPS_CHANNEL ?? "ops";
+const SILENCE_FILE_OVERRIDE = process.env.WATCHDOG_SILENCE_FILE;
 
 function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
@@ -62,7 +63,7 @@ class SystemWatchdog extends PluginBase {
       capabilities: ["monitor"],
       permissions: "observer",
     });
-    this.silencePath = resolve(this.dataDir, "silence.json");
+    this.silencePath = SILENCE_FILE_OVERRIDE ?? resolve(this.dataDir, "silence.json");
   }
 
   override getHealth(): HealthContract {
