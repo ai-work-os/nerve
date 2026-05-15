@@ -227,12 +227,30 @@ def handle_mail(api_key, mail, account_name):
 
 # --- IMAP IDLE 监听（每账号一个 worker 线程）---
 
+def compute_baseline(prev_last_uid, mailbox_uids):
+    """决定本次连接的 last_uid baseline。
+
+    首次连接 (prev_last_uid is None)：baseline 到邮箱当前最新 UID，
+        启动前的历史邮件不处理。
+    重连 (prev_last_uid 已有值)：保留旧值，不重新 baseline ——
+        否则断连窗口期到达的邮件 UID 会落在新 baseline 之下被永久跳过。
+        保留旧值后，重连的增量搜索 (UID prev+1:*) 会把它们补回。
+
+    mailbox_uids: IMAP UID SEARCH ALL 的结果（bytes 列表，升序）。
+    """
+    if prev_last_uid is None:
+        return int(mailbox_uids[-1]) if mailbox_uids else 0
+    return prev_last_uid
+
+
 class AccountWorker(threading.Thread):
     def __init__(self, account, api_key):
         super().__init__(daemon=True, name=account["name"])
         self.account = account
         self.api_key = api_key
         self.stop_flag = threading.Event()
+        self._connected_once = False  # 仅用于日志区分首次连接 / 重连
+        self.last_uid = None          # 跨重连保留，None=尚未 baseline
 
     def run(self):
         backoff = 1
@@ -251,36 +269,49 @@ class AccountWorker(threading.Thread):
         with imaplib.IMAP4_SSL(a["imap_host"], a["imap_port"]) as imap:
             imap.login(a["username"], a["password"])
             imap.select("INBOX")
-            # 记下当前 UID 上限，只处理之后到达的
+            # 首次连接 baseline 到当前最新；重连保留旧 last_uid（见 compute_baseline）
             typ, data = imap.uid("search", None, "ALL")
             uids = data[0].split() if data and data[0] else []
-            last_uid = int(uids[-1]) if uids else 0
-            logging.info(f"启动 baseline last_uid={last_uid}")
+            self.last_uid = compute_baseline(self.last_uid, uids)
+            kind = "重连" if self._connected_once else "首次连接"
+            self._connected_once = True
+            logging.info(f"{kind} baseline last_uid={self.last_uid}（此 UID 之前的邮件不再处理）")
+
+            # (重)连后立刻补搜一次：捞回断连窗口期到达的邮件（首次连接此搜索必为空）
+            self._fetch_and_handle(imap)
 
             while not self.stop_flag.is_set():
-                # IDLE
                 try:
                     self._idle_wait(imap)
                 except Exception as e:
-                    logging.warning(f"IDLE 异常: {e}")
+                    logging.warning(f"IDLE 异常: {e}，结束本次连接，准备重连")
                     return
                 # IDLE 醒来 → 查新邮件
-                typ, data = imap.uid("search", None, f"UID {last_uid + 1}:*")
-                if not data or not data[0]:
-                    continue
-                new_uids = [u for u in data[0].split() if int(u) > last_uid]
-                for uid in new_uids:
-                    typ, fetch = imap.uid("fetch", uid, "(RFC822)")
-                    if typ != "OK" or not fetch or not fetch[0]:
-                        continue
-                    raw = fetch[0][1]
-                    try:
-                        mail = parse_eml(raw)
-                    except Exception as e:
-                        logging.error(f"解析失败 uid={uid}: {e}")
-                        continue
-                    handle_mail(self.api_key, mail, a["name"])
-                    last_uid = max(last_uid, int(uid))
+                self._fetch_and_handle(imap)
+
+    def _fetch_and_handle(self, imap):
+        """搜索 last_uid 之后的新邮件并逐封处理，推进 self.last_uid。"""
+        typ, data = imap.uid("search", None, f"UID {self.last_uid + 1}:*")
+        new_uids = ([u for u in data[0].split() if int(u) > self.last_uid]
+                    if data and data[0] else [])
+        if not new_uids:
+            logging.info(f"增量搜索（UID>{self.last_uid}）：无新邮件")
+            return
+        logging.info(f"增量搜索（UID>{self.last_uid}）：发现 {len(new_uids)} 封新邮件 "
+                     f"uids={[u.decode() for u in new_uids]}")
+        for uid in new_uids:
+            typ, fetch = imap.uid("fetch", uid, "(RFC822)")
+            if typ != "OK" or not fetch or not fetch[0]:
+                logging.warning(f"fetch 失败 uid={uid.decode()} typ={typ}")
+                continue
+            raw = fetch[0][1]
+            try:
+                mail = parse_eml(raw)
+            except Exception as e:
+                logging.error(f"解析失败 uid={uid}: {e}")
+                continue
+            handle_mail(self.api_key, mail, self.account["name"])
+            self.last_uid = max(self.last_uid, int(uid))
 
     def _idle_wait(self, imap):
         """imaplib 没原生 IDLE。手动写命令 + 等服务端推送。"""
@@ -290,21 +321,26 @@ class AccountWorker(threading.Thread):
         resp = imap.readline()
         if not resp.startswith(b"+"):
             raise RuntimeError(f"IDLE 拒绝: {resp!r}")
+        logging.info("进入 IDLE，等待服务端推送（最多 25min）")
         # 长 sock 等推送，最多 25 分钟（RFC 推荐 < 29min）
         imap.sock.settimeout(25 * 60)
+        wake = "未知（stop_flag 触发）"
         try:
             while not self.stop_flag.is_set():
                 line = imap.readline()
                 if not line:
+                    wake = "连接关闭（服务端断开）"
                     break
                 if line.startswith(b"* "):
                     # 推送：EXISTS / EXPUNGE / FETCH
                     if b"EXISTS" in line or b"RECENT" in line:
+                        wake = "新邮件推送"
                         break
                 # 服务端 keep-alive，继续等
         except socket.timeout:
-            pass  # 自然到 25 min，重连
+            wake = "25min 超时（正常轮转）"  # 自然到 25 min，重连
         finally:
+            logging.info(f"IDLE 醒来：{wake}")
             imap.send(b"DONE\r\n")
             # 等 tag OK
             imap.sock.settimeout(30)
@@ -331,11 +367,16 @@ def cmd_daemon():
     for w in workers:
         w.start()
     try:
+        tick = 0
         while True:
             time.sleep(60)
+            tick += 1
             alive = [w.name for w in workers if w.is_alive()]
             if len(alive) < len(workers):
                 logging.warning(f"alive={alive}, expected={len(workers)}")
+            elif tick % 10 == 0:
+                # 每 10min 一次心跳，证明 daemon 还活着（区分健康空跑 vs 卡死）
+                logging.info(f"心跳：{len(alive)} 个账号 worker 存活 {alive}")
     except KeyboardInterrupt:
         logging.info("收到 SIGINT，停止")
         for w in workers:
