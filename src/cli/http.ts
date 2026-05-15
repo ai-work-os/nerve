@@ -99,10 +99,13 @@ export function die(msg: string, code = 1): never {
   process.exit(code);
 }
 
-/** Throw if the response body has an .error field. */
+/** Throw if the response body has an .error field.
+ *  The error may be a string or a structured object — render both readably. */
 export function checkErr(result: any, contextMsg = "request failed"): any {
   if (result && typeof result === "object" && result.error) {
-    die(`${contextMsg}: ${result.error}`);
+    const err = result.error;
+    const msg = typeof err === "string" ? err : JSON.stringify(err);
+    die(`${contextMsg}: ${msg}`);
   }
   return result;
 }
