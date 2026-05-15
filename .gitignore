@@ -17,3 +17,7 @@ notes/acp-bus/
 .test-data/
 .test-data-*/
 AGENTS.md
+
+# Python（email-watcher 等 python plugin 的字节码缓存）
+__pycache__/
+*.pyc
