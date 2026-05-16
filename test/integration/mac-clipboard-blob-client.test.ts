@@ -6,9 +6,11 @@ describe("blob-client", () => {
   let server: Server;
   let base: string;
   let ackCalls: string[];
+  let ackShouldFail: boolean;
 
   beforeEach(async () => {
     ackCalls = [];
+    ackShouldFail = false;
     server = createServer((req, res) => {
       const url = (req.url ?? "").split("?")[0];
       if (req.method === "GET" && url === "/screenshot/blob/good") {
@@ -29,6 +31,9 @@ describe("blob-client", () => {
         req.on("data", c => body += c);
         req.on("end", () => {
           ackCalls.push(JSON.parse(body).blobId);
+          if (ackShouldFail) {
+            res.writeHead(500); res.end(); return;
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         });
@@ -61,5 +66,10 @@ describe("blob-client", () => {
   it("ackMac POST blobId", async () => {
     await ackMac(base, "p1");
     expect(ackCalls).toEqual(["p1"]);
+  });
+
+  it("ackMac HTTP 错误时抛异常（保证 handleScreenshot 重试）", async () => {
+    ackShouldFail = true;
+    await expect(ackMac(base, "x")).rejects.toThrow();
   });
 });

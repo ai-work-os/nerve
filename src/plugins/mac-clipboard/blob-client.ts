@@ -30,11 +30,13 @@ export async function fetchPendingMac(httpBase: string): Promise<PendingEntry[]>
   return Array.isArray(json) ? json : [];
 }
 
-/** Tell the screenshot plugin a screenshot has been delivered to Mac. */
+/** Tell the screenshot plugin a screenshot has been delivered to Mac.
+ *  Throws on HTTP error so callers can retry (e.g. mac-clipboard's drainPending). */
 export async function ackMac(httpBase: string, blobId: string): Promise<void> {
-  await fetch(`${httpBase}/screenshot/ack-mac`, {
+  const res = await fetch(`${httpBase}/screenshot/ack-mac`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ blobId }),
   });
+  if (!res.ok) throw new Error(`ack-mac ${res.status}`);
 }
