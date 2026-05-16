@@ -62,7 +62,13 @@ class ScreenshotPlugin extends PluginBase {
         }
         return record.blobId;
       },
-      getBlob: (id) => this.blobs.get(id),
+      getBlob: (id) => {
+        const data = this.blobs.get(id);
+        if (!data) return null;
+        const record = this.index.all().find(r => r.blobId === id);
+        // Blob bytes exist but no index record — fall back to a generic type.
+        return { data, mimeType: record?.mimeType ?? "application/octet-stream" };
+      },
       listPendingMac: () => this.index.pendingMac().map(r => ({
         blobId: r.blobId, takenAtMs: r.takenAtMs, source: r.source,
       })),

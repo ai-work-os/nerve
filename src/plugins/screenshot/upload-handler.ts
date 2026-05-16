@@ -17,6 +17,8 @@ export interface UploadMeta {
   source: string;
   analyze: boolean;
   takenAtMs: number;
+  /** MIME type of the uploaded image. Defaults to "image/png" if absent. */
+  mimeType?: string;
 }
 
 export interface UploadResult {
@@ -30,6 +32,7 @@ export function processUpload(deps: UploadDeps, data: Buffer, meta: UploadMeta):
   const record: ScreenshotRecord = {
     blobId,
     source: meta.source,
+    mimeType: meta.mimeType || "image/png",
     takenAtMs: meta.takenAtMs,
     receivedAtMs: Date.now(),
     analyze: meta.analyze,

@@ -14,11 +14,16 @@ export interface PendingEntry {
   source: string;
 }
 
+export interface BlobResult {
+  data: Buffer;
+  mimeType: string;
+}
+
 export interface ScreenshotHttpServerConfig {
   port: number;
   maxBytes: number;
-  onUpload: (data: Buffer, meta: { source: string; analyze: boolean; takenAtMs: number }) => string;
-  getBlob: (id: string) => Buffer | null;
+  onUpload: (data: Buffer, meta: { source: string; analyze: boolean; takenAtMs: number; mimeType: string }) => string;
+  getBlob: (id: string) => BlobResult | null;
   listPendingMac: () => PendingEntry[];
   onAckMac: (blobId: string) => boolean;
   log?: (level: "info" | "warn" | "error", msg: string) => void;
@@ -62,8 +67,8 @@ export class ScreenshotHttpServer {
       const id = decodeURIComponent(url.slice("/screenshot/blob/".length));
       const blob = this.cfg.getBlob(id);
       if (!blob) { res.writeHead(404); res.end(); return; }
-      res.writeHead(200, { "Content-Type": "image/png" });
-      res.end(blob);
+      res.writeHead(200, { "Content-Type": blob.mimeType });
+      res.end(blob.data);
       return;
     }
     if (req.method === "GET" && url === "/screenshot/pending-mac") {
@@ -94,9 +99,10 @@ export class ScreenshotHttpServer {
     const source = (req.headers["x-source"] as string) || "unknown";
     const analyze = (req.headers["x-analyze"] as string) === "true";
     const takenAtMs = Number(req.headers["x-taken-at"] ?? "0") || Date.now();
+    const mimeType = ((req.headers["content-type"] as string) || "").trim() || "image/png";
 
-    const blobId = this.cfg.onUpload(body, { source, analyze, takenAtMs });
-    this.log("info", `upload: source=${source} analyze=${analyze} bytes=${body.length} blob=${blobId}`);
+    const blobId = this.cfg.onUpload(body, { source, analyze, takenAtMs, mimeType });
+    this.log("info", `upload: source=${source} analyze=${analyze} mime=${mimeType} bytes=${body.length} blob=${blobId}`);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ blobId }));
   }
@@ -106,13 +112,15 @@ export class ScreenshotHttpServer {
     return new Promise((resolve) => {
       const chunks: Buffer[] = [];
       let size = 0;
+      let resolved = false;
+      const done = (v: Buffer | null) => { if (!resolved) { resolved = true; resolve(v); } };
       req.on("data", (c: Buffer) => {
         size += c.length;
-        if (size > maxBytes) { resolve(null); req.destroy(); return; }
+        if (size > maxBytes) { done(null); req.destroy(); return; }
         chunks.push(c);
       });
-      req.on("end", () => resolve(Buffer.concat(chunks)));
-      req.on("error", () => resolve(null));
+      req.on("end", () => done(Buffer.concat(chunks)));
+      req.on("error", () => done(null));
     });
   }
 

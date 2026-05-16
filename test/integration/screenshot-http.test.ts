@@ -4,14 +4,17 @@ import { ScreenshotHttpServer } from "../../src/plugins/screenshot/http-server.j
 describe("ScreenshotHttpServer", () => {
   let srv: ScreenshotHttpServer;
   let port: number;
-  let uploaded: { data: Buffer; source: string; analyze: boolean; takenAtMs: number }[];
-  let blobs: Map<string, Buffer>;
+  let uploaded: { data: Buffer; source: string; analyze: boolean; takenAtMs: number; mimeType: string }[];
+  let blobs: Map<string, { data: Buffer; mimeType: string }>;
   let acked: string[];
 
   beforeEach(async () => {
     uploaded = [];
     acked = [];
-    blobs = new Map([["abc", Buffer.from("STORED-IMAGE")]]);
+    blobs = new Map([
+      ["abc", { data: Buffer.from("STORED-IMAGE"), mimeType: "image/png" }],
+      ["jpg1", { data: Buffer.from("JPEG-IMAGE"), mimeType: "image/jpeg" }],
+    ]);
     srv = new ScreenshotHttpServer({
       port: 0,
       maxBytes: 1024,
@@ -31,7 +34,7 @@ describe("ScreenshotHttpServer", () => {
     const res = await fetch(`http://127.0.0.1:${port}/screenshot/upload`, {
       method: "POST",
       headers: {
-        "Content-Type": "image/png",
+        "Content-Type": "image/jpeg",
         "X-Source": "pixel8",
         "X-Analyze": "true",
         "X-Taken-At": "1747000000000",
@@ -45,15 +48,17 @@ describe("ScreenshotHttpServer", () => {
     expect(uploaded[0].source).toBe("pixel8");
     expect(uploaded[0].analyze).toBe(true);
     expect(uploaded[0].takenAtMs).toBe(1747000000000);
+    expect(uploaded[0].mimeType).toBe("image/jpeg");
   });
 
-  it("缺 X-Source 时 source 落为 unknown，仍 200", async () => {
+  it("缺 X-Source 时 source 落为 unknown，mimeType 默认 image/png，仍 200", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/screenshot/upload`, {
-      method: "POST", headers: { "Content-Type": "image/png" }, body: Buffer.from("x"),
+      method: "POST", body: Buffer.from("x"),
     });
     expect(res.status).toBe(200);
     expect(uploaded[0].source).toBe("unknown");
     expect(uploaded[0].analyze).toBe(false);
+    expect(uploaded[0].mimeType).toBe("image/png");
   });
 
   it("body 超过 maxBytes 返回 413", async () => {
@@ -66,10 +71,18 @@ describe("ScreenshotHttpServer", () => {
     expect(uploaded).toHaveLength(0);
   });
 
-  it("GET /screenshot/blob/:id 返回原字节", async () => {
+  it("GET /screenshot/blob/:id 返回原字节，Content-Type 用记录的 mimeType", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/screenshot/blob/abc`);
     expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
     expect(Buffer.from(await res.arrayBuffer())).toEqual(Buffer.from("STORED-IMAGE"));
+  });
+
+  it("GET /screenshot/blob/:id 回传非 PNG mimeType（image/jpeg）", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/screenshot/blob/jpg1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(Buffer.from("JPEG-IMAGE"));
   });
 
   it("GET /screenshot/blob/:id 不存在返回 404", async () => {

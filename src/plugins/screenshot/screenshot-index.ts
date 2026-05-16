@@ -8,6 +8,7 @@ import { dirname } from "node:path";
 export interface ScreenshotRecord {
   blobId: string;
   source: string;
+  mimeType: string;
   takenAtMs: number;
   receivedAtMs: number;
   analyze: boolean;
@@ -49,6 +50,18 @@ export class ScreenshotIndex {
 
   all(): ScreenshotRecord[] {
     return [...this.records];
+  }
+
+  /**
+   * Drop any record whose blobId is not in `keepBlobIds`, persist, and return
+   * the number of records removed. Keeps the index from growing unbounded.
+   */
+  prune(keepBlobIds: Set<string>): number {
+    const before = this.records.length;
+    this.records = this.records.filter(r => keepBlobIds.has(r.blobId));
+    const removed = before - this.records.length;
+    if (removed > 0) this.save();
+    return removed;
   }
 
   private save(): void {

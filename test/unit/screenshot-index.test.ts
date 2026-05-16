@@ -8,6 +8,7 @@ function rec(overrides: Partial<ScreenshotRecord> = {}): ScreenshotRecord {
   return {
     blobId: "a".repeat(64),
     source: "phone",
+    mimeType: "image/png",
     takenAtMs: 1747000000000,
     receivedAtMs: 1747000001000,
     analyze: false,
@@ -62,5 +63,28 @@ describe("ScreenshotIndex", () => {
 
   it("索引文件不存在时构造为空索引，不抛错", () => {
     expect(new ScreenshotIndex(join(dir, "no-such.json")).all()).toEqual([]);
+  });
+
+  it("prune 丢弃不在 keepBlobIds 里的记录，返回删除数，持久化", () => {
+    const idx = new ScreenshotIndex(file);
+    idx.add(rec({ blobId: "1".repeat(64) }));
+    idx.add(rec({ blobId: "2".repeat(64) }));
+    idx.add(rec({ blobId: "3".repeat(64) }));
+    const removed = idx.prune(new Set(["2".repeat(64)]));
+    expect(removed).toBe(2);
+    expect(idx.all()).toHaveLength(1);
+    expect(idx.all()[0].blobId).toBe("2".repeat(64));
+    // persisted: reloading sees the pruned state
+    const reloaded = new ScreenshotIndex(file);
+    expect(reloaded.all()).toHaveLength(1);
+    expect(reloaded.all()[0].blobId).toBe("2".repeat(64));
+  });
+
+  it("prune 全部保留时返回 0", () => {
+    const idx = new ScreenshotIndex(file);
+    idx.add(rec({ blobId: "1".repeat(64) }));
+    idx.add(rec({ blobId: "2".repeat(64) }));
+    expect(idx.prune(new Set(["1".repeat(64), "2".repeat(64)]))).toBe(0);
+    expect(idx.all()).toHaveLength(2);
   });
 });
