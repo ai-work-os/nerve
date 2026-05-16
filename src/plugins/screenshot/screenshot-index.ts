@@ -1,0 +1,57 @@
+/**
+ * ScreenshotIndex — per-screenshot metadata, JSON-persisted.
+ * Tracks Mac delivery state so an offline Mac can catch up on reconnect.
+ */
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { dirname } from "node:path";
+
+export interface ScreenshotRecord {
+  blobId: string;
+  source: string;
+  takenAtMs: number;
+  receivedAtMs: number;
+  analyze: boolean;
+  deliveredToMac: boolean;
+}
+
+export class ScreenshotIndex {
+  private records: ScreenshotRecord[] = [];
+
+  constructor(private readonly filePath: string) {
+    mkdirSync(dirname(filePath), { recursive: true });
+    if (existsSync(filePath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(filePath, "utf8"));
+        if (Array.isArray(parsed)) this.records = parsed;
+      } catch {
+        this.records = [];
+      }
+    }
+  }
+
+  add(rec: ScreenshotRecord): void {
+    this.records.push(rec);
+    this.save();
+  }
+
+  /** Mark a screenshot delivered to Mac. Returns false if blobId unknown. */
+  markDelivered(blobId: string): boolean {
+    const r = this.records.find(x => x.blobId === blobId);
+    if (!r) return false;
+    r.deliveredToMac = true;
+    this.save();
+    return true;
+  }
+
+  pendingMac(): ScreenshotRecord[] {
+    return this.records.filter(r => !r.deliveredToMac);
+  }
+
+  all(): ScreenshotRecord[] {
+    return [...this.records];
+  }
+
+  private save(): void {
+    writeFileSync(this.filePath, JSON.stringify(this.records, null, 2));
+  }
+}
