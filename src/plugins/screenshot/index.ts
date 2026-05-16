@@ -93,7 +93,9 @@ class ScreenshotPlugin extends PluginBase {
   private async ensureChannel(name: string): Promise<void> {
     const list = await this.request("channel.list");
     const found = (list?.channels ?? []).find((c: any) => c.name === name);
-    const channelId = found ? found.channelId : (await this.request("channel.create", { name })).channelId;
+    // channel.list returns { id } but channel.create returns { channelId }
+    const channelId = found ? (found.channelId ?? found.id) : (await this.request("channel.create", { name })).channelId;
+    if (!channelId) throw new Error(`could not resolve channel #${name}`);
     await this.request("channel.join", { channelId });
     this.channelId = channelId;
     this.log("info", `joined channel ${channelId} (#${name})`);
