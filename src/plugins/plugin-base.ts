@@ -62,6 +62,7 @@ export function matchSubscribers(subs: Subscription[], tag?: string): string[] {
 }
 
 export interface PluginOptions {
+  host?: string;  // nerve WS host, default 127.0.0.1
   port: number;
   name: string;
   capabilities?: string[];
@@ -91,12 +92,14 @@ export class PluginBase {
     // Environment variables take priority when spawned by nerve (NERVE_SPAWNED=1)
     const useEnv = process.env.NERVE_SPAWNED === "1";
     this.options = {
+      host: "127.0.0.1",
       capabilities: ["monitor"],
       permissions: "observer",
       reconnectDelay: 5000,
       ...opts,
       ...(useEnv && process.env.NERVE_PORT ? { port: parseInt(process.env.NERVE_PORT) } : {}),
       ...(useEnv && process.env.NERVE_NODE_NAME ? { name: process.env.NERVE_NODE_NAME } : {}),
+      ...(useEnv && process.env.NERVE_HOST ? { host: process.env.NERVE_HOST } : {}),
     };
     this.dataDir = resolve(homedir(), `.nerve/plugins/${this.options.name}`);
     this.logPath = resolve(this.dataDir, "activity.log");
@@ -448,7 +451,7 @@ export class PluginBase {
   }
 
   private async connect(): Promise<void> {
-    const url = `ws://127.0.0.1:${this.options.port}`;
+    const url = `ws://${this.options.host}:${this.options.port}`;
     this.log("info", `connecting to ${url}`);
 
     return new Promise((resolve, reject) => {
