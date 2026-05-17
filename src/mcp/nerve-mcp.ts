@@ -230,7 +230,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           status: {
             type: "string",
-            enum: ["idle", "busy", "error", "connecting"],
+            enum: ["idle", "busy", "error", "connecting", "offline", "stopped"],
             description: "Filter by node status",
           },
         },

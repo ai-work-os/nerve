@@ -151,6 +151,12 @@ export class WebSocketTransport implements Transport {
     return this.ws.readyState === this.ws.OPEN;
   }
 
+  /** The underlying WebSocket — used for stale-close identity checks
+   *  (verifying a closing socket is still the node's current transport). */
+  get socket(): WebSocket {
+    return this.ws;
+  }
+
   send(msg: JsonRpcMessage): void {
     if (this.alive) {
       this.ws.send(JSON.stringify(msg));

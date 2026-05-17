@@ -225,10 +225,13 @@ export class NodePool {
     return node;
   }
 
-  /** Find a persistent node by name that is currently offline (eligible for rebind). */
-  findOfflinePersistent(name: string): NerveNode | undefined {
+  /** Find a persistent node by name, regardless of current status.
+   *  Used for reconnect rebind — a new connection for a persistent identity
+   *  always wins, even if the old socket's close hasn't been processed yet
+   *  (register-before-close race). The stale socket is replaced by rebindWebSocket. */
+  findPersistentByName(name: string): NerveNode | undefined {
     const node = this.getByName(name);
-    if (node && node.persistent && node.status === "offline") return node;
+    if (node && node.persistent) return node;
     return undefined;
   }
 
@@ -245,10 +248,17 @@ export class NodePool {
   }
 
   /** Rebind a reconnecting persistent node to a fresh WS transport.
-   *  Reuses the original nodeId — channel membership is untouched. */
+   *  Reuses the original nodeId — channel membership is untouched.
+   *  The previous transport is closed first to drop any half-open zombie
+   *  socket and its listeners. */
   rebindWebSocket(nodeId: string, ws: WebSocket): void {
     const node = this.nodes.get(nodeId);
     if (!node) return;
+    // Close the stale transport before swapping — avoids half-open socket /
+    // listener leaks when the old close event never arrives (or arrives late).
+    try {
+      node.transport.close();
+    } catch { /* best-effort: stale socket may already be dead */ }
     node.transport = new WebSocketTransport(ws);
     node.status = "idle";
     node.touch();

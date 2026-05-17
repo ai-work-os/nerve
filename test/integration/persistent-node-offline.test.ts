@@ -140,4 +140,85 @@ describe("persistent node offline/online", () => {
 
     await inspector.disconnect();
   }, 30000);
+
+  it("survives multiple offline→online cycles with a stable nodeId", async () => {
+    const inspector = new WsClient("inspector-5");
+    await inspector.connect();
+    await inspector.request("node.register", { name: "inspector-5", capabilities: ["ui"] });
+    const ch = await inspector.request("channel.create", { cwd: "/tmp", name: "persist-room-5" });
+
+    const first = new WsClient("persist-client-5");
+    await first.connect();
+    const reg1 = await first.request("node.register", { name: "persist-client-5", capabilities: ["monitor"], persistent: true });
+    await first.request("channel.join", { channelId: ch.channelId });
+    const originalNodeId = reg1.nodeId;
+
+    // Cycle 1: disconnect → offline
+    first.close();
+    await sleep(300);
+    let node = await findNode(inspector, "persist-client-5");
+    expect(node.status, "cycle 1: offline after first close").toBe("offline");
+    expect(node.id).toBe(originalNodeId);
+
+    // Cycle 1: reconnect → idle
+    const second = new WsClient("persist-client-5");
+    await second.connect();
+    const reg2 = await second.request("node.register", { name: "persist-client-5", capabilities: ["monitor"], persistent: true });
+    expect(reg2.nodeId, "cycle 1: same nodeId on reconnect").toBe(originalNodeId);
+    await sleep(200);
+    node = await findNode(inspector, "persist-client-5");
+    expect(node.status, "cycle 1: idle after reconnect").toBe("idle");
+
+    // Cycle 2: disconnect again → offline again
+    second.close();
+    await sleep(300);
+    node = await findNode(inspector, "persist-client-5");
+    expect(node, "cycle 2: node still present after second close").toBeDefined();
+    expect(node.status, "cycle 2: offline after second close").toBe("offline");
+    expect(node.id, "nodeId stable across cycles").toBe(originalNodeId);
+    expect(node.channels, "cycle 2: still a channel member").toContain(ch.channelId);
+
+    await inspector.disconnect();
+  }, 30000);
+
+  it("rebinds on register-before-close race without spawning a ghost node", async () => {
+    const inspector = new WsClient("inspector-6");
+    await inspector.connect();
+    await inspector.request("node.register", { name: "inspector-6", capabilities: ["ui"] });
+    const ch = await inspector.request("channel.create", { cwd: "/tmp", name: "persist-room-6" });
+
+    const ws1 = new WsClient("persist-client-6");
+    await ws1.connect();
+    const reg1 = await ws1.request("node.register", { name: "persist-client-6", capabilities: ["monitor"], persistent: true });
+    await ws1.request("channel.join", { channelId: ch.channelId });
+    const originalNodeId = reg1.nodeId;
+
+    // ws1 is still OPEN (not closed) — simulate a transient reconnect where the
+    // new register arrives before the old socket's close is processed.
+    const ws2 = new WsClient("persist-client-6");
+    await ws2.connect();
+    const reg2 = await ws2.request("node.register", { name: "persist-client-6", capabilities: ["monitor"], persistent: true });
+
+    // Must rebind to the SAME node — no auto-suffix, no ghost "persist-client-6-2".
+    expect(reg2.nodeId, "register-before-close should rebind to the original nodeId").toBe(originalNodeId);
+    expect(reg2.name, "no auto-suffix on persistent rebind").toBe("persist-client-6");
+
+    let allMatching = (await inspector.request("node.list", {})).nodes
+      .filter((n: any) => n.name.startsWith("persist-client-6"));
+    expect(allMatching.length, "exactly one node, no ghost").toBe(1);
+
+    // Now close the stale ws1 — the node must stay ONLINE (not flipped offline
+    // by the stale close, since it already rebound to ws2).
+    ws1.close();
+    await sleep(400);
+
+    const node = await findNode(inspector, "persist-client-6");
+    expect(node, "node still present").toBeDefined();
+    expect(node.status, "stale close must not knock the node offline").toBe("idle");
+    expect(node.id).toBe(originalNodeId);
+    expect(node.channels).toContain(ch.channelId);
+
+    ws2.close();
+    await inspector.disconnect();
+  }, 30000);
 });

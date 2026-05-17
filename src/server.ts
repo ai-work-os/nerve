@@ -150,9 +150,18 @@ export class Server {
           // Persistent nodes: stay in pool + all channels, flip status to "offline".
           // (e.g. mac-clipboard on a sleeping Mac — keeps "showing up" in #screenshots)
           if (node && node.persistent) {
-            this.log.info(`ws.on(close): persistent node ${node.name} (${nodeId}) disconnected, marking offline (channels stay)`);
-            this.cm.nodePool.markOffline(nodeId);
-            this.wsNodeMap.delete(ws);
+            // Stale-close guard: if the node has already rebound to a newer
+            // socket (register-before-close race), this close belongs to an
+            // obsolete transport — ignore it, just drop the dead wsNodeMap entry.
+            const currentSocket = (node.transport as { socket?: unknown }).socket;
+            if (currentSocket !== undefined && currentSocket !== ws) {
+              this.log.info(`ws.on(close): stale close for ${node.name} (${nodeId}) — node already rebound to a newer socket, ignoring`);
+              this.wsNodeMap.delete(ws);
+            } else {
+              this.log.info(`ws.on(close): persistent node ${node.name} (${nodeId}) disconnected, marking offline (channels stay)`);
+              this.cm.nodePool.markOffline(nodeId);
+              this.wsNodeMap.delete(ws);
+            }
           } else {
             if (node) {
               // Clear activity on disconnect
@@ -248,31 +257,34 @@ export class Server {
 
           const persistent = p.persistent === true;
 
-          // Persistent node reconnecting: rebind to the existing offline node
-          // (same name, same nodeId) instead of creating a new one. Channel
-          // membership is preserved across the disconnect.
+          // Persistent node reconnecting: rebind to the existing node (same
+          // name, same nodeId) instead of creating a new one — regardless of
+          // its current status. A new connection for a persistent identity
+          // always wins (last-writer-wins), so a register that arrives before
+          // the old socket's close is processed still rebinds correctly
+          // instead of falling through to auto-suffix and spawning a ghost.
           if (persistent) {
-            const offlineNode = this.cm.nodePool.findOfflinePersistent(name);
-            if (offlineNode) {
-              this.cm.nodePool.rebindWebSocket(offlineNode.id, ws);
-              if (commands) offlineNode.commands = commands;
-              if (events) offlineNode.events = events;
-              if (health) offlineNode.health = health;
-              if (p.source) offlineNode.source = p.source as string;
-              this.wsNodeMap.set(ws, offlineNode.id);
-              this.log.info(`node.register: persistent node ${name} rebound to existing node ${offlineNode.id} (reconnect)`);
-              this.sendResult(ws, id, { nodeId: offlineNode.id, name });
+            const existing = this.cm.nodePool.findPersistentByName(name);
+            if (existing) {
+              this.cm.nodePool.rebindWebSocket(existing.id, ws);
+              if (commands) existing.commands = commands;
+              if (events) existing.events = events;
+              if (health) existing.health = health;
+              if (p.source) existing.source = p.source as string;
+              this.wsNodeMap.set(ws, existing.id);
+              this.log.info(`node.register: persistent node ${name} rebound to existing node ${existing.id} (reconnect)`);
+              this.sendResult(ws, id, { nodeId: existing.id, name });
 
-              // Replay channel joins — node missed channel.nodeJoined while offline
-              if (offlineNode.channels.size > 0) {
-                for (const chId of offlineNode.channels) {
-                  offlineNode.transport.send({
+              // Replay channel joins — node missed channel.nodeJoined while disconnected
+              if (existing.channels.size > 0) {
+                for (const chId of existing.channels) {
+                  existing.transport.send({
                     jsonrpc: "2.0",
                     method: "channel.nodeJoined",
-                    params: { channelId: chId, nodeId: offlineNode.id, nodeName: name },
+                    params: { channelId: chId, nodeId: existing.id, nodeName: name },
                   } as any);
                 }
-                this.log.info(`node.register: replayed ${offlineNode.channels.size} channel join(s) for persistent node ${name}`);
+                this.log.info(`node.register: replayed ${existing.channels.size} channel join(s) for persistent node ${name}`);
               }
               break;
             }
