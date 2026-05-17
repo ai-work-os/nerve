@@ -147,19 +147,36 @@ export class Server {
         const nodeId = this.wsNodeMap.get(ws);
         if (nodeId) {
           const node = this.cm.nodePool.get(nodeId);
-          if (node) {
-            // Clear activity on disconnect
-            node.activity = undefined;
-            // Remove node from all channels
-            for (const chId of node.channels) {
-              this.cm.removeNodeFromChannel(chId, node.name);
+          // Persistent nodes: stay in pool + all channels, flip status to "offline".
+          // (e.g. mac-clipboard on a sleeping Mac — keeps "showing up" in #screenshots)
+          if (node && node.persistent) {
+            // Stale-close guard: if the node has already rebound to a newer
+            // socket (register-before-close race), this close belongs to an
+            // obsolete transport — ignore it, just drop the dead wsNodeMap entry.
+            const currentSocket = (node.transport as { socket?: unknown }).socket;
+            if (currentSocket !== undefined && currentSocket !== ws) {
+              this.log.info(`ws.on(close): stale close for ${node.name} (${nodeId}) — node already rebound to a newer socket, ignoring`);
+              this.wsNodeMap.delete(ws);
+            } else {
+              this.log.info(`ws.on(close): persistent node ${node.name} (${nodeId}) disconnected, marking offline (channels stay)`);
+              this.cm.nodePool.markOffline(nodeId);
+              this.wsNodeMap.delete(ws);
             }
+          } else {
+            if (node) {
+              // Clear activity on disconnect
+              node.activity = undefined;
+              // Remove node from all channels
+              for (const chId of node.channels) {
+                this.cm.removeNodeFromChannel(chId, node.name);
+              }
+            }
+            // Program nodes: don't remove on WS close — process exit handler manages lifecycle
+            if (!this.cm.nodePool.isProgramNode(nodeId)) {
+              this.cm.nodePool.remove(nodeId);
+            }
+            this.wsNodeMap.delete(ws);
           }
-          // Program nodes: don't remove on WS close — process exit handler manages lifecycle
-          if (!this.cm.nodePool.isProgramNode(nodeId)) {
-            this.cm.nodePool.remove(nodeId);
-          }
-          this.wsNodeMap.delete(ws);
         }
         // Clean up any node subscriptions this WS had
         this.subs.removeSubscriber(ws);
@@ -238,6 +255,41 @@ export class Server {
             break;
           }
 
+          const persistent = p.persistent === true;
+
+          // Persistent node reconnecting: rebind to the existing node (same
+          // name, same nodeId) instead of creating a new one — regardless of
+          // its current status. A new connection for a persistent identity
+          // always wins (last-writer-wins), so a register that arrives before
+          // the old socket's close is processed still rebinds correctly
+          // instead of falling through to auto-suffix and spawning a ghost.
+          if (persistent) {
+            const existing = this.cm.nodePool.findPersistentByName(name);
+            if (existing) {
+              this.cm.nodePool.rebindWebSocket(existing.id, ws);
+              if (commands) existing.commands = commands;
+              if (events) existing.events = events;
+              if (health) existing.health = health;
+              if (p.source) existing.source = p.source as string;
+              this.wsNodeMap.set(ws, existing.id);
+              this.log.info(`node.register: persistent node ${name} rebound to existing node ${existing.id} (reconnect)`);
+              this.sendResult(ws, id, { nodeId: existing.id, name });
+
+              // Replay channel joins — node missed channel.nodeJoined while disconnected
+              if (existing.channels.size > 0) {
+                for (const chId of existing.channels) {
+                  existing.transport.send({
+                    jsonrpc: "2.0",
+                    method: "channel.nodeJoined",
+                    params: { channelId: chId, nodeId: existing.id, nodeName: name },
+                  } as any);
+                }
+                this.log.info(`node.register: replayed ${existing.channels.size} channel join(s) for persistent node ${name}`);
+              }
+              break;
+            }
+          }
+
           // Auto-suffix if name taken (tui → tui-2 → tui-3 ...)
           if (this.cm.nodePool.isNameTaken(name)) {
             let suffix = 2;
@@ -251,6 +303,7 @@ export class Server {
             name,
             (p.capabilities as string[]) || ["ui"],
             (p.permissions as any) || "operator",
+            persistent,
           );
           if (commands) node.commands = commands;
           if (events) node.events = events;

@@ -38,6 +38,7 @@ async function cmdServe(args: string[]) {
   let noEmailWatcher = false;
   let noWatchdog = false;
   let noScreenshot = false;
+  let noServices = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -51,9 +52,10 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-email-watcher") { noEmailWatcher = true; }
     else if (args[i] === "--no-watchdog") { noWatchdog = true; }
     else if (args[i] === "--no-screenshot") { noScreenshot = true; }
+    else if (args[i] === "--no-services") { noServices = true; }
   }
 
-  const { initLog, info, closeLog } = await import("./infra/logger.js");
+  const { initLog, info, warn, closeLog } = await import("./infra/logger.js");
   const logFile = resolve(dataDir, "nerve.log");
   initLog(logFile);
 
@@ -211,6 +213,24 @@ async function cmdServe(args: string[]) {
     startScreenshot();
   }
 
+  let supervisor: import("./service/service-supervisor.js").ServiceSupervisor | undefined;
+  if (!noServices) {
+    try {
+      const { loadServiceConfig } = await import("./service/service-config.js");
+      const { ServiceSupervisor } = await import("./service/service-supervisor.js");
+      const serviceConfig = loadServiceConfig(process.env.NERVE_SERVICES_FILE);
+      if (serviceConfig.services.length > 0) {
+        supervisor = new ServiceSupervisor({ specs: serviceConfig.services, log: { info, warn } });
+        supervisor.start();
+        info(`service-supervisor started ${serviceConfig.services.length} service(s)`);
+      } else {
+        info("no services configured");
+      }
+    } catch (err: any) {
+      warn(`service-supervisor start failed: ${err.message}`);
+    }
+  }
+
   void startStartupScenes({
     dataDir,
     startScene: (name: string) => server.startScene(name),
@@ -248,6 +268,10 @@ async function cmdServe(args: string[]) {
         try { await nerve.nodePool.stopNode(screenshotNodeId); } catch (e) { info(`screenshot stop failed: ${e}`); }
         info("screenshot stopped");
       }
+      if (supervisor) {
+        supervisor.stop();
+        info("service-supervisor stopped");
+      }
       await server.shutdown();
       closeLog();
     } catch (err: any) {
@@ -271,7 +295,7 @@ Global flags:
   --json                   Force JSON output
 
 Server:
-  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher] [--no-screenshot]
+  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher] [--no-screenshot] [--no-services]
 
 Top-level:
   status                                Show server + nodes + channels summary

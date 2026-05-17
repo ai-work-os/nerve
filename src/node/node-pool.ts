@@ -191,8 +191,10 @@ export class NodePool {
     return [...this.nodes.values()];
   }
 
-  /** Register a WebSocket node (nvim, browser, CLI tool) */
-  registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel): NerveNode {
+  /** Register a WebSocket node (nvim, browser, CLI tool).
+   *  persistent=true marks the node to survive WS disconnects as "offline"
+   *  (driven by server.ts ws.on("close") → markOffline) instead of being removed. */
+  registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel, persistent = false): NerveNode {
     if (this.isNameTaken(name)) {
       throw new Error(this.getNameConflictInfo(name));
     }
@@ -200,19 +202,69 @@ export class NodePool {
     const transport = new WebSocketTransport(ws);
     const node = new NerveNode({ id, name, transport, capabilities, permissions });
     node.status = "idle";
+    node.persistent = persistent;
 
     this.nodes.set(id, node);
     this.nameIndex.set(name, id);
     this.store.insertNode(id, name, "websocket", undefined, capabilities);
     this.store.updateNodeStatus(id, "idle");
 
-    transport.onClose(() => {
-      this.remove(id);
-    });
+    // Persistent nodes are NOT auto-removed on transport close — server.ts
+    // drives the offline transition explicitly via markOffline().
+    if (!persistent) {
+      transport.onClose(() => {
+        this.remove(id);
+      });
+    }
 
+    if (persistent) {
+      this.log.info(`registerWebSocket: persistent node ${name} (${id}) registered`);
+    }
     this.onEvent("node.registered", node);
     this.onEvent("node.statusChanged", node);
     return node;
+  }
+
+  /** Find a persistent node by name, regardless of current status.
+   *  Used for reconnect rebind — a new connection for a persistent identity
+   *  always wins, even if the old socket's close hasn't been processed yet
+   *  (register-before-close race). The stale socket is replaced by rebindWebSocket. */
+  findPersistentByName(name: string): NerveNode | undefined {
+    const node = this.getByName(name);
+    if (node && node.persistent) return node;
+    return undefined;
+  }
+
+  /** Mark a persistent node offline after its WS disconnects.
+   *  Node stays in pool + all channels; only status flips to "offline". */
+  markOffline(nodeId: string): void {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    node.activity = undefined;
+    node.status = "offline";
+    this.store.updateNodeStatus(nodeId, "offline");
+    this.log.info(`markOffline: persistent node ${node.name} (${nodeId}) → offline, channels=[${[...node.channels].join(",")}]`);
+    this.onEvent("node.statusChanged", node);
+  }
+
+  /** Rebind a reconnecting persistent node to a fresh WS transport.
+   *  Reuses the original nodeId — channel membership is untouched.
+   *  The previous transport is closed first to drop any half-open zombie
+   *  socket and its listeners. */
+  rebindWebSocket(nodeId: string, ws: WebSocket): void {
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    // Close the stale transport before swapping — avoids half-open socket /
+    // listener leaks when the old close event never arrives (or arrives late).
+    try {
+      node.transport.close();
+    } catch { /* best-effort: stale socket may already be dead */ }
+    node.transport = new WebSocketTransport(ws);
+    node.status = "idle";
+    node.touch();
+    this.store.updateNodeStatus(nodeId, "idle");
+    this.log.info(`rebindWebSocket: persistent node ${node.name} (${nodeId}) reconnected → idle, channels=[${[...node.channels].join(",")}]`);
+    this.onEvent("node.statusChanged", node);
   }
 
   /** Spawn a Process Node synchronously (handshake runs in background) */

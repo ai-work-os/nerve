@@ -68,6 +68,10 @@ export interface PluginOptions {
   capabilities?: string[];
   permissions?: "operator" | "member" | "observer";
   reconnectDelay?: number;  // ms, default 5000
+  /** Persistent node: stays in its channels as "offline" when the WS drops,
+   *  rebinds to the same nodeId on reconnect. Use for nodes that should keep
+   *  "showing up" across disconnects (e.g. mac-clipboard on a sleeping Mac). */
+  persistent?: boolean;
 }
 
 type PendingResolve = (result: any) => void;
@@ -96,6 +100,7 @@ export class PluginBase {
       capabilities: ["monitor"],
       permissions: "observer",
       reconnectDelay: 5000,
+      persistent: false,
       ...opts,
       ...(useEnv && process.env.NERVE_PORT ? { port: parseInt(process.env.NERVE_PORT) } : {}),
       ...(useEnv && process.env.NERVE_NODE_NAME ? { name: process.env.NERVE_NODE_NAME } : {}),
@@ -474,6 +479,7 @@ export class PluginBase {
           if (Object.keys(commands).length > 0) regParams.commands = commands;
           if (events.length > 0) regParams.events = events;
           if (Object.keys(health).length > 0) regParams.health = health;
+          if (this.options.persistent) regParams.persistent = true;
           // Register notification handlers BEFORE node.register to avoid race condition:
           // server may send notifications (e.g. scene on_ready, channel.nodeJoined)
           // in the same TCP segment as the register response.
