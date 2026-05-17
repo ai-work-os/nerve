@@ -221,7 +221,9 @@ describe("service-supervisor-serve integration", () => {
     });
 
     it("--no-services prevents ServiceSupervisor from running → marker file absent", async () => {
-      // Give enough time for the service to have run if it were going to
+      // Give enough time for the service to have run if it were going to.
+      // The service is a one-line `node -e` script that finishes in tens of
+      // milliseconds, so 2s is a comfortable margin to confirm it never ran.
       await sleep(2_000);
       expect(existsSync(markerFile), `marker file should NOT exist at ${markerFile}`).toBe(false);
     }, 10_000);

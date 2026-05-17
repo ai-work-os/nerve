@@ -227,7 +227,7 @@ async function cmdServe(args: string[]) {
         info("no services configured");
       }
     } catch (err: any) {
-      info(`service config load failed: ${err.message}`);
+      warn(`service-supervisor start failed: ${err.message}`);
     }
   }
 
@@ -295,7 +295,7 @@ Global flags:
   --json                   Force JSON output
 
 Server:
-  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher] [--no-screenshot]
+  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher] [--no-screenshot] [--no-services]
 
 Top-level:
   status                                Show server + nodes + channels summary
