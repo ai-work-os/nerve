@@ -57,6 +57,7 @@ class ScreenshotPlugin extends PluginBase {
         this.log("info", `screenshot stored: blob=${record.blobId} source=${record.source} analyze=${record.analyze}`);
         if (this.channelId) {
           this.postToChannel(this.channelId, channelText);
+          void this.emit("new_screenshot", undefined, channelText);
         } else {
           this.log("warn", `no channel — screenshot ${record.blobId} not announced`);
         }
@@ -104,6 +105,8 @@ class ScreenshotPlugin extends PluginBase {
   protected onDisconnect(): void {
     void this.http?.stop();
   }
+
+  override getEvents(): string[] { return ["new_screenshot"]; }
 
   override getCommands(): Record<string, CommandDef> {
     return { status: { description: "查看状态：HTTP 端口、累计截图数、未投递 Mac 数" } };
