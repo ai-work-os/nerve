@@ -37,6 +37,7 @@ async function cmdServe(args: string[]) {
   let noFeishu = false;
   let noEmailWatcher = false;
   let noWatchdog = false;
+  let noScreenshot = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--port" && args[i + 1]) { port = parseInt(args[i + 1], 10); i++; }
@@ -49,6 +50,7 @@ async function cmdServe(args: string[]) {
     else if (args[i] === "--no-feishu") { noFeishu = true; }
     else if (args[i] === "--no-email-watcher") { noEmailWatcher = true; }
     else if (args[i] === "--no-watchdog") { noWatchdog = true; }
+    else if (args[i] === "--no-screenshot") { noScreenshot = true; }
   }
 
   const { initLog, info, closeLog } = await import("./infra/logger.js");
@@ -190,6 +192,25 @@ async function cmdServe(args: string[]) {
     startWatchdog();
   }
 
+  let screenshotNodeId: string | undefined;
+  if (!noScreenshot) {
+    const startScreenshot = () => {
+      const result = nerve.cleanupStaleGuardian("screenshot");
+      if (result === "alive") {
+        info("screenshot already running, skipping spawn");
+        return;
+      }
+      try {
+        const node = nerve.nodePool.spawnProcessSync("screenshot", "screenshot", resolve(dataDir), port);
+        screenshotNodeId = node.id;
+        info(`screenshot spawned as program node (nodeId: ${node.id})`);
+      } catch (err: any) {
+        info(`screenshot spawn failed: ${err.message}`);
+      }
+    };
+    startScreenshot();
+  }
+
   void startStartupScenes({
     dataDir,
     startScene: (name: string) => server.startScene(name),
@@ -223,6 +244,10 @@ async function cmdServe(args: string[]) {
         try { await nerve.nodePool.stopNode(watchdogNodeId); } catch (e) { info(`system-watchdog stop failed: ${e}`); }
         info("system-watchdog stopped");
       }
+      if (screenshotNodeId) {
+        try { await nerve.nodePool.stopNode(screenshotNodeId); } catch (e) { info(`screenshot stop failed: ${e}`); }
+        info("screenshot stopped");
+      }
       await server.shutdown();
       closeLog();
     } catch (err: any) {
@@ -246,7 +271,7 @@ Global flags:
   --json                   Force JSON output
 
 Server:
-  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher]
+  serve [--port 4800] [--data DIR] [--no-guardian] [--no-duty] [--no-life-log] [--no-feishu] [--no-email-watcher] [--no-screenshot]
 
 Top-level:
   status                                Show server + nodes + channels summary

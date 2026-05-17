@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.nerve.mac-clipboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NPX__</string>
+    <string>tsx</string>
+    <string>__REPO__/src/plugins/mac-clipboard/index.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NERVE_HOST</key><string>__NERVE_HOST__</string>
+    <key>NERVE_PORT</key><string>__NERVE_PORT__</string>
+    <key>SCREENSHOT_HTTP_URL</key><string>__SCREENSHOT_HTTP_URL__</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__REPO__/.mac-clipboard.log</string>
+  <key>StandardErrorPath</key><string>__REPO__/.mac-clipboard.log</string>
+</dict>
+</plist>
