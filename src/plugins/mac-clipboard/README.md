@@ -8,7 +8,7 @@ Runs on a Mac, connects to a nerve server (local or remote over tailscale), subs
 |----------|---------|-------------|
 | `NERVE_HOST` | `127.0.0.1` | nerve WS host |
 | `NERVE_PORT` | `4800` | nerve WS port |
-| `SCREENSHOT_HTTP_URL` | `http://<NERVE_HOST>:4811` | screenshot plugin HTTP base URL |
+| `SCREENSHOT_HTTP_URL` | `http://<NERVE_HOST>:4812` | screenshot plugin HTTP base URL |
 | `SCREENSHOT_CHANNEL` | `screenshots` | channel name to subscribe to |
 | `MAC_INBOX_DIR` | `~/Screenshots/from-phone` | directory to save screenshots |
 
@@ -16,7 +16,7 @@ Runs on a Mac, connects to a nerve server (local or remote over tailscale), subs
 
 ```bash
 cd ~/work/worktree/ai-work-os/nerve
-NERVE_HOST=100.75.43.90 NERVE_PORT=4800 SCREENSHOT_HTTP_URL=http://100.75.43.90:4811 \
+NERVE_HOST=100.75.43.90 NERVE_PORT=4800 SCREENSHOT_HTTP_URL=http://100.75.43.90:4812 \
   npx tsx src/plugins/mac-clipboard/index.ts
 ```
 
@@ -34,7 +34,7 @@ sed \
   -e "s|__NPX__|$NPX|g" \
   -e "s|__NERVE_HOST__|$NERVE_HOST|g" \
   -e "s|__NERVE_PORT__|4800|g" \
-  -e "s|__SCREENSHOT_HTTP_URL__|http://$NERVE_HOST:4811|g" \
+  -e "s|__SCREENSHOT_HTTP_URL__|http://$NERVE_HOST:4812|g" \
   "$REPO/src/plugins/mac-clipboard/com.nerve.mac-clipboard.plist.template" \
   > ~/Library/LaunchAgents/com.nerve.mac-clipboard.plist
 ```

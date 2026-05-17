@@ -286,7 +286,7 @@ const adapters: Record<string, AdapterConfig> = {
       "接收手机截图 HTTP 上传，内容寻址存 blob，记感知日志，",
       "发 #screenshots 频道消息，跟踪 Mac 投递状态。",
       "",
-      "HTTP 端点 (port: SCREENSHOT_HTTP_PORT, 默认 4811):",
+      "HTTP 端点 (port: SCREENSHOT_HTTP_PORT, 默认 4812):",
       "  POST /screenshot/upload      raw 图片 body; X-Source / X-Analyze / X-Taken-At",
       "  GET  /screenshot/blob/:id    取回原字节",
       "  GET  /screenshot/pending-mac 未投递 Mac 的截图列表",

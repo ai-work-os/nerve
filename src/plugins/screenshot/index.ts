@@ -20,7 +20,7 @@ function getArg(flag: string, def: string): string {
 }
 
 const PORT = parseInt(getArg("--port", "4800"));
-const HTTP_PORT = parseInt(process.env.SCREENSHOT_HTTP_PORT ?? "4811", 10);
+const HTTP_PORT = parseInt(process.env.SCREENSHOT_HTTP_PORT ?? "4812", 10);
 const CHANNEL_NAME = process.env.SCREENSHOT_CHANNEL ?? "screenshots";
 const MAX_BYTES = parseInt(process.env.SCREENSHOT_MAX_BYTES ?? String(25 * 1024 * 1024), 10);
 

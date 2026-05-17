@@ -9,7 +9,7 @@
  * Config via env:
  *   NERVE_HOST            nerve WS host (default 127.0.0.1)
  *   NERVE_PORT            nerve WS port (default 4800)
- *   SCREENSHOT_HTTP_URL   screenshot plugin HTTP base (default http://<NERVE_HOST>:4811)
+ *   SCREENSHOT_HTTP_URL   screenshot plugin HTTP base (default http://<NERVE_HOST>:4812)
  *   SCREENSHOT_CHANNEL    channel name (default screenshots)
  *   MAC_INBOX_DIR         save dir (default ~/Screenshots/from-phone)
  */
@@ -29,7 +29,7 @@ function getArg(flag: string, def: string): string {
 
 const HOST = process.env.NERVE_HOST ?? "127.0.0.1";
 const PORT = parseInt(getArg("--port", process.env.NERVE_PORT ?? "4800"), 10);
-const HTTP_URL = process.env.SCREENSHOT_HTTP_URL ?? `http://${HOST}:4811`;
+const HTTP_URL = process.env.SCREENSHOT_HTTP_URL ?? `http://${HOST}:4812`;
 const CHANNEL_NAME = process.env.SCREENSHOT_CHANNEL ?? "screenshots";
 const INBOX_DIR = process.env.MAC_INBOX_DIR ?? resolve(homedir(), "Screenshots/from-phone");
 
