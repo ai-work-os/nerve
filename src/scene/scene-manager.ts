@@ -34,6 +34,8 @@ export interface SceneOnReady {
 
 export interface SceneConfig {
   name: string;
+  /** Working directory for all nodes in this scene. Takes priority over the cwd passed to start(). */
+  cwd?: string;
   nodes: SceneNodeDef[];
   channel?: {
     name?: string;
@@ -172,7 +174,7 @@ export class SceneManager {
       throw new Error(`scene "${sceneName}" not found`);
     }
 
-    const effectiveCwd = cwd || process.cwd();
+    const effectiveCwd = config.cwd || cwd || process.cwd();
     const nodeIds: string[] = [];
     const nodeNames: string[] = [];
 
