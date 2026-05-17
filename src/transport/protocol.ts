@@ -72,7 +72,7 @@ export class LineBuffer {
 }
 
 // Node types
-export type NodeStatus = "connecting" | "idle" | "busy" | "error" | "stopped";
+export type NodeStatus = "connecting" | "idle" | "busy" | "error" | "stopped" | "offline";
 export type PermissionLevel = "operator" | "member" | "observer";
 
 export interface NodeUsage {

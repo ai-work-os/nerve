@@ -39,7 +39,7 @@ class MacClipboardPlugin extends PluginBase {
   private delivered = 0;
 
   constructor() {
-    super({ host: HOST, port: PORT, name: "mac-clipboard", capabilities: ["monitor"], permissions: "member" });
+    super({ host: HOST, port: PORT, name: "mac-clipboard", capabilities: ["monitor"], permissions: "member", persistent: true });
   }
 
   protected async onReady(): Promise<void> {

@@ -147,19 +147,27 @@ export class Server {
         const nodeId = this.wsNodeMap.get(ws);
         if (nodeId) {
           const node = this.cm.nodePool.get(nodeId);
-          if (node) {
-            // Clear activity on disconnect
-            node.activity = undefined;
-            // Remove node from all channels
-            for (const chId of node.channels) {
-              this.cm.removeNodeFromChannel(chId, node.name);
+          // Persistent nodes: stay in pool + all channels, flip status to "offline".
+          // (e.g. mac-clipboard on a sleeping Mac — keeps "showing up" in #screenshots)
+          if (node && node.persistent) {
+            this.log.info(`ws.on(close): persistent node ${node.name} (${nodeId}) disconnected, marking offline (channels stay)`);
+            this.cm.nodePool.markOffline(nodeId);
+            this.wsNodeMap.delete(ws);
+          } else {
+            if (node) {
+              // Clear activity on disconnect
+              node.activity = undefined;
+              // Remove node from all channels
+              for (const chId of node.channels) {
+                this.cm.removeNodeFromChannel(chId, node.name);
+              }
             }
+            // Program nodes: don't remove on WS close — process exit handler manages lifecycle
+            if (!this.cm.nodePool.isProgramNode(nodeId)) {
+              this.cm.nodePool.remove(nodeId);
+            }
+            this.wsNodeMap.delete(ws);
           }
-          // Program nodes: don't remove on WS close — process exit handler manages lifecycle
-          if (!this.cm.nodePool.isProgramNode(nodeId)) {
-            this.cm.nodePool.remove(nodeId);
-          }
-          this.wsNodeMap.delete(ws);
         }
         // Clean up any node subscriptions this WS had
         this.subs.removeSubscriber(ws);
@@ -238,6 +246,38 @@ export class Server {
             break;
           }
 
+          const persistent = p.persistent === true;
+
+          // Persistent node reconnecting: rebind to the existing offline node
+          // (same name, same nodeId) instead of creating a new one. Channel
+          // membership is preserved across the disconnect.
+          if (persistent) {
+            const offlineNode = this.cm.nodePool.findOfflinePersistent(name);
+            if (offlineNode) {
+              this.cm.nodePool.rebindWebSocket(offlineNode.id, ws);
+              if (commands) offlineNode.commands = commands;
+              if (events) offlineNode.events = events;
+              if (health) offlineNode.health = health;
+              if (p.source) offlineNode.source = p.source as string;
+              this.wsNodeMap.set(ws, offlineNode.id);
+              this.log.info(`node.register: persistent node ${name} rebound to existing node ${offlineNode.id} (reconnect)`);
+              this.sendResult(ws, id, { nodeId: offlineNode.id, name });
+
+              // Replay channel joins — node missed channel.nodeJoined while offline
+              if (offlineNode.channels.size > 0) {
+                for (const chId of offlineNode.channels) {
+                  offlineNode.transport.send({
+                    jsonrpc: "2.0",
+                    method: "channel.nodeJoined",
+                    params: { channelId: chId, nodeId: offlineNode.id, nodeName: name },
+                  } as any);
+                }
+                this.log.info(`node.register: replayed ${offlineNode.channels.size} channel join(s) for persistent node ${name}`);
+              }
+              break;
+            }
+          }
+
           // Auto-suffix if name taken (tui → tui-2 → tui-3 ...)
           if (this.cm.nodePool.isNameTaken(name)) {
             let suffix = 2;
@@ -251,6 +291,7 @@ export class Server {
             name,
             (p.capabilities as string[]) || ["ui"],
             (p.permissions as any) || "operator",
+            persistent,
           );
           if (commands) node.commands = commands;
           if (events) node.events = events;

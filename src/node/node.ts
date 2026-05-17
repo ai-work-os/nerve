@@ -23,6 +23,9 @@ export class NerveNode {
   model?: string;
   cwd?: string;
   source?: string;  // client type identifier (e.g., "android", "tui", "web")
+  /** Persistent node: stays in channels as "offline" when WS disconnects,
+   *  rebinds to the same nodeId on reconnect (e.g. mac-clipboard on a sleeping Mac). */
+  persistent = false;
   sessionId?: string;
   channels = new Set<string>();
   activity?: string;
