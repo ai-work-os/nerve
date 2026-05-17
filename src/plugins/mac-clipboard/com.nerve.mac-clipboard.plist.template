@@ -3,12 +3,16 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.nerve.mac-clipboard</string>
+  <!-- Invoke node + tsx by absolute path: launchd runs with a minimal PATH,
+       so `npx`/`tsx` cannot be assumed on PATH. __NODE__ is an absolute node
+       binary; tsx is resolved from the repo's own node_modules. -->
   <key>ProgramArguments</key>
   <array>
-    <string>__NPX__</string>
-    <string>tsx</string>
+    <string>__NODE__</string>
+    <string>__REPO__/node_modules/tsx/dist/cli.mjs</string>
     <string>__REPO__/src/plugins/mac-clipboard/index.ts</string>
   </array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>NERVE_HOST</key><string>__NERVE_HOST__</string>
