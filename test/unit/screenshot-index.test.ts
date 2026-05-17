@@ -61,6 +61,19 @@ describe("ScreenshotIndex", () => {
     expect(new ScreenshotIndex(file).markDelivered("f".repeat(64))).toBe(false);
   });
 
+  it("markDelivered 标记同一 blobId 的所有重复记录（内容寻址会产生重复）", () => {
+    const idx = new ScreenshotIndex(file);
+    const dup = "9".repeat(64);
+    idx.add(rec({ blobId: dup }));
+    idx.add(rec({ blobId: dup }));
+    idx.add(rec({ blobId: "8".repeat(64) }));
+    expect(idx.markDelivered(dup)).toBe(true);
+    // 两条 dup 记录都被标记，pendingMac 只剩下另一个 blobId
+    const pending = idx.pendingMac();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].blobId).toBe("8".repeat(64));
+  });
+
   it("索引文件不存在时构造为空索引，不抛错", () => {
     expect(new ScreenshotIndex(join(dir, "no-such.json")).all()).toEqual([]);
   });

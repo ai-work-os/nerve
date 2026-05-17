@@ -35,11 +35,15 @@ export class ScreenshotIndex {
     this.save();
   }
 
-  /** Mark a screenshot delivered to Mac. Returns false if blobId unknown. */
+  /**
+   * Mark every record for a screenshot delivered to Mac. Returns false if the
+   * blobId is unknown. Marks all matches because content-addressed blobs mean
+   * the same image uploaded twice yields duplicate records under one blobId.
+   */
   markDelivered(blobId: string): boolean {
-    const r = this.records.find(x => x.blobId === blobId);
-    if (!r) return false;
-    r.deliveredToMac = true;
+    const matches = this.records.filter(x => x.blobId === blobId);
+    if (matches.length === 0) return false;
+    for (const r of matches) r.deliveredToMac = true;
     this.save();
     return true;
   }
