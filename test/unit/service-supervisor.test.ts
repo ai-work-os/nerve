@@ -309,4 +309,49 @@ describe("ServiceSupervisor", () => {
     ].join(" ");
     expect(allMsgs).toMatch(/never|no restart|skip/i);
   });
+
+  it("C1: error + exit 双触发只重启一次（Node spawn 失败时先 error 后 exit）", () => {
+    const { spawnFn, spawned } = makeSpawnFn();
+    const supervisor = new ServiceSupervisor({
+      specs: [specA],
+      spawn: spawnFn as any,
+      backoffMs: [1000],
+    });
+    supervisor.start();
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+
+    // Node emits "error" THEN "exit"(code=null) for the same failed child
+    spawned[0].emitter.emit("error", new Error("spawn ENOENT"));
+    spawned[0].emitter.emit("exit", null);
+
+    // restarts counted exactly once
+    expect(supervisor.status()[0].restarts).toBe(1);
+
+    // Exactly one restart scheduled — advance well past backoff
+    vi.advanceTimersByTime(60000);
+    expect(spawnFn).toHaveBeenCalledTimes(2); // not 3
+  });
+
+  it("M4: 重复调用 start() 抛错", () => {
+    const { spawnFn } = makeSpawnFn();
+    const supervisor = new ServiceSupervisor({
+      specs: [specA],
+      spawn: spawnFn as any,
+    });
+    supervisor.start();
+    expect(() => supervisor.start()).toThrow();
+    expect(spawnFn).toHaveBeenCalledTimes(1); // second start did not spawn
+  });
+
+  it("M2: restart='never' 的进程崩溃后 restarts 不增长", () => {
+    const specNever: ServiceSpec = { name: "one-shot", cmd: "run-once", restart: "never" };
+    const { spawnFn, spawned } = makeSpawnFn();
+    const supervisor = new ServiceSupervisor({
+      specs: [specNever],
+      spawn: spawnFn as any,
+    });
+    supervisor.start();
+    spawned[0].emitter.emit("exit", 0);
+    expect(supervisor.status()[0].restarts).toBe(0); // never restarted → no count
+  });
 });

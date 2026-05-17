@@ -50,9 +50,9 @@ export interface ProcessStatus {
 interface ChildState {
   spec: ServiceSpec;
   child: SupervisedChild | null;
-  /** Number of times this process has been restarted (not counting initial spawn) */
+  /** Number of times this process has actually been restarted (not counting initial spawn) */
   restarts: number;
-  /** Current restart backoff attempt index */
+  /** Restart backoff attempt count (1-based: 1 = first restart, used as backoffMs[attempt-1]). */
   attempt: number;
   /** Timestamp when the current child was spawned */
   spawnedAt: number;
@@ -65,10 +65,12 @@ interface ChildState {
 // ---- Default spawn ----
 
 const defaultSpawn: SpawnFn = (spec: ServiceSpec): SupervisedChild => {
+  // I1: use "inherit" for stdout/stderr — "pipe" creates an OS pipe that, if
+  // no one drains it, fills its 64KB buffer and silently blocks the child.
   return nodeSpawn(spec.cmd, spec.args ?? [], {
     cwd: spec.cwd,
     env: { ...process.env, ...spec.env },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "inherit", "inherit"],
   }) as unknown as SupervisedChild;
 };
 
@@ -87,6 +89,7 @@ export class ServiceSupervisor {
   private readonly stableMs: number;
 
   private stopped = false;
+  private started = false;
   private states: Map<string, ChildState> = new Map();
 
   constructor(options: SupervisorOptions) {
@@ -98,6 +101,12 @@ export class ServiceSupervisor {
   }
 
   start(): void {
+    // M4: guard against repeated start() — would rebuild states and leak
+    // orphaned child processes.
+    if (this.started) {
+      throw new Error("ServiceSupervisor: start() already called");
+    }
+    this.started = true;
     for (const spec of this.specs) {
       const state: ChildState = {
         spec,
@@ -177,22 +186,27 @@ export class ServiceSupervisor {
   }
 
   private _onExit(state: ChildState, reason: string): void {
+    // C1: Node emits "error" then "exit" for the same failed child — only
+    // handle it once. child===null means this exit was already processed.
+    if (state.child === null) return;
+    state.child = null;
+
     if (this.stopped) {
       this.log.info(`ServiceSupervisor: ${state.spec.name} exited (${reason}) — supervisor stopped, no restart`);
-      state.child = null;
       return;
     }
 
     const uptime = Date.now() - state.spawnedAt;
-    state.child = null;
-    state.restarts += 1;
 
     if (state.spec.restart === "never") {
+      // M2: never-restart processes never increment restarts.
       this.log.info(
         `ServiceSupervisor: ${state.spec.name} exited (${reason}) — restart=never, skip restart`
       );
       return;
     }
+
+    state.restarts += 1;
 
     // Reset attempt counter if process was stable long enough
     if (uptime >= this.stableMs) {
@@ -202,8 +216,9 @@ export class ServiceSupervisor {
       state.attempt = 0;
     }
 
-    const delay = this.backoffMs[Math.min(state.attempt, this.backoffMs.length - 1)];
+    // attempt is 1-based: increment first, then index backoffMs as attempt-1.
     state.attempt += 1;
+    const delay = this.backoffMs[Math.min(state.attempt - 1, this.backoffMs.length - 1)];
     state.restarting = true;
 
     this.log.warn(

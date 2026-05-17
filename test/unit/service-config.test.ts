@@ -110,4 +110,30 @@ describe("service-config", () => {
     const cfg = loadServiceConfig(path);
     expect(cfg.services[0].env).toEqual({ FOO: "bar" });
   });
+
+  it("I2: 顶层 JSON 为 null → 抛清晰错误（带 path）", () => {
+    const path = join(dir, "services.json");
+    writeFileSync(path, "null");
+    expect(() => loadServiceConfig(path)).toThrow(new RegExp(path.replace(/[.]/g, "\\.")));
+  });
+
+  it("I2: 顶层 JSON 为数组 → 抛错", () => {
+    const path = join(dir, "services.json");
+    writeFileSync(path, "[]");
+    expect(() => loadServiceConfig(path)).toThrow();
+  });
+
+  it("I2: 顶层 JSON 为字符串 → 抛错", () => {
+    const path = join(dir, "services.json");
+    writeFileSync(path, "\"hello\"");
+    expect(() => loadServiceConfig(path)).toThrow();
+  });
+
+  it("M3: args 含非字符串元素 → 抛错", () => {
+    const path = join(dir, "services.json");
+    writeFileSync(path, JSON.stringify({
+      services: [{ name: "svc", cmd: "mybin", args: ["ok", 1] }],
+    }));
+    expect(() => loadServiceConfig(path)).toThrow(/args/i);
+  });
 });

@@ -53,9 +53,18 @@ export function loadServiceConfig(path: string = defaultServiceConfigPath()): Se
   }
 
   // Throws SyntaxError on bad JSON — intentional, propagate to caller
-  const parsed = JSON.parse(raw);
+  const parsed: unknown = JSON.parse(raw);
 
-  const rawServices: unknown[] = Array.isArray(parsed.services) ? parsed.services : [];
+  // I2: top-level must be a JSON object — null / array / scalar would
+  // otherwise blow up with a confusing TypeError on .services access.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `service-config: top-level JSON must be an object with a "services" array (${path})`
+    );
+  }
+
+  const root = parsed as Record<string, unknown>;
+  const rawServices: unknown[] = Array.isArray(root.services) ? root.services : [];
 
   const services: ServiceSpec[] = rawServices.map((entry: unknown, idx: number) => {
     const e = entry as Record<string, unknown>;
@@ -71,10 +80,22 @@ export function loadServiceConfig(path: string = defaultServiceConfigPath()): Se
       );
     }
 
+    // M3: validate args elements are strings — a non-string would otherwise
+    // pass through and crash at spawn() time.
+    let args: string[] = [];
+    if (e.args !== undefined) {
+      if (!Array.isArray(e.args) || e.args.some((a) => typeof a !== "string")) {
+        throw new Error(
+          `service-config: entry[${idx}] (name=${JSON.stringify(e.name)}) "args" must be an array of strings (got ${JSON.stringify(e.args)})`
+        );
+      }
+      args = e.args as string[];
+    }
+
     const spec: ServiceSpec = {
       name: e.name,
       cmd: e.cmd,
-      args: Array.isArray(e.args) ? (e.args as string[]) : [],
+      args,
       restart: e.restart === "never" ? "never" : "always",
     };
 
