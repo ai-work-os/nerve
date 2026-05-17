@@ -3,6 +3,7 @@ dist/
 *.db
 *.db-journal
 .nvimlog
+*.log
 .keep
 .claude/
 
