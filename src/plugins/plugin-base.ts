@@ -72,6 +72,10 @@ export interface PluginOptions {
    *  rebinds to the same nodeId on reconnect. Use for nodes that should keep
    *  "showing up" across disconnects (e.g. mac-clipboard on a sleeping Mac). */
   persistent?: boolean;
+  /** WebSocket heartbeat ping interval in ms (default 30000).
+   *  A ping is sent each tick; if no pong/message arrives before the next tick
+   *  the connection is considered dead and forcibly terminated (triggering reconnect). */
+  heartbeatIntervalMs?: number;
 }
 
 type PendingResolve = (result: any) => void;
@@ -92,6 +96,11 @@ export class PluginBase {
   private subscriptions = new Map<string, Subscription[]>();
   protected channelId?: string;
 
+  // Heartbeat state
+  /** True if a pong or any message was received since the last heartbeat tick. */
+  _heartbeatAlive = false;
+  private _heartbeatTimer?: ReturnType<typeof setInterval>;
+
   constructor(opts: PluginOptions) {
     // Environment variables take priority when spawned by nerve (NERVE_SPAWNED=1)
     const useEnv = process.env.NERVE_SPAWNED === "1";
@@ -101,6 +110,7 @@ export class PluginBase {
       permissions: "observer",
       reconnectDelay: 5000,
       persistent: false,
+      heartbeatIntervalMs: 30000,
       ...opts,
       ...(useEnv && process.env.NERVE_PORT ? { port: parseInt(process.env.NERVE_PORT) } : {}),
       ...(useEnv && process.env.NERVE_NODE_NAME ? { name: process.env.NERVE_NODE_NAME } : {}),
@@ -119,8 +129,35 @@ export class PluginBase {
   /** Stop the plugin gracefully */
   stop(): void {
     this.stopped = true;
+    this._stopHeartbeat();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.close();
+    }
+  }
+
+  /** Start the client-side heartbeat timer for the current WS connection. */
+  private _startHeartbeat(): void {
+    this._stopHeartbeat();
+    this._heartbeatAlive = true; // assume alive at connection time
+    this._heartbeatTimer = setInterval(() => {
+      if (!this._heartbeatAlive) {
+        // No pong or message received since last tick — connection is dead
+        this.log("warn", "heartbeat: no pong received, terminating dead connection");
+        this.ws.terminate();
+        return;
+      }
+      // Mark as awaiting pong and send ping
+      this._heartbeatAlive = false;
+      this.ws.ping();
+    }, this.options.heartbeatIntervalMs);
+    this._heartbeatTimer.unref?.(); // don't block process exit
+  }
+
+  /** Stop the client-side heartbeat timer. */
+  private _stopHeartbeat(): void {
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = undefined;
     }
   }
 
@@ -462,8 +499,14 @@ export class PluginBase {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(url);
 
+      // Pong from server marks connection alive
+      this.ws.on("pong", () => {
+        this._heartbeatAlive = true;
+      });
+
       this.ws.on("open", async () => {
         this.connected = true;
+        this._startHeartbeat();
         this.log("info", "connected");
 
         try {
@@ -498,6 +541,8 @@ export class PluginBase {
       });
 
       this.ws.on("message", (data) => {
+        // Any incoming message means the connection is alive
+        this._heartbeatAlive = true;
         let msg: any;
         try { msg = JSON.parse(data.toString()); } catch { return; }
 
@@ -542,6 +587,7 @@ export class PluginBase {
 
       this.ws.on("close", () => {
         this.connected = false;
+        this._stopHeartbeat();
         this.onDisconnect();
         // nerve-spawned 插件断连后不重连，直接退出
         if (process.env.NERVE_SPAWNED === "1") {

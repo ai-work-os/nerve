@@ -15,6 +15,8 @@ import { localIso, localTimeOnly } from "./infra/time-util.js";
 
 const PROGRAM_LOG_MESSAGE_LIMIT = 5000;
 
+const WS_HEARTBEAT_INTERVAL_MS = parseInt(process.env.NERVE_WS_HEARTBEAT_INTERVAL_MS || "30000", 10);
+
 export class Server {
   private log = childLogger({ module: "server" });
   private cm: ChannelManager;
@@ -25,6 +27,11 @@ export class Server {
   // Track which WebSocket belongs to which node
   private wsNodeMap = new Map<WebSocket, string>(); // ws → nodeId
   private memSampler?: ReturnType<typeof setInterval>;
+
+  // Server-side WS heartbeat: detect half-open / dead connections.
+  // Stored in a WeakMap so entries are GC'd automatically when WS is closed.
+  private wsAlive = new WeakMap<WebSocket, boolean>();
+  private wsHeartbeat?: ReturnType<typeof setInterval>;
 
   // Direct node subscriptions (node.subscribe / node.unsubscribe)
   private subs = new SubscriptionManager();
@@ -126,7 +133,31 @@ export class Server {
       }
     };
 
+    // Server-side heartbeat: ping all clients every WS_HEARTBEAT_INTERVAL_MS.
+    // Clients that don't respond with a pong are terminated (triggering ws.on("close")
+    // → markOffline for persistent nodes, remove for transient nodes).
+    this.wsHeartbeat = setInterval(() => {
+      for (const ws of this.wss.clients) {
+        if (this.wsAlive.get(ws) === false) {
+          const nodeId = this.wsNodeMap.get(ws);
+          const nodeName = nodeId ? this.cm.nodePool.get(nodeId)?.name ?? nodeId : "<unregistered>";
+          this.log.warn(`heartbeat: no pong from ${nodeName}, terminating dead connection`);
+          ws.terminate();
+          continue;
+        }
+        this.wsAlive.set(ws, false);
+        ws.ping();
+      }
+    }, WS_HEARTBEAT_INTERVAL_MS);
+    this.wsHeartbeat.unref(); // don't block process exit
+
     this.wss.on("connection", (ws) => {
+      // Initialize alive state for new connection
+      this.wsAlive.set(ws, true);
+      ws.on("pong", () => {
+        this.wsAlive.set(ws, true);
+      });
+
       ws.on("message", (data) => {
         try {
           const msg = JSON.parse(data.toString()) as JsonRpcMessage;
@@ -757,6 +788,7 @@ export class Server {
 
   async shutdown(): Promise<void> {
     if (this.memSampler) clearInterval(this.memSampler);
+    if (this.wsHeartbeat) clearInterval(this.wsHeartbeat);
     // Close all WS connections
     for (const ws of this.wss.clients) {
       ws.close();
