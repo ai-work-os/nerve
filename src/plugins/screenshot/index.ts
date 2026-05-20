@@ -6,12 +6,9 @@
  *
  * Commands: status.
  */
-import { resolve } from "node:path";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import type { HealthContract } from "../../transport/protocol.js";
-import { BlobStore } from "./blob-store.js";
-import { ScreenshotIndex } from "./screenshot-index.js";
-import { processUpload } from "./upload-handler.js";
+import { ScreenshotStore } from "./screenshot-store.js";
 import { ScreenshotHttpServer } from "./http-server.js";
 
 function getArg(flag: string, def: string): string {
@@ -25,18 +22,14 @@ const CHANNEL_NAME = process.env.SCREENSHOT_CHANNEL ?? "screenshots";
 const MAX_BYTES = parseInt(process.env.SCREENSHOT_MAX_BYTES ?? String(25 * 1024 * 1024), 10);
 
 class ScreenshotPlugin extends PluginBase {
-  private blobs!: BlobStore;
-  private index!: ScreenshotIndex;
-  private logDir!: string;
+  private store!: ScreenshotStore;
   private http: ScreenshotHttpServer | null = null;
   private startTime = Date.now();
   private errorReason: string | null = null;
 
   constructor() {
     super({ port: PORT, name: "screenshot", capabilities: ["monitor"], permissions: "member" });
-    this.blobs = new BlobStore(resolve(this.dataDir, "blobs"));
-    this.index = new ScreenshotIndex(resolve(this.dataDir, "index.json"));
-    this.logDir = resolve(this.dataDir, "log");
+    this.store = new ScreenshotStore(this.dataDir);
   }
 
   protected async onReady(): Promise<void> {
@@ -51,9 +44,7 @@ class ScreenshotPlugin extends PluginBase {
       port: HTTP_PORT,
       maxBytes: MAX_BYTES,
       onUpload: (data, meta) => {
-        const { record, channelText } = processUpload(
-          { blobs: this.blobs, index: this.index, logDir: this.logDir }, data, meta,
-        );
+        const { record, channelText } = this.store.store(data, meta);
         this.log("info", `screenshot stored: blob=${record.blobId} source=${record.source} analyze=${record.analyze}`);
         if (this.channelId) {
           this.postToChannel(this.channelId, channelText);
@@ -63,18 +54,10 @@ class ScreenshotPlugin extends PluginBase {
         }
         return record.blobId;
       },
-      getBlob: (id) => {
-        const data = this.blobs.get(id);
-        if (!data) return null;
-        const record = this.index.all().find(r => r.blobId === id);
-        // Blob bytes exist but no index record — fall back to a generic type.
-        return { data, mimeType: record?.mimeType ?? "application/octet-stream" };
-      },
-      listPendingMac: () => this.index.pendingMac().map(r => ({
-        blobId: r.blobId, takenAtMs: r.takenAtMs, source: r.source,
-      })),
+      getBlob: (id) => this.store.get(id),
+      listPendingMac: () => this.store.pendingMac(),
       onAckMac: (id) => {
-        const ok = this.index.markDelivered(id);
+        const ok = this.store.markDelivered(id);
         this.log("info", ok ? `mac ack: ${id}` : `mac ack unknown blob: ${id}`);
         return ok;
       },
@@ -118,8 +101,8 @@ class ScreenshotPlugin extends PluginBase {
 
   protected override onCommand(command: string, _args: Record<string, string>, _from?: string): CommandResult {
     if (command === "status") {
-      const total = this.index.all().length;
-      const pending = this.index.pendingMac().length;
+      const total = this.store.all().length;
+      const pending = this.store.pendingMac().length;
       const uptime = Math.round((Date.now() - this.startTime) / 1000);
       const mode = this.errorReason ? `error: ${this.errorReason}` : "ok";
       return { reply: `${mode}; uptime=${uptime}s; http=:${HTTP_PORT}; screenshots=${total}; pending-mac=${pending}` };
