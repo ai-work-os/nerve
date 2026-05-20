@@ -192,8 +192,9 @@ export class NodePool {
   }
 
   /** Register a WebSocket node (nvim, browser, CLI tool).
-   *  persistent=true marks the node to survive WS disconnects as "offline"
-   *  (driven by server.ts ws.on("close") → markOffline) instead of being removed. */
+   *  persistent=true is Layer 2 of the NodeResilience seam — node survives
+   *  WS disconnects as "offline" (server.ts ws.on("close") → markOffline)
+   *  instead of being removed. See ai/specs/node-resilience.md. */
   registerWebSocket(ws: WebSocket, name: string, capabilities: string[], permissions: PermissionLevel, persistent = false): NerveNode {
     if (this.isNameTaken(name)) {
       throw new Error(this.getNameConflictInfo(name));

@@ -68,13 +68,17 @@ export interface PluginOptions {
   capabilities?: string[];
   permissions?: "operator" | "member" | "observer";
   reconnectDelay?: number;  // ms, default 5000
-  /** Persistent node: stays in its channels as "offline" when the WS drops,
-   *  rebinds to the same nodeId on reconnect. Use for nodes that should keep
-   *  "showing up" across disconnects (e.g. mac-clipboard on a sleeping Mac). */
+  /** Persistent node: Layer 2 of the NodeResilience seam — stays in its
+   *  channels as "offline" when the WS drops, rebinds to the same nodeId on
+   *  reconnect. Use for nodes that should keep "showing up" across
+   *  disconnects (e.g. mac-clipboard on a sleeping Mac).
+   *  See ai/specs/node-resilience.md. */
   persistent?: boolean;
-  /** WebSocket heartbeat ping interval in ms (default 30000).
-   *  A ping is sent each tick; if no pong/message arrives before the next tick
-   *  the connection is considered dead and forcibly terminated (triggering reconnect). */
+  /** WebSocket heartbeat ping interval in ms (default 30000) — Layer 1 of
+   *  the NodeResilience seam. A ping is sent each tick; if no pong/message
+   *  arrives before the next tick the connection is considered dead and
+   *  forcibly terminated (triggering reconnect).
+   *  See ai/specs/node-resilience.md. */
   heartbeatIntervalMs?: number;
 }
 

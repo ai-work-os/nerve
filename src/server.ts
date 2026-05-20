@@ -133,9 +133,11 @@ export class Server {
       }
     };
 
-    // Server-side heartbeat: ping all clients every WS_HEARTBEAT_INTERVAL_MS.
-    // Clients that don't respond with a pong are terminated (triggering ws.on("close")
-    // → markOffline for persistent nodes, remove for transient nodes).
+    // Server-side heartbeat — Layer 1 of the NodeResilience seam
+    // (ai/specs/node-resilience.md). Ping all clients every
+    // WS_HEARTBEAT_INTERVAL_MS; non-responders are terminated, which fires
+    // ws.on("close") below — that's where Layer 2 (persistent identity)
+    // decides markOffline vs. remove.
     this.wsHeartbeat = setInterval(() => {
       for (const ws of this.wss.clients) {
         if (this.wsAlive.get(ws) === false) {
@@ -178,8 +180,10 @@ export class Server {
         const nodeId = this.wsNodeMap.get(ws);
         if (nodeId) {
           const node = this.cm.nodePool.get(nodeId);
-          // Persistent nodes: stay in pool + all channels, flip status to "offline".
-          // (e.g. mac-clipboard on a sleeping Mac — keeps "showing up" in #screenshots)
+          // Layer 2 of the NodeResilience seam — persistent nodes survive
+          // a WS drop as "offline" (channels stay, same nodeId on rebind).
+          // See ai/specs/node-resilience.md. Example: mac-clipboard on a
+          // sleeping Mac keeps "showing up" in #screenshots.
           if (node && node.persistent) {
             // Stale-close guard: if the node has already rebound to a newer
             // socket (register-before-close race), this close belongs to an
