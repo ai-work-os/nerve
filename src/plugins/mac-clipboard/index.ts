@@ -52,18 +52,6 @@ class MacClipboardPlugin extends PluginBase {
     await this.drainPending();
   }
 
-  /** Find or create the target channel, then join it. */
-  private async ensureChannel(name: string): Promise<void> {
-    const list = await this.request("channel.list");
-    const found = (list?.channels ?? []).find((c: any) => c.name === name);
-    // channel.list returns { id } but channel.create returns { channelId }
-    const channelId = found ? (found.channelId ?? found.id) : (await this.request("channel.create", { name })).channelId;
-    if (!channelId) throw new Error(`could not resolve channel #${name}`);
-    await this.request("channel.join", { channelId });
-    this.channelId = channelId;
-    this.log("info", `joined channel ${channelId} (#${name})`);
-  }
-
   /** On (re)connect: process every screenshot the server still has pending for Mac. */
   private async drainPending(): Promise<void> {
     let pending: PendingEntry[] = [];

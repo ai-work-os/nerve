@@ -238,6 +238,29 @@ export class PluginBase {
   /** Override in subclass: called on disconnect (before reconnect) */
   protected onDisconnect(): void {}
 
+  /** Find or create the named channel, join it, and store the id on
+   *  `this.channelId`. Returns the channel id for convenience.
+   *
+   *  Use from `onReady()` for plugins that have one primary channel they
+   *  care about (e.g. screenshot, mac-clipboard). For "join every channel"
+   *  patterns (observer, user-recorder) use `channel.list` + `channel.join`
+   *  directly — those don't fit this single-channel shape.
+   *
+   *  Throws on transport errors; returns the id on success. */
+  protected async ensureChannel(name: string): Promise<string> {
+    const list = await this.request("channel.list");
+    const found = (list?.channels ?? []).find((c: any) => c.name === name);
+    // channel.list returns { id } but channel.create returns { channelId }.
+    const channelId = found
+      ? (found.channelId ?? found.id)
+      : (await this.request("channel.create", { name })).channelId;
+    if (!channelId) throw new Error(`could not resolve channel #${name}`);
+    await this.request("channel.join", { channelId });
+    this.channelId = channelId;
+    this.log("info", `joined channel ${channelId} (#${name})`);
+    return channelId;
+  }
+
   /** Override in subclass: called when a DM message is received */
   protected onMessage(content: string, from?: string): void {}
 
