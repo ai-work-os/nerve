@@ -82,6 +82,17 @@ export interface NodeUsage {
   lastUpdated: number;
 }
 
+/** Per-service status surfaced by service-supervisor when exposed as a
+ *  local node. Mirrors ServiceSupervisor.ProcessStatus so callers (and
+ *  watchdog) don't depend on the service/ module from the transport layer. */
+export interface SupervisedServiceStatus {
+  name: string;
+  pid?: number;
+  state: "running" | "restarting" | "stopped";
+  restarts: number;
+  restartHistory: number[];
+}
+
 export interface HealthContract {
   /** Liveness 检查类型。process = 检查 pid 是否还在；connection = 检查 WS 是否在线；none = 不检查。默认 process。 */
   liveness?: "process" | "connection" | "none";
@@ -97,7 +108,7 @@ export interface NodeInfo {
   status: NodeStatus;
   capabilities: string[];
   permissions: PermissionLevel;
-  transport: "stdio" | "websocket";
+  transport: "stdio" | "websocket" | "local";
   pid?: number;
   adapter?: string;
   model?: string;
@@ -112,6 +123,10 @@ export interface NodeInfo {
   commands?: Record<string, { description: string; args?: Record<string, string> }>;
   events?: string[];
   health?: HealthContract;
+  /** Per-service state for nodes that wrap a process supervisor (today: the
+   *  service-supervisor local node). watchdog reads this to detect restart
+   *  loops via restart-loop-detector. */
+  supervised?: SupervisedServiceStatus[];
 }
 
 export interface ChannelInfo {

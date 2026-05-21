@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateNode } from "../../src/plugins/system-watchdog/evaluator.js";
+import { evaluateNode, evaluateAll } from "../../src/plugins/system-watchdog/evaluator.js";
 import type { NodeInfo } from "../../src/transport/protocol.js";
 
 const NOW = 1_700_000_000_000;
@@ -14,7 +14,92 @@ function mkNode(overrides: Partial<NodeInfo>): NodeInfo {
   };
 }
 
+const RESTART_WINDOW_MS = 5 * 60 * 1000;
+const RESTART_THRESHOLD = 3;
+
 describe("evaluateNode", () => {
+  describe("supervised services → restart-loop alerts (via evaluateAll)", () => {
+    it("无 supervised 字段 → 无 restart-loop alert", () => {
+      const node = mkNode({});
+      const alerts = evaluateAll(node, NOW, () => true, () => 50);
+      expect(alerts.filter(a => a.metric === "restart-loop")).toEqual([]);
+    });
+
+    it("supervised 数组为空 → 无 alert", () => {
+      const node = mkNode({ supervised: [] });
+      const alerts = evaluateAll(node, NOW, () => true, () => 50);
+      expect(alerts.filter(a => a.metric === "restart-loop")).toEqual([]);
+    });
+
+    it("窗口内 3 次重启 → 一条 restart-loop alert", () => {
+      const node = mkNode({
+        supervised: [{
+          name: "mac-clipboard", state: "restarting", restarts: 3,
+          restartHistory: [NOW - 1000, NOW - 2000, NOW - 3000],
+        }],
+      });
+      const alerts = evaluateAll(node, NOW, () => true, () => 50);
+      const loops = alerts.filter(a => a.metric === "restart-loop");
+      expect(loops).toHaveLength(1);
+      expect(loops[0]).toMatchObject({
+        nodeName: "mac-clipboard",
+        metric: "restart-loop",
+      });
+      expect(loops[0].detail).toContain("3");
+    });
+
+    it("窗口外的重启不计入", () => {
+      const node = mkNode({
+        supervised: [{
+          name: "old-pain", state: "running", restarts: 3,
+          restartHistory: [
+            NOW - 1000,
+            NOW - 2 * RESTART_WINDOW_MS,
+            NOW - 3 * RESTART_WINDOW_MS,
+          ],
+        }],
+      });
+      const alerts = evaluateAll(node, NOW, () => true, () => 50);
+      expect(alerts.filter(a => a.metric === "restart-loop")).toEqual([]);
+    });
+
+    it("多服务：每个独立评估", () => {
+      const node = mkNode({
+        supervised: [
+          { name: "calm", state: "running", restarts: 0, restartHistory: [] },
+          {
+            name: "loud", state: "restarting", restarts: 3,
+            restartHistory: [NOW - 1000, NOW - 2000, NOW - 3000],
+          },
+          {
+            name: "stuck", state: "restarting", restarts: 5,
+            restartHistory: [NOW - 100, NOW - 200, NOW - 300, NOW - 400, NOW - 500],
+          },
+        ],
+      });
+      const loops = evaluateAll(node, NOW, () => true, () => 50)
+        .filter(a => a.metric === "restart-loop");
+      expect(loops.map(a => a.nodeName).sort()).toEqual(["loud", "stuck"]);
+    });
+
+    it("transport=local 的节点也参与评估（service-supervisor 本身）", () => {
+      const node = mkNode({
+        transport: "local",
+        supervised: [{
+          name: "x", state: "restarting", restarts: 3,
+          restartHistory: [NOW - 1000, NOW - 2000, NOW - 3000],
+        }],
+      });
+      const loops = evaluateAll(node, NOW, () => true, () => 50)
+        .filter(a => a.metric === "restart-loop");
+      expect(loops).toHaveLength(1);
+    });
+
+    // Window / threshold are configurable; default values are baked in for now.
+    void RESTART_WINDOW_MS;
+    void RESTART_THRESHOLD;
+  });
+
   it("无 health 契约 → 无 alert", () => {
     const node = mkNode({});
     const alerts = evaluateNode(node, NOW, () => true, () => 50);

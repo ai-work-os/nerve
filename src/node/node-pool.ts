@@ -4,14 +4,14 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { NerveNode } from "./node.js";
-import { StdioTransport, WebSocketTransport, NullTransport } from "../transport/transport.js";
+import { StdioTransport, WebSocketTransport, NullTransport, LocalTransport } from "../transport/transport.js";
 import { AcpClient, type McpServerConfig, type PromptAttachment } from "../agent/acp-client.js";
 import type { SessionNotification, SessionUpdate, ToolCall } from "@agentclientprotocol/sdk";
 import { getAdapter } from "./adapter.js";
 import * as log from "../infra/logger.js";
 import { child as childLogger } from "../infra/logger.js";
 import type { Store } from "../storage/store.js";
-import type { NodeStatus, PermissionLevel, Message, MessageAction } from "../transport/protocol.js";
+import type { NodeStatus, PermissionLevel, Message, MessageAction, HealthContract } from "../transport/protocol.js";
 import type { WebSocket } from "ws";
 
 export type NodeEventHandler = (event: string, node: NerveNode, detail?: Record<string, unknown>) => void;
@@ -189,6 +189,58 @@ export class NodePool {
 
   listAll(): NerveNode[] {
     return [...this.nodes.values()];
+  }
+
+  /** Register an in-process module as a node (LocalTransport).
+   *  Use for in-process state holders that should appear in node.list
+   *  (e.g. the service-supervisor reporter). Returns the NerveNode handle
+   *  so the caller can `touch()`, set `supervised`, etc.
+   *
+   *  Name uniqueness: throws if a node with this name is already registered. */
+  registerLocalNode(
+    name: string,
+    opts: {
+      capabilities?: string[];
+      permissions?: PermissionLevel;
+      health?: HealthContract;
+    },
+  ): NerveNode {
+    if (this.isNameTaken(name)) {
+      throw new Error(this.getNameConflictInfo(name));
+    }
+    const id = nanoid(12);
+    const transport = new LocalTransport();
+    const node = new NerveNode({
+      id,
+      name,
+      transport,
+      capabilities: opts.capabilities ?? ["monitor"],
+      permissions: opts.permissions ?? "observer",
+    });
+    node.status = "idle";
+    if (opts.health) node.health = opts.health;
+    this.nodes.set(id, node);
+    this.nameIndex.set(name, id);
+    this.store.insertNode(id, name, "local", undefined, node.capabilities);
+    this.store.updateNodeStatus(id, "idle");
+    this.log.info(`registerLocalNode: ${name} (${id}) registered`);
+    this.onEvent("node.registered", node);
+    this.onEvent("node.statusChanged", node);
+    return node;
+  }
+
+  /** Remove a local node by id. No-op if the id is unknown or its transport
+   *  is not LocalTransport. Use only for nodes registered via
+   *  registerLocalNode — for WS/program nodes use the regular remove(). */
+  removeLocalNode(nodeId: string): void {
+    const node = this.nodes.get(nodeId);
+    if (!node || node.transport.type !== "local") return;
+    node.transport.close();
+    this.nameIndex.delete(node.name);
+    this.nodes.delete(nodeId);
+    // Store keeps historical row (no deleteNode on Store) — that's fine; the
+    // source of truth for "current" nodes is the in-memory map.
+    this.onEvent("node.removed", node);
   }
 
   /** Register a WebSocket node (nvim, browser, CLI tool).

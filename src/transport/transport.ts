@@ -13,7 +13,7 @@ export interface Transport {
   onClose(handler: CloseHandler): void;
   close(): void;
   readonly alive: boolean;
-  readonly type: "stdio" | "websocket";
+  readonly type: "stdio" | "websocket" | "local";
 }
 
 // ------- Stdio Transport (for CLI agents) -------
@@ -116,6 +116,30 @@ export class NullTransport implements Transport {
   onMessage(): void {}
   onClose(): void {}
   close(): void {}
+}
+
+// ------- Local Transport (for in-process nodes) -------
+
+/** LocalTransport — for modules that live inside the nerve process but
+ *  should appear in node.list as nodes (e.g. service-supervisor exposing
+ *  its supervised-services state). Send is a no-op: in-process nodes are
+ *  driven by direct method calls, not by JSON-RPC notifications coming
+ *  back over the wire. They never close on their own — caller controls
+ *  lifecycle via NodePool.removeLocalNode. */
+export class LocalTransport implements Transport {
+  readonly type = "local" as const;
+  private _alive = true;
+  private closeHandler: CloseHandler | null = null;
+
+  get alive() { return this._alive; }
+  send(): void { /* in-process, no wire */ }
+  onMessage(): void { /* in-process nodes do not receive RPC */ }
+  onClose(handler: CloseHandler): void { this.closeHandler = handler; }
+  close(): void {
+    if (!this._alive) return;
+    this._alive = false;
+    this.closeHandler?.(null);
+  }
 }
 
 // ------- WebSocket Transport (for external clients) -------

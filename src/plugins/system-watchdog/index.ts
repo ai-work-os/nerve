@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import { homedir } from "node:os";
 import { PluginBase, type CommandDef, type CommandResult } from "../plugin-base.js";
 import type { HealthContract, NodeInfo } from "../../transport/protocol.js";
-import { evaluateNode, type Alert } from "./evaluator.js";
+import { evaluateAll, type Alert } from "./evaluator.js";
 import { alertKey, shouldEmit, loadSilence, saveSilence, type SilenceState } from "./silence.js";
 import { formatChannelMessage, appendAlertsToFile } from "./reporters.js";
 
@@ -155,7 +155,7 @@ class SystemWatchdog extends PluginBase {
     const allAlerts: Alert[] = [];
     for (const node of nodes) {
       if (node.name === this.options.name) continue;  // 不评估自己
-      const alerts = evaluateNode(node, now, isProcessAlive, getProcessMemoryMB);
+      const alerts = evaluateAll(node, now, isProcessAlive, getProcessMemoryMB);
       allAlerts.push(...alerts);
     }
     this.lastAlertCount = allAlerts.length;

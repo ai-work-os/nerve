@@ -1,5 +1,5 @@
 import type { Transport } from "../transport/transport.js";
-import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message, HealthContract } from "../transport/protocol.js";
+import type { NodeStatus, PermissionLevel, NodeInfo, NodeUsage, Message, HealthContract, SupervisedServiceStatus } from "../transport/protocol.js";
 import type { SessionNotification, UsageUpdate, Cost } from "@agentclientprotocol/sdk";
 import { getContextWindow } from "./model-registry.js";
 import { getAdapter } from "./adapter.js";
@@ -37,6 +37,10 @@ export class NerveNode {
   commands?: Record<string, { description: string; args?: Record<string, string> }>;
   events?: string[];
   health?: HealthContract;
+  /** Per-service state for nodes wrapping a process supervisor. Updated by
+   *  the owning module (e.g. cli.ts via a tick after supervisor.start()).
+   *  See ai/specs/health-seams.md. */
+  supervised?: SupervisedServiceStatus[];
 
   // For stdio nodes: prompt generation counter (prevent stale callbacks)
   promptGen = 0;
@@ -165,6 +169,7 @@ export class NerveNode {
       commands: this.commands,
       events: this.events,
       health: this.health,
+      supervised: this.supervised,
     };
   }
 }
