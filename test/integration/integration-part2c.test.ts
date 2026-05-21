@@ -645,18 +645,26 @@ describe("Nerve Integration Tests - Part 2c", () => {
       await c.request("node.subscribe", { nodeId: spawn.nodeId });
       c.clearNotifications();
 
-      const logStart = serverLogBuffer.length;
-
       const promptResult = await c.request("node.prompt", { nodeId: spawn.nodeId, content: "send-usage" });
       assert(!!promptResult, "model-info: prompt returned result");
 
       // Wait for usage_update to be processed
       await sleep(1000);
 
-      const newLogs = serverLogBuffer.slice(logStart).join("\n");
-      const hasUsageLog = newLogs.includes("usage_update") || newLogs.includes("context size changed");
-      assert(hasUsageLog, "model-info: server logged usage_update or context size change",
-        `log snippet: ${newLogs.slice(0, 200)}`);
+      // Verify the usage_update was processed end-to-end by checking node state.
+      // (Log-buffer assertion doesn't work here: `usage_update wire:` is DEBUG
+      // and filtered out at default INFO threshold; `context size changed` only
+      // fires on actual size change, but mock-model-v1's fixed 999_999 window
+      // normalizes both 50000 and 80000 to the same value, so no change fires.
+      // Use mock-no-model adapter in the sibling test for the warn path.)
+      const list2 = await c.request("node.list", {});
+      const agent2 = (list2 as any).nodes.find((n: any) => n.name === "model-info-agent");
+      assert(!!agent2?.usage, "model-info: agent.usage populated after send-usage prompt",
+        `agent.usage=${JSON.stringify(agent2?.usage)}`);
+      assertEq(agent2.usage.tokenSize, 999999,
+        "model-info: tokenSize normalized via mock-model-v1 context window");
+      assertEq(agent2.usage.tokenUsed, 200,
+        "model-info: tokenUsed reflects second usage_update from mock send-usage");
 
       // Cleanup
       await httpPost("/node/stop", { nodeId: spawn.nodeId });
