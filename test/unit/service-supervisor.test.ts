@@ -248,6 +248,61 @@ describe("ServiceSupervisor", () => {
     expect(st3[0].pid).toBe(spawned[2].pid); // spawned[2] is svc-a's second instance (spawned[1] is svc-b)
   });
 
+  it("status() 暴露 restartHistory 时间戳，供 restart-loop 探测器评估", () => {
+    const { spawnFn, spawned } = makeSpawnFn();
+    const supervisor = new ServiceSupervisor({
+      specs: [specA],
+      spawn: spawnFn as any,
+      backoffMs: [100],
+    });
+    vi.setSystemTime(1_700_000_000_000);
+    supervisor.start();
+
+    // 初始无重启 → 空 history
+    expect(supervisor.status()[0].restartHistory).toEqual([]);
+
+    // 第一次崩溃
+    vi.setSystemTime(1_700_000_001_000);
+    spawned[0].emitter.emit("exit", 1);
+    expect(supervisor.status()[0].restartHistory).toEqual([1_700_000_001_000]);
+
+    // 重启回来 → 不动 history
+    vi.advanceTimersByTime(100);
+    expect(supervisor.status()[0].restartHistory).toEqual([1_700_000_001_000]);
+
+    // 第二次崩溃
+    vi.setSystemTime(1_700_000_002_000);
+    spawned[1].emitter.emit("exit", 1);
+    expect(supervisor.status()[0].restartHistory).toEqual([
+      1_700_000_001_000,
+      1_700_000_002_000,
+    ]);
+  });
+
+  it("restartHistory 上限保留最近 10 条（避免长期运行无界增长）", () => {
+    const { spawnFn, spawned } = makeSpawnFn();
+    const supervisor = new ServiceSupervisor({
+      specs: [specA],
+      spawn: spawnFn as any,
+      backoffMs: [10],
+    });
+    vi.setSystemTime(1_700_000_000_000);
+    supervisor.start();
+
+    // 触发 15 次崩溃 → history 应该只保留最近 10 条
+    for (let i = 1; i <= 15; i++) {
+      vi.setSystemTime(1_700_000_000_000 + i * 1000);
+      // 当前活跃的 child 是 spawned[i-1]（崩溃后 backoff 100ms 再 spawn 下一个）
+      spawned[spawned.length - 1].emitter.emit("exit", 1);
+      vi.advanceTimersByTime(10);
+    }
+    const hist = supervisor.status()[0].restartHistory;
+    expect(hist).toHaveLength(10);
+    // 保留的应该是最近的 10 条（1_700_000_006_000 到 1_700_000_015_000）
+    expect(hist[0]).toBe(1_700_000_006_000);
+    expect(hist[9]).toBe(1_700_000_015_000);
+  });
+
   it("stop() 后 status() 全部为 stopped", () => {
     const { spawnFn } = makeSpawnFn();
     const supervisor = new ServiceSupervisor({

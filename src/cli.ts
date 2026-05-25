@@ -214,6 +214,8 @@ async function cmdServe(args: string[]) {
   }
 
   let supervisor: import("./service/service-supervisor.js").ServiceSupervisor | undefined;
+  let supervisorNodeId: string | undefined;
+  let supervisorReporterTimer: ReturnType<typeof setInterval> | undefined;
   if (!noServices) {
     try {
       const { loadServiceConfig } = await import("./service/service-config.js");
@@ -223,6 +225,26 @@ async function cmdServe(args: string[]) {
         supervisor = new ServiceSupervisor({ specs: serviceConfig.services, log: { info, warn } });
         supervisor.start();
         info(`service-supervisor started ${serviceConfig.services.length} service(s)`);
+
+        // Expose supervisor state via a local node — watchdog scans node.list
+        // and evaluates `supervised` for restart loops.
+        // See ai/specs/health-seams.md.
+        const reporterNode = nerve.nodePool.registerLocalNode("service-supervisor", {
+          health: { liveness: "connection", maxIdleMs: 120_000 },
+        });
+        supervisorNodeId = reporterNode.id;
+        const updateReporter = () => {
+          if (!supervisor) return;
+          reporterNode.supervised = supervisor.status();
+          reporterNode.touch();
+        };
+        updateReporter();
+        // Tick every 30s — supervisor state changes are usually paced by
+        // backoff timers (1s/3s/10s/30s/60s), so a 30s refresh keeps the
+        // node.list view close enough for the watchdog (60s scan).
+        supervisorReporterTimer = setInterval(updateReporter, 30_000);
+        supervisorReporterTimer.unref?.();
+        info(`service-supervisor reporter registered as local node (id=${reporterNode.id})`);
       } else {
         info("no services configured");
       }
@@ -267,6 +289,14 @@ async function cmdServe(args: string[]) {
       if (screenshotNodeId) {
         try { await nerve.nodePool.stopNode(screenshotNodeId); } catch (e) { info(`screenshot stop failed: ${e}`); }
         info("screenshot stopped");
+      }
+      if (supervisorReporterTimer) {
+        clearInterval(supervisorReporterTimer);
+        supervisorReporterTimer = undefined;
+      }
+      if (supervisorNodeId) {
+        try { nerve.nodePool.removeLocalNode(supervisorNodeId); } catch (e) { info(`service-supervisor reporter removeLocalNode failed: ${e}`); }
+        supervisorNodeId = undefined;
       }
       if (supervisor) {
         supervisor.stop();

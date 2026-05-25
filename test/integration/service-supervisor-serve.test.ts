@@ -169,6 +169,34 @@ describe("service-supervisor-serve integration", () => {
       }
       expect(existsSync(markerFile), `marker file should exist at ${markerFile}`).toBe(true);
     }, 10_000);
+
+    it("service-supervisor 注册为 local node，supervised 字段暴露 service 状态", async () => {
+      // Wait briefly for reporter tick to populate supervised state
+      const deadline = Date.now() + 3_000;
+      let supervisorNode: any = undefined;
+      while (Date.now() < deadline) {
+        const res = await fetch(`http://127.0.0.1:${port}/node/list`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const json: any = await res.json();
+        supervisorNode = (json.nodes ?? []).find((n: any) => n.name === "service-supervisor");
+        if (supervisorNode?.supervised?.length) break;
+        await sleep(150);
+      }
+      expect(supervisorNode, "service-supervisor should appear in node.list").toBeDefined();
+      expect(supervisorNode.transport).toBe("local");
+      expect(supervisorNode.health).toEqual({ liveness: "connection", maxIdleMs: 120_000 });
+      expect(Array.isArray(supervisorNode.supervised)).toBe(true);
+      expect(supervisorNode.supervised.length).toBeGreaterThan(0);
+      // marker-writer exited (restart=never) → state="running" briefly or "stopped"; either is fine,
+      // we just check the entry made it through.
+      const entry = supervisorNode.supervised.find((s: any) => s.name === "marker-writer");
+      expect(entry).toBeDefined();
+      expect(typeof entry.restarts).toBe("number");
+      expect(Array.isArray(entry.restartHistory)).toBe(true);
+    }, 10_000);
   });
 
   describe("with --no-services flag", () => {

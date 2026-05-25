@@ -43,7 +43,16 @@ export interface ProcessStatus {
   pid?: number;
   state: ProcessState;
   restarts: number;
+  /** Epoch-ms timestamps of recent restart events, oldest first.
+   *  Capped at MAX_RESTART_HISTORY entries — supervisor.restart-loop-detector
+   *  filters by rolling window, not by count, so a cap is enough. */
+  restartHistory: number[];
 }
+
+/** How many recent restart timestamps to keep per service. Beyond this, the
+ *  oldest entries are dropped. The detector only cares about restarts within
+ *  a recent rolling window (default 5min), so 10 is plenty. */
+const MAX_RESTART_HISTORY = 10;
 
 // ---- Internal state per supervised process ----
 
@@ -52,6 +61,8 @@ interface ChildState {
   child: SupervisedChild | null;
   /** Number of times this process has actually been restarted (not counting initial spawn) */
   restarts: number;
+  /** Recent restart timestamps (epoch ms), oldest first. Capped at MAX_RESTART_HISTORY. */
+  restartHistory: number[];
   /** Restart backoff attempt count (1-based: 1 = first restart, used as backoffMs[attempt-1]). */
   attempt: number;
   /** Timestamp when the current child was spawned */
@@ -112,6 +123,7 @@ export class ServiceSupervisor {
         spec,
         child: null,
         restarts: 0,
+        restartHistory: [],
         attempt: 0,
         spawnedAt: 0,
         restartTimer: null,
@@ -158,6 +170,7 @@ export class ServiceSupervisor {
         pid: state.child?.pid,
         state: st,
         restarts: state.restarts,
+        restartHistory: [...state.restartHistory],
       });
     }
     return result;
@@ -207,6 +220,10 @@ export class ServiceSupervisor {
     }
 
     state.restarts += 1;
+    state.restartHistory.push(Date.now());
+    if (state.restartHistory.length > MAX_RESTART_HISTORY) {
+      state.restartHistory.splice(0, state.restartHistory.length - MAX_RESTART_HISTORY);
+    }
 
     // Reset attempt counter if process was stable long enough
     if (uptime >= this.stableMs) {

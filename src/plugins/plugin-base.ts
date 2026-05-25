@@ -68,13 +68,17 @@ export interface PluginOptions {
   capabilities?: string[];
   permissions?: "operator" | "member" | "observer";
   reconnectDelay?: number;  // ms, default 5000
-  /** Persistent node: stays in its channels as "offline" when the WS drops,
-   *  rebinds to the same nodeId on reconnect. Use for nodes that should keep
-   *  "showing up" across disconnects (e.g. mac-clipboard on a sleeping Mac). */
+  /** Persistent node: Layer 2 of the NodeResilience seam — stays in its
+   *  channels as "offline" when the WS drops, rebinds to the same nodeId on
+   *  reconnect. Use for nodes that should keep "showing up" across
+   *  disconnects (e.g. mac-clipboard on a sleeping Mac).
+   *  See ai/specs/node-resilience.md. */
   persistent?: boolean;
-  /** WebSocket heartbeat ping interval in ms (default 30000).
-   *  A ping is sent each tick; if no pong/message arrives before the next tick
-   *  the connection is considered dead and forcibly terminated (triggering reconnect). */
+  /** WebSocket heartbeat ping interval in ms (default 30000) — Layer 1 of
+   *  the NodeResilience seam. A ping is sent each tick; if no pong/message
+   *  arrives before the next tick the connection is considered dead and
+   *  forcibly terminated (triggering reconnect).
+   *  See ai/specs/node-resilience.md. */
   heartbeatIntervalMs?: number;
 }
 
@@ -233,6 +237,29 @@ export class PluginBase {
 
   /** Override in subclass: called on disconnect (before reconnect) */
   protected onDisconnect(): void {}
+
+  /** Find or create the named channel, join it, and store the id on
+   *  `this.channelId`. Returns the channel id for convenience.
+   *
+   *  Use from `onReady()` for plugins that have one primary channel they
+   *  care about (e.g. screenshot, mac-clipboard). For "join every channel"
+   *  patterns (observer, user-recorder) use `channel.list` + `channel.join`
+   *  directly — those don't fit this single-channel shape.
+   *
+   *  Throws on transport errors; returns the id on success. */
+  protected async ensureChannel(name: string): Promise<string> {
+    const list = await this.request("channel.list");
+    const found = (list?.channels ?? []).find((c: any) => c.name === name);
+    // channel.list returns { id } but channel.create returns { channelId }.
+    const channelId = found
+      ? (found.channelId ?? found.id)
+      : (await this.request("channel.create", { name })).channelId;
+    if (!channelId) throw new Error(`could not resolve channel #${name}`);
+    await this.request("channel.join", { channelId });
+    this.channelId = channelId;
+    this.log("info", `joined channel ${channelId} (#${name})`);
+    return channelId;
+  }
 
   /** Override in subclass: called when a DM message is received */
   protected onMessage(content: string, from?: string): void {}
