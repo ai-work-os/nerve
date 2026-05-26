@@ -2,11 +2,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { basename, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { ChannelManager } from "../channel/channel-manager.js";
 import type { SceneManager } from "../scene/scene-manager.js";
 import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js";
 import * as log from "../infra/logger.js";
 import { child as childLogger, newCorrelationId } from "../infra/logger.js";
+import { buildMorningBrief } from "../morning-brief/generator.js";
 // Note: `log` namespace kept for log.getLogPath() used in /health and /log endpoints
 
 /**
@@ -38,6 +40,20 @@ export class HttpRouter {
       res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ status: "ok", logFile: logPath })
       );
+      return;
+    }
+
+    if (req.method === "GET" && req.url?.startsWith("/morning-brief/today")) {
+      void buildMorningBrief({ dataDir: this.cm.dataDir, homeDir: homedir() })
+        .then((brief) => {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(brief));
+          reqLog.boundary("out", "http", { status: 200 });
+        })
+        .catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: message }));
+          reqLog.boundary("out", "http", { status: 500 });
+        });
       return;
     }
 
