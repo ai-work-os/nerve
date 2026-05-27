@@ -25,7 +25,7 @@ function getArg(flag: string, def: string): string {
 const PORT = parseInt(getArg("--port", "4800"));
 const SCAN_INTERVAL_MS = parseInt(process.env.WATCHDOG_INTERVAL_MS ?? "60000");
 const SILENCE_WINDOW_MS = parseInt(process.env.WATCHDOG_SILENCE_MS ?? String(60 * 60 * 1000));
-const ALERT_FILE = process.env.WATCHDOG_ALERT_FILE ?? resolve(homedir(), ".ai/ops/state/system-alerts.md");
+const ALERT_FILE = process.env.WATCHDOG_ALERT_FILE ?? resolve(homedir(), ".nerve/plugins/system-watchdog/alerts/system-alerts.md");
 const OPS_CHANNEL_NAME = process.env.WATCHDOG_OPS_CHANNEL ?? "ops";
 const SILENCE_FILE_OVERRIDE = process.env.WATCHDOG_SILENCE_FILE;
 
@@ -187,7 +187,7 @@ class SystemWatchdog extends PluginBase {
       return;
     }
 
-    await this.postToOps(formatChannelMessage(toEmit));
+    await this.postToOps(formatChannelMessage(toEmit, ALERT_FILE));
   }
 
   private async listMonitored(): Promise<void> {

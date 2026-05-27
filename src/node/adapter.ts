@@ -133,7 +133,7 @@ const adapters: Record<string, AdapterConfig> = {
     usage: [
       "L1 系统级健康监控。每个程序节点在 PluginBase.getHealth() 声明契约，",
       "watchdog 定时（默认 60s）拉 node.list 对账。",
-      "异常写 ~/.ai/ops/state/system-alerts.md + push #ops 频道（去重 60min）。",
+      "异常写 ~/.nerve/plugins/system-watchdog/alerts/system-alerts.md + push #ops 频道（去重 60min）。",
       "随 nerve 自启 (cli.ts startWatchdog)，无需 nerve_spawn。",
     ].join("\n"),
   },

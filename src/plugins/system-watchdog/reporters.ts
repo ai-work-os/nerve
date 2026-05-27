@@ -24,11 +24,11 @@ export function formatAlertLine(alert: Alert, now: Date): string {
   return `- ${fmtTime(now)}  ${alert.nodeName}  ${alert.metric}  ${alert.detail}`;
 }
 
-export function formatChannelMessage(alerts: Alert[]): string {
+export function formatChannelMessage(alerts: Alert[], alertFile: string = "~/.nerve/plugins/system-watchdog/alerts/system-alerts.md"): string {
   if (alerts.length === 0) return "";
   const header = `🔴 system-watchdog: ${alerts.length} 节点异常`;
   const lines = alerts.map(a => `- ${a.nodeName}  ${a.metric}  ${a.detail}`);
-  const footer = "详情: ~/.ai/ops/state/system-alerts.md";
+  const footer = `详情: ${alertFile}`;
   return [header, ...lines, footer].join("\n");
 }
 

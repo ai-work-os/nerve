@@ -26,11 +26,12 @@ describe("formatChannelMessage", () => {
     const alerts: Alert[] = [
       { nodeName: "email-watcher", metric: "liveness", detail: "pid 123 not alive" },
     ];
-    const msg = formatChannelMessage(alerts);
+    const msg = formatChannelMessage(alerts, "~/.nerve/plugins/system-watchdog/alerts.md");
     expect(msg).toContain("system-watchdog");
     expect(msg).toContain("email-watcher");
     expect(msg).toContain("liveness");
-    expect(msg).toContain("system-alerts.md");
+    expect(msg).toContain("~/.nerve/plugins/system-watchdog/alerts.md");
+    expect(msg).not.toContain("~/.ai/ops/state/system-alerts.md");
   });
 
   it("多 alert → 多行", () => {
