@@ -56,7 +56,7 @@ describe("morning brief generator", () => {
     expect(brief.notificationTitle).toBe("早报已准备好");
     expect(brief.notificationBody).toContain("ERP");
     expect(brief.markdown).toContain("morning brief push");
-    expect(brief.markdown).toContain("erp-worktree-cleanup");
+    expect(brief.markdown).toContain("ERP workspace 已清理");
     expect(brief.sources.some((source) => source.kind === "life-log")).toBe(true);
     expect(brief.sources.some((source) => source.kind === "duty-report")).toBe(true);
     expect(brief.sources.some((source) => source.kind === "observer")).toBe(true);
@@ -66,5 +66,37 @@ describe("morning brief generator", () => {
     const now = new Date(2026, 4, 1, 8, 30, 0);
     expect(localDate(now)).toBe("2026-05-01");
     expect(previousLocalDate(now)).toBe("2026-04-30");
+  });
+
+  it("keeps mobile summary free of task markup and absolute paths", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "nerve-brief-clean-"));
+    const dataDir = resolve(root, ".nerve");
+    const homeDir = resolve(root, "home");
+    const yesterday = "2026-05-25";
+
+    mkdirSync(resolve(homeDir, ".ai/ops/reports"), { recursive: true });
+    writeFileSync(
+      resolve(homeDir, `.ai/ops/reports/${yesterday}-duty-run.md`),
+      [
+        "# duty",
+        "- 23:35 **conversation-archive** — `ok` — home: 34 条 — /home/renjinxi/.ai/workspace/activity/conversations/other/2026-05-25-home.md",
+        "- 08:30 **erp-worktree-cleanup** — `ok` — ERP workspace 已清理 — /tmp/a.md",
+      ].join("\n"),
+    );
+
+    const brief = await buildMorningBrief({
+      dataDir,
+      homeDir,
+      now: new Date("2026-05-26T08:30:00+08:00"),
+      workRoots: [],
+    });
+
+    const visibleText = [brief.notificationBody, ...brief.sections.flatMap((section) => section.items)].join("\n");
+    expect(brief.notificationBody.length).toBeLessThanOrEqual(96);
+    expect(visibleText).not.toMatch(/\*\*|`/);
+    expect(visibleText).not.toMatch(/\/home\/renjinxi|\/tmp\//);
+    expect(visibleText).not.toContain("conversation-archive");
+    expect(visibleText).toContain("会话归档");
+    expect(visibleText).toContain("ERP workspace 已清理");
   });
 });

@@ -84,7 +84,7 @@ export async function buildMorningBrief(opts: BuildMorningBriefOptions): Promise
 
   const personalItems = compactItems([
     ...lifeLogLines.map(stripLifeLogPrefix),
-    ...dutyLines.filter((line) => /`ok`|ok|完成|推进|提交|清理|汇总/i.test(line)).map(cleanMarkdownLine),
+    ...dutyLines.filter((line) => /`ok`|ok|完成|推进|提交|清理|汇总/i.test(line)).map(formatDutyLineForMobile),
     ...gitItems.personal,
   ], 6);
 
@@ -161,6 +161,10 @@ function cleanMarkdownLine(line: string): string {
   return line
     .replace(/^[-*]\s*/, "")
     .replace(/`/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/\/(?:home|tmp|Users)\/\S+/g, "")
+    .replace(/\bworktree\b/gi, "workspace")
+    .replace(/\s+—\s*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -169,13 +173,40 @@ function compactItems(items: string[], limit: number): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const raw of items) {
-    const item = cleanMarkdownLine(raw).slice(0, 180);
+    const item = cleanMarkdownLine(raw).slice(0, 120);
     if (!item || seen.has(item)) continue;
     seen.add(item);
     result.push(item);
     if (result.length >= limit) break;
   }
   return result;
+}
+
+function formatDutyLineForMobile(line: string): string {
+  const dutyMatch = line.match(/\*\*([^*]+)\*\*\s+—\s+`?([^`—]+)`?\s+—\s+(.+)$/);
+  if (dutyMatch) {
+    const task = dutyMatch[1].trim();
+    const detail = cleanMarkdownLine(dutyMatch[3]);
+    if (task === "conversation-archive") {
+      const count = detail.match(/home:\s*(\d+)\s*条/)?.[1];
+      return count ? `会话归档完成: home ${count} 条` : "会话归档完成";
+    }
+    if (detail) return detail;
+  }
+
+  const cleaned = cleanMarkdownLine(line);
+  const parts = cleaned.split(/\s+—\s+/).map((part) => part.trim()).filter(Boolean);
+  const taskName = parts.find((part) => /[a-z0-9][a-z0-9-]+/i.test(part)) ?? "";
+  const meaningful = parts
+    .filter((part) => part !== taskName)
+    .filter((part) => !/^(ok|failed|failed:empty)$/i.test(part))
+    .filter((part) => !/^home:\s*\d+\s*条$/.test(part));
+
+  if (taskName === "conversation-archive") {
+    const count = cleaned.match(/home:\s*(\d+)\s*条/)?.[1];
+    return count ? `会话归档完成: home ${count} 条` : "会话归档完成";
+  }
+  return meaningful[0] ?? cleaned;
 }
 
 function inferTodayItems(personal: string[], system: string[], duty: string[]): string[] {
@@ -191,7 +222,7 @@ function inferTodayItems(personal: string[], system: string[], duty: string[]): 
 function buildNotificationBody(sections: MorningBriefSection[]): string {
   const first = sections[0]?.items[0] ?? "";
   const second = sections[2]?.items[0] ?? "";
-  return [first, second].filter(Boolean).join("；").slice(0, 120);
+  return [first, second].filter(Boolean).join("；").slice(0, 96);
 }
 
 function renderMarkdown(date: string, sourceDate: string, sections: MorningBriefSection[], sources: MorningBriefSource[]): string {
