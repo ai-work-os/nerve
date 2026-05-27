@@ -112,10 +112,11 @@ export class LifeLogHttpServer {
       }
       writeFileSync(opusPath, fileBuf);
       this.log("info", `chunk landed: ${meta.deviceId} ${meta.chunkId} ${fileBuf.length}B`);
-      // Fire-and-forget — ASR is async
-      this.cfg.onChunk(opusPath, meta).catch((err) => this.log("error", `onChunk: ${err}`));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, chunkId: meta.chunkId }));
+      setTimeout(() => {
+        this.cfg.onChunk(opusPath, meta).catch((err) => this.log("error", `onChunk: ${err}`));
+      }, 10);
     });
     req.pipe(bb);
   }

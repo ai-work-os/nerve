@@ -87,6 +87,38 @@ describe("LifeLogHttpServer upload", () => {
     await new Promise(r => setTimeout(r, 50));
     expect(onChunkCalls).toBe(1);
   });
+
+  it("onChunk 同步工作不阻塞上传成功响应", async () => {
+    let onChunkCalls = 0;
+    await srv.stop();
+    srv = new LifeLogHttpServer({
+      port: 0,
+      audioDir: join(dir, "audio3"),
+      onChunk: async () => {
+        onChunkCalls++;
+        const until = Date.now() + 250;
+        while (Date.now() < until) {
+          // Simulate synchronous ASR setup/CPU work before the first await.
+        }
+      },
+    });
+    port = await srv.start();
+
+    const startedAt = Date.now();
+    const r = await postOpus(port, Buffer.from("x"), {
+      deviceId: "p",
+      recordedAtMs: 1700000000000,
+      durationMs: 60000,
+      chunkId: "async1",
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+    expect(elapsedMs).toBeLessThan(200);
+    await new Promise(r => setTimeout(r, 300));
+    expect(onChunkCalls).toBe(1);
+  });
 });
 
 describe("LifeLogHttpServer auth", () => {
