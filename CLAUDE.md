@@ -1,1 +1,1 @@
-ai/ai.md
+AGENTS.md
