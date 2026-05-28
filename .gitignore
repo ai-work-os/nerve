@@ -1,5 +1,6 @@
 node_modules/
 dist/
+docs/
 *.db
 *.db-journal
 .nvimlog
