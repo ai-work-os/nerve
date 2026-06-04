@@ -13,7 +13,7 @@ export interface MorningBriefSection {
 }
 
 export interface MorningBriefSource {
-  kind: "life-log" | "duty-report" | "observer" | "git";
+  kind: "life-log" | "duty-report" | "observer" | "daily-digest" | "git";
   path: string;
   available: boolean;
   count?: number;
@@ -47,6 +47,12 @@ interface ObserverEvent {
   status?: string;
 }
 
+interface DailyDigestFacts {
+  personal: string[];
+  system: string[];
+  today: string[];
+}
+
 export function localDate(d: Date = new Date()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -67,6 +73,15 @@ export async function buildMorningBrief(opts: BuildMorningBriefOptions): Promise
   const home = opts.homeDir ?? homedir();
   const sources: MorningBriefSource[] = [];
 
+  const dailyDigestPath = resolve(home, ".ai/timeline/digest", `${date}.md`);
+  const dailyDigest = await readDailyDigestFacts(dailyDigestPath);
+  sources.push({
+    kind: "daily-digest",
+    path: dailyDigestPath,
+    available: existsSync(dailyDigestPath),
+    count: dailyDigest.personal.length + dailyDigest.system.length + dailyDigest.today.length,
+  });
+
   const lifeLogPath = resolve(opts.dataDir, "plugins/ai-life-log/log", `${sourceDate}.txt`);
   const lifeLogLines = await readUsefulLines(lifeLogPath, 12);
   sources.push({ kind: "life-log", path: lifeLogPath, available: existsSync(lifeLogPath), count: lifeLogLines.length });
@@ -83,12 +98,14 @@ export async function buildMorningBrief(opts: BuildMorningBriefOptions): Promise
   for (const item of gitItems.sources) sources.push(item);
 
   const personalItems = compactItems([
+    ...dailyDigest.personal,
     ...lifeLogLines.map(stripLifeLogPrefix),
     ...dutyLines.filter((line) => /`ok`|ok|完成|推进|提交|清理|汇总/i.test(line)).map(formatDutyLineForMobile),
     ...gitItems.personal,
   ], 6);
 
   const systemItems = compactItems([
+    ...dailyDigest.system,
     ...observerEvents
       .filter((event) => event.type === "channel.message" && event.content)
       .map((event) => `${event.chName ?? "channel"} / ${event.from ?? "unknown"}: ${event.content}`),
@@ -99,7 +116,10 @@ export async function buildMorningBrief(opts: BuildMorningBriefOptions): Promise
     ...gitItems.team,
   ], 8);
 
-  const todayItems = inferTodayItems(personalItems, systemItems, dutyLines);
+  const todayItems = compactItems([
+    ...dailyDigest.today,
+    ...inferTodayItems(personalItems, systemItems, dutyLines),
+  ], 4);
   const sections: MorningBriefSection[] = [
     {
       title: "昨天我做了什么",
@@ -112,6 +132,10 @@ export async function buildMorningBrief(opts: BuildMorningBriefOptions): Promise
     {
       title: "今天建议优先做什么",
       items: todayItems,
+    },
+    {
+      title: "数据源状态",
+      items: renderSourceDiagnostics(sources),
     },
   ];
 
@@ -151,6 +175,37 @@ async function readObserverEvents(path: string): Promise<ObserverEvent[]> {
     }
   }
   return events.slice(-40);
+}
+
+async function readDailyDigestFacts(path: string): Promise<DailyDigestFacts> {
+  const facts: DailyDigestFacts = { personal: [], system: [], today: [] };
+  if (!existsSync(path)) return facts;
+
+  const text = await readFile(path, "utf-8");
+  let section: keyof DailyDigestFacts | undefined;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("#")) {
+      section = classifyDigestHeading(line);
+      continue;
+    }
+    if (!section || !/^[-*]\s+/.test(line)) continue;
+    facts[section].push(line);
+  }
+
+  facts.personal = compactItems(facts.personal, 6);
+  facts.system = compactItems(facts.system, 8);
+  facts.today = compactItems(facts.today, 4);
+  return facts;
+}
+
+function classifyDigestHeading(heading: string): keyof DailyDigestFacts | undefined {
+  const text = heading.replace(/^#+\s*/, "");
+  if (/昨天.*我|个人|做了什么|完成/.test(text)) return "personal";
+  if (/团队|ERP|系统|发生/.test(text)) return "system";
+  if (/今天|建议|优先|下一步|待办/.test(text)) return "today";
+  return undefined;
 }
 
 function stripLifeLogPrefix(line: string): string {
@@ -223,6 +278,14 @@ function buildNotificationBody(sections: MorningBriefSection[]): string {
   const first = sections[0]?.items[0] ?? "";
   const second = sections[2]?.items[0] ?? "";
   return [first, second].filter(Boolean).join("；").slice(0, 96);
+}
+
+function renderSourceDiagnostics(sources: MorningBriefSource[]): string[] {
+  return sources.map((source) => {
+    const status = source.available ? "ok" : "missing";
+    const count = source.count !== undefined ? ` (${source.count})` : "";
+    return `${source.kind} ${status}${count}`;
+  });
 }
 
 function renderMarkdown(date: string, sourceDate: string, sections: MorningBriefSection[], sources: MorningBriefSource[]): string {
