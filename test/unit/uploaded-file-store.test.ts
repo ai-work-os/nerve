@@ -49,4 +49,18 @@ describe("UploadedFileStore", () => {
     expect(result.path).not.toContain("..");
     expect(basename(result.path)).toMatch(/^[a-f0-9]{12}-authorized_keys$/);
   });
+
+  it("keeps readable unicode filenames while still controlling the path", () => {
+    const s = store();
+
+    const result = s.store(Buffer.from("x"), {
+      name: "需求说明.md",
+      mimeType: "text/markdown",
+      receivedAtMs: Date.UTC(2026, 5, 4, 12),
+    });
+
+    expect(result.name).toBe("需求说明.md");
+    expect(result.path).toContain("/uploads/2026-06-04/");
+    expect(basename(result.path)).toMatch(/^[a-f0-9]{12}-需求说明\.md$/u);
+  });
 });

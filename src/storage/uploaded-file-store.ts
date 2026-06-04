@@ -47,7 +47,7 @@ function sanitizeFileName(raw?: string): string {
   const base = basename((raw ?? "upload.bin").trim()) || "upload.bin";
   const cleaned = base
     .replace(/[\u0000-\u001f\u007f]/g, "")
-    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/[^\p{L}\p{N}._-]/gu, "_")
     .replace(/^\.*/, "")
     .slice(0, 120);
   if (cleaned) return cleaned;

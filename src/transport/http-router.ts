@@ -173,7 +173,9 @@ export class HttpRouter {
       return;
     }
     const result = this.uploadStore.store(body, {
-      name: headerString(req.headers["x-file-name"]),
+      name: decodedHeaderString(req.headers["x-file-name-encoded"])
+        ?? decodedHeaderString(req.headers["x-file-name"])
+        ?? headerString(req.headers["x-file-name"]),
       mimeType: headerString(req.headers["content-type"]),
     });
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
@@ -665,6 +667,16 @@ function parseUploadMaxBytes(): number {
 
 function headerString(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function decodedHeaderString(value: string | string[] | undefined): string | undefined {
+  const raw = headerString(value);
+  if (!raw) return undefined;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return undefined;
+  }
 }
 
 function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | null> {

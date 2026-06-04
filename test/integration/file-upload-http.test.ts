@@ -67,4 +67,21 @@ describe("HttpRouter file upload", () => {
       else process.env.NERVE_FILE_UPLOAD_MAX_BYTES = previous;
     }
   });
+
+  it("POST /files/upload decodes UTF-8 encoded filenames", async () => {
+    const res = await fetch(`${baseUrl}/files/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/markdown",
+        "X-File-Name-Encoded": encodeURIComponent("需求说明.md"),
+      },
+      body: "# hi\n",
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.name).toBe("需求说明.md");
+    expect(json.path).toContain("需求说明.md");
+    expect(readFileSync(json.path, "utf8")).toBe("# hi\n");
+  });
 });
