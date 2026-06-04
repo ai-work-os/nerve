@@ -9,6 +9,7 @@ import { hasValidToken, isLocalRequest, loadPeerConfig } from "./peer-config.js"
 import * as log from "../infra/logger.js";
 import { child as childLogger, newCorrelationId } from "../infra/logger.js";
 import { buildMorningBrief } from "../morning-brief/generator.js";
+import { UploadedFileStore } from "../storage/uploaded-file-store.js";
 // Note: `log` namespace kept for log.getLogPath() used in /health and /log endpoints
 
 /**
@@ -18,11 +19,14 @@ import { buildMorningBrief } from "../morning-brief/generator.js";
 export class HttpRouter {
   private log = childLogger({ module: "transport:http" });
   private scenes?: SceneManager;
+  private uploadStore: UploadedFileStore;
 
   constructor(
     private cm: ChannelManager,
     private port: number,
-  ) {}
+  ) {
+    this.uploadStore = new UploadedFileStore(cm.dataDir);
+  }
 
   setSceneManager(scenes: SceneManager): void {
     this.scenes = scenes;
@@ -118,6 +122,11 @@ export class HttpRouter {
       return;
     }
 
+    if (req.method === "POST" && req.url === "/files/upload") {
+      void this.handleFileUpload(req, res, reqLog);
+      return;
+    }
+
     if (req.method !== "POST") {
       res.writeHead(404).end('{"error":"not found"}');
       return;
@@ -147,6 +156,28 @@ export class HttpRouter {
         reqLog.boundary("out", "http", { status: 400 });
       }
     });
+  }
+
+  private async handleFileUpload(req: IncomingMessage, res: ServerResponse, reqLog: ReturnType<typeof childLogger>): Promise<void> {
+    const maxBytes = parseUploadMaxBytes();
+    const declared = Number(req.headers["content-length"] ?? "0");
+    if (declared > maxBytes) {
+      res.writeHead(413, { "Content-Type": "application/json" }).end(JSON.stringify({ error: `file too large; max ${maxBytes} bytes` }));
+      reqLog.boundary("out", "http", { status: 413 });
+      return;
+    }
+    const body = await readRawBody(req, maxBytes);
+    if (body === null) {
+      res.writeHead(413, { "Content-Type": "application/json" }).end(JSON.stringify({ error: `file too large; max ${maxBytes} bytes` }));
+      reqLog.boundary("out", "http", { status: 413 });
+      return;
+    }
+    const result = this.uploadStore.store(body, {
+      name: headerString(req.headers["x-file-name"]),
+      mimeType: headerString(req.headers["content-type"]),
+    });
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+    reqLog.boundary("out", "http", { status: 200 });
   }
 
   private async route(url: string, data: Record<string, unknown>): Promise<unknown> {
@@ -625,4 +656,38 @@ export class HttpRouter {
       if (!this.cm.nodePool.isNameTaken(name)) return name;
     }
   }
+}
+
+function parseUploadMaxBytes(): number {
+  const raw = Number(process.env.NERVE_FILE_UPLOAD_MAX_BYTES ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : 50 * 1024 * 1024;
+}
+
+function headerString(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let resolved = false;
+    const done = (value: Buffer | null) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(value);
+      }
+    };
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        done(null);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => done(Buffer.concat(chunks)));
+    req.on("error", () => done(null));
+  });
 }
