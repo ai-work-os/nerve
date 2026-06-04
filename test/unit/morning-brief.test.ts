@@ -52,6 +52,7 @@ describe("morning brief generator", () => {
       "昨天我做了什么",
       "昨天团队 / ERP / 系统发生了什么",
       "今天建议优先做什么",
+      "数据源状态",
     ]);
     expect(brief.notificationTitle).toBe("早报已准备好");
     expect(brief.notificationBody).toContain("ERP");
@@ -98,5 +99,51 @@ describe("morning brief generator", () => {
     expect(visibleText).not.toContain("conversation-archive");
     expect(visibleText).toContain("会话归档");
     expect(visibleText).toContain("ERP workspace 已清理");
+  });
+
+  it("uses daily digest facts and exposes source diagnostics as a section", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "nerve-brief-digest-"));
+    const dataDir = resolve(root, ".nerve");
+    const homeDir = resolve(root, "home");
+    const yesterday = "2026-06-03";
+    const today = "2026-06-04";
+
+    mkdirSync(resolve(homeDir, ".ai/timeline/digest"), { recursive: true });
+    mkdirSync(resolve(homeDir, ".ai/ops/reports"), { recursive: true });
+    writeFileSync(
+      resolve(homeDir, `.ai/timeline/digest/${today}.md`),
+      [
+        "# 一站式早报",
+        "## 昨天我做了什么",
+        "- 收口 Android 文件上传，并完成 0.8.17 发版验证。",
+        "## 团队 / ERP / 系统",
+        "- ERP 分诊台 prompt 真身完成调整，后续要继续观察订单链路。",
+        "## 今天建议",
+        "- 先修复早报数据完整性和诊断输出。",
+      ].join("\n"),
+    );
+    writeFileSync(
+      resolve(homeDir, `.ai/ops/reports/${yesterday}-duty-run.md`),
+      [
+        "# duty",
+        "- 07:45 **daily-digest** — `ok` — 生成一站式早报 — /tmp/digest.md",
+      ].join("\n"),
+    );
+
+    const brief = await buildMorningBrief({
+      dataDir,
+      homeDir,
+      now: new Date("2026-06-04T08:30:00+08:00"),
+      workRoots: [],
+    });
+
+    expect(brief.sources).toContainEqual(
+      expect.objectContaining({ kind: "daily-digest", available: true, count: 3 }),
+    );
+    expect(brief.sections.find((section) => section.title === "昨天我做了什么")?.items.join("\n")).toContain("Android 文件上传");
+    expect(brief.sections.find((section) => section.title === "昨天团队 / ERP / 系统发生了什么")?.items.join("\n")).toContain("ERP 分诊台");
+    expect(brief.sections.find((section) => section.title === "今天建议优先做什么")?.items.join("\n")).toContain("早报数据完整性");
+    expect(brief.sections.find((section) => section.title === "数据源状态")?.items.join("\n")).toContain("daily-digest ok");
+    expect(brief.markdown).toContain("daily-digest");
   });
 });
